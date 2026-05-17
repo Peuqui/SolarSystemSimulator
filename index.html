@@ -214,10 +214,10 @@ input[type=range] {
     <input type="checkbox" id="chk-grid" checked> Gitternetz
   </label>
   <label>
-    <input type="checkbox" id="chk-logzoom"> Logarithmischer Zoom
+    <input type="checkbox" id="chk-logzoom" checked> Logarithmischer Zoom
   </label>
   <label>
-    <input type="checkbox" id="chk-baryctr"> Schwerpunkt zentrieren
+    <input type="checkbox" id="chk-baryctr" checked> Schwerpunkt zentrieren
   </label>
   <label>Sichtbare K&ouml;rper:</label>
   <div id="planet-checks"></div>
@@ -302,8 +302,8 @@ input[type=range] {
   <input type="range" id="mob-trail-slider" min="50" max="3000" step="50" value="150">
   <label><input type="checkbox" id="mob-chk-vectors"> Kraftvektoren</label>
   <label><input type="checkbox" id="mob-chk-grid" checked> Gitternetz</label>
-  <label><input type="checkbox" id="mob-chk-logzoom"> Log-Zoom</label>
-  <label><input type="checkbox" id="mob-chk-baryctr"> Schwerpunkt zentrieren</label>
+  <label><input type="checkbox" id="mob-chk-logzoom" checked> Log-Zoom</label>
+  <label><input type="checkbox" id="mob-chk-baryctr" checked> Schwerpunkt zentrieren</label>
   <label>Sichtbare K&ouml;rper:</label>
   <div id="mob-planet-checks"></div>
   <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
@@ -937,7 +937,7 @@ function recordTrails() {
 
 // --- Camera ---
 let cam = { cx: 0, cy: 0, zoom: 0.35 };
-var useLogZoom = false;
+var useLogZoom = true;
 
 function logTransform(r) {
   return Math.sign(r) * Math.log(1 + Math.abs(r)) / Math.log(1 + 32);
@@ -981,7 +981,7 @@ function screenToWorld(sx, sy) {
 var showTrails = true;
 var showVectors = false;
 var showGrid = true;
-var lockBarycenter = false;   // Kamera haelt den Massenschwerpunkt mittig
+var lockBarycenter = true;   // Kamera haelt den Massenschwerpunkt mittig
 
 // Massenschwerpunkt des gebundenen Systems. Solange ein Koerper an die
 // Sonne gebunden ist, zaehlt er voll mit — auch ein sehr massereicher.
