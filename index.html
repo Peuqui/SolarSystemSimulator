@@ -1883,15 +1883,13 @@ function doClearPerturbers() {
 }
 
 function doReset() {
-  if (confirm('Simulation zur\u00FCcksetzen?')) {
-    cam = { cx: 0, cy: 0, zoom: scenarioZoom(currentScenario) };
-    document.getElementById('zoom-slider').value = cam.zoom;
-    document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
-    document.getElementById('mob-zoom-slider').value = cam.zoom;
-    document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
-    // Aktuelles Szenario komplett neu laden (Koerper + UI-Liste).
-    loadScenario(currentScenario);
-  }
+  cam = { cx: 0, cy: 0, zoom: scenarioZoom(currentScenario) };
+  document.getElementById('zoom-slider').value = cam.zoom;
+  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-slider').value = cam.zoom;
+  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+  // Aktuelles Szenario komplett neu laden (Koerper + UI-Liste).
+  loadScenario(currentScenario);
 }
 
 document.getElementById('btn-inject').addEventListener('click', doInject);
