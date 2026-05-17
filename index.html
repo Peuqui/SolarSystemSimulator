@@ -1,0 +1,2241 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Sonnensystem-Simulator — N-Körper-Gravitation</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { background: #000; color: #ccc; font-family: 'Segoe UI', monospace; overflow: hidden; width: 100%; height: 100vh; touch-action: none; }
+canvas { display: block; cursor: crosshair; width: 100%; height: 100%; }
+
+/* Sidebar */
+#sidebar {
+  position: absolute; top: 0; left: 0; width: 340px; height: 100vh;
+  background: rgba(10,12,20,0.94); border-right: 1px solid #2a2a3a;
+  overflow-y: auto; padding: 14px; z-index: 10;
+  scrollbar-width: thin; scrollbar-color: #444 #111;
+  -webkit-overflow-scrolling: touch;
+}
+#sidebar h2 { color: #7af; font-size: 15px; margin: 14px 0 6px; border-bottom: 1px solid #333; padding-bottom: 4px; }
+#sidebar h2:first-child { margin-top: 0; }
+#sidebar label { display: block; font-size: 12px; margin-top: 8px; color: #999; }
+#sidebar input[type=range], #sidebar select {
+  width: 100%; font-size: 14px; background: #1a1a2e; color: #ddd; border: 1px solid #333; padding: 6px;
+  -webkit-appearance: none; appearance: none;
+  min-height: 32px; /* touch target */
+}
+#sidebar input[type=range] {
+  height: 32px; padding: 0; cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+}
+#sidebar input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: #7af; cursor: pointer; border: 2px solid #335;
+}
+#sidebar input[type=range]::-moz-range-thumb {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: #7af; cursor: pointer; border: 2px solid #335;
+}
+#sidebar .val { color: #7af; font-size: 12px; float: right; }
+button {
+  background: #2a4a6a; color: #dde; border: 1px solid #4a6a8a;
+  padding: 10px 14px; font-size: 14px; cursor: pointer; border-radius: 5px;
+  margin: 3px 2px; min-height: 40px; min-width: 40px; /* touch target */
+  -webkit-tap-highlight-color: transparent;
+}
+button:hover { background: #3a6a9a; }
+button:active { background: #4a7aba; transform: scale(0.97); }
+button.danger { background: #6a2a2a; border-color: #8a4a4a; }
+button.danger:hover { background: #9a3a3a; }
+button.active { background: #4a6a2a; border-color: #6a8a4a; }
+button.has-pending { background: #8a6a2a; border-color: #bb9944; }
+/* Eingabefeld mit noch nicht uebernommener Aenderung */
+.pending { border-color: #ddaa44 !important; background: #2e2818 !important; }
+
+#info-panel {
+  position: absolute; bottom: 10px; right: 10px;
+  background: rgba(10,12,20,0.85); border: 1px solid #2a2a3a;
+  padding: 10px 14px; font-size: 11px; z-index: 10; color: #888;
+  max-width: 300px;
+}
+#info-panel span { color: #7af; }
+
+#perturber-info {
+  position: absolute; top: 10px; right: 10px;
+  background: rgba(10,12,20,0.85); border: 1px solid #2a2a3a;
+  padding: 8px 12px; font-size: 11px; z-index: 10; color: #f88;
+  display: none;
+}
+
+#toggle-sidebar {
+  position: absolute; top: 8px; left: 348px; z-index: 20;
+  background: #222; border: 1px solid #444; color: #aaa; width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 14px;
+  border-radius: 4px;
+}
+#sidebar.collapsed { display: none; }
+#toggle-sidebar.shifted { left: 8px; }
+
+/* Mobile overlay buttons */
+#mobile-controls {
+  display: none;
+  position: absolute; bottom: 10px; left: 10px;
+  z-index: 15;
+}
+#mobile-controls button {
+  width: 48px; height: 48px; border-radius: 50%;
+  font-size: 20px; margin: 3px; display: inline-flex;
+  align-items: center; justify-content: center;
+}
+
+/* Mobile settings panel — faehrt von links ein (wie die Desktop-Sidebar),
+   geoeffnet ueber den Schalter oben links. Nicht mehr von unten, damit es
+   nicht mit den Steuer-Buttons unten links konkurriert. */
+#mobile-sheet {
+  display: none;
+  position: absolute; top: 0; left: 0; bottom: 0;
+  width: 86%; max-width: 340px;
+  background: rgba(10,12,20,0.97);
+  border-right: 1px solid #2a2a3a;
+  z-index: 18; overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;   /* vertikales Scrollen trotz body touch-action:none */
+  padding: 56px 12px 12px 12px;
+  transform: translateX(0);
+  transition: transform 0.2s ease;
+}
+#mobile-sheet.hidden { transform: translateX(-100%); }
+#mobile-sheet h2 { color: #7af; font-size: 14px; margin: 10px 0 4px; border-bottom: 1px solid #333; padding-bottom: 3px; }
+#mobile-sheet h2:first-child { margin-top: 0; }
+#mobile-sheet label { display: block; font-size: 13px; margin-top: 6px; color: #999; }
+#mobile-sheet input[type=range] {
+  width: 100%; height: 36px; -webkit-appearance: none; appearance: none;
+  background: #1a1a2e; border: 1px solid #333;
+}
+#mobile-sheet input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 28px; height: 28px; border-radius: 50%;
+  background: #7af; cursor: pointer; border: 2px solid #335;
+}
+#mobile-sheet button { min-height: 44px; font-size: 14px; padding: 10px 14px; }
+
+/* Mobile-Schalter oben links — oeffnet/schliesst das Einstellungs-Panel */
+#mobile-menu-btn {
+  display: none;
+  position: absolute; top: 8px; left: 8px; z-index: 25;
+  width: 44px; height: 44px; border-radius: 6px;
+  background: #2a4a6a; border: 1px solid #4a6a8a; color: #dde;
+  font-size: 20px; align-items: center; justify-content: center;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+#mobile-menu-btn:active { background: #4a7aba; }
+
+/* Responsive: tablet and below */
+@media (max-width: 900px) {
+  #sidebar {
+    width: 300px;
+  }
+  #toggle-sidebar { left: 308px; }
+  #toggle-sidebar.shifted { left: 8px; }
+}
+
+@media (max-width: 700px) {
+  #sidebar { display: none !important; }
+  #toggle-sidebar { display: none !important; }
+  #mobile-controls { display: block; }
+  #mobile-sheet { display: block; }
+  #mobile-menu-btn { display: flex; }
+  #info-panel { font-size: 10px; bottom: 60px; right: 5px; padding: 6px 10px; max-width: 220px; }
+}
+
+/* Range slider track styling */
+input[type=range] {
+  background: linear-gradient(to right, #335 0%, #335 50%, #1a1a2e 50%);
+  border-radius: 3px;
+}
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<!-- Desktop Sidebar -->
+<div id="sidebar">
+  <details open style="margin-bottom:10px;">
+    <summary style="color:#7af; font-size:15px; font-weight:bold; cursor:pointer; padding-bottom:4px; border-bottom:1px solid #333;">&#x1F30C; Szenario</summary>
+    <select id="scenario-select" style="width:100%; margin-top:8px; font-size:14px; background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:4px; padding:6px; min-height:34px;">
+      <option>Sonnensystem</option>
+      <option>Trisolaris (3 Sonnen)</option>
+      <option>Lagrange (instabil)</option>
+      <option>Lagrange (stabil)</option>
+      <option>Trojaner (L4)</option>
+      <option>Figur 8 (Choreografie)</option>
+      <option>Butterfly I</option>
+      <option>Moth I</option>
+      <option>Goggles</option>
+      <option>Yarn</option>
+      <option>Leeres System</option>
+      <option>TRAPPIST-1</option>
+      <option>Alpha Centauri</option>
+      <option>Kepler-16</option>
+    </select>
+    <div style="display:flex; gap:4px; margin-top:6px;">
+      <button id="btn-save-cfg" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Speichern</button>
+      <button id="btn-export-cfg" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Export</button>
+      <button id="btn-import-cfg" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Import</button>
+    </div>
+    <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
+  </details>
+  <h2>&#x2699; Zeitsteuerung</h2>
+  <label>Zeitschritt (Tage/Schritt) <span class="val" id="dt-val">1</span></label>
+  <input type="range" id="dt-slider" min="0.1" max="50" step="0.1" value="1">
+  <label>Verlangsamung <span class="val" id="slow-val">1.0×</span></label>
+  <input type="range" id="slow-slider" min="-1" max="2" step="0.05" value="0">
+  <div style="margin-top:6px">
+    <button id="btn-pause">&#x23F8; Pause</button>
+    <button id="btn-step">&#x23ED; Schritt</button>
+    <button id="btn-reset">&#x21BB; Reset</button>
+  </div>
+
+  <h2>&#x1F52D; Anzeige</h2>
+  <label>Zoom <span class="val" id="zoom-val">0.35</span></label>
+  <input type="range" id="zoom-slider" min="0.05" max="500" step="0.05" value="0.35">
+  <label>
+    <input type="checkbox" id="chk-trails" checked> Bahnspuren anzeigen
+  </label>
+  <label>Bahnspur-L&auml;nge <span class="val" id="trail-val">150</span></label>
+  <input type="range" id="trail-slider" min="50" max="3000" step="50" value="150">
+  <label>
+    <input type="checkbox" id="chk-vectors"> Kraftvektoren anzeigen
+  </label>
+  <label>
+    <input type="checkbox" id="chk-grid" checked> Gitternetz
+  </label>
+  <label>
+    <input type="checkbox" id="chk-logzoom"> Logarithmischer Zoom
+  </label>
+  <label>
+    <input type="checkbox" id="chk-baryctr"> Schwerpunkt zentrieren
+  </label>
+  <label>Sichtbare K&ouml;rper:</label>
+  <div id="planet-checks"></div>
+  <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
+
+  <h2>&#x2604; St&ouml;rmasse injizieren</h2>
+  <label>St&ouml;rmasse (Erdmassen) <span class="val" id="p-mass-val">1000.0</span></label>
+  <input type="range" id="p-mass" min="-3" max="6" step="0.1" value="3">
+  <label>Start: Mausposition auf Canvas klicken</label>
+  <label>Geschwindigkeit (km/s) <span class="val" id="p-speed-val">30</span></label>
+  <input type="range" id="p-speed" min="0" max="100" step="1" value="30">
+  <label>Richtung (&deg; von rechts) <span class="val" id="p-angle-val">270&deg;</span></label>
+  <input type="range" id="p-angle" min="0" max="360" step="1" value="270">
+  <label>Oder: Klick + Ziehen auf Canvas = Vektor</label>
+  <div>
+    <button id="btn-inject">&#x2604; Injizieren</button>
+    <button id="btn-clear-pert" class="danger">St&ouml;rmassen l&ouml;schen</button>
+  </div>
+  <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
+
+  <h2>&#x1F4CA; Statistik</h2>
+  <div id="stats" style="font-size:11px;"></div>
+</div>
+
+<div id="toggle-sidebar" title="Sidebar ein/ausblenden">&#9664;</div>
+
+<div id="info-panel">
+  Mausrad: Zoom &nbsp;|&nbsp; Rechts-/Mittelklick: Verschieben<br>
+  Linksklick: St&ouml;rmasse-Position w&auml;hlen<br>
+  Klick+Ziehen: Geschwindigkeitsvektor setzen<br>
+  Touch: 2-Finger=Zoom/Pan, 1-Finger=St&ouml;rmasse<br>
+  <span>Taste:</span> P=Pause, R=Reset, Space=Schritt
+</div>
+
+<div id="perturber-info"></div>
+
+<!-- Mobile Controls (visible on small screens) -->
+<div id="mobile-controls">
+  <button id="mob-pause" title="Pause">&#x23F8;</button>
+  <button id="mob-zoom-in" title="Zoom +" style="font-size:24px;">+</button>
+  <button id="mob-zoom-out" title="Zoom &minus;" style="font-size:24px;">&minus;</button>
+  <button id="mob-reset" title="Reset">&#x21BB;</button>
+</div>
+
+<!-- Mobile Bottom Sheet -->
+<div id="mobile-sheet" class="hidden">
+  <details open style="margin-bottom:10px;">
+    <summary style="color:#7af; font-size:14px; font-weight:bold; cursor:pointer;">&#x1F30C; Szenario</summary>
+    <select id="mob-scenario-select" style="width:100%; margin-top:6px; font-size:14px; background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:4px; padding:6px; min-height:36px;">
+      <option>Sonnensystem</option>
+      <option>Trisolaris (3 Sonnen)</option>
+      <option>Lagrange (instabil)</option>
+      <option>Lagrange (stabil)</option>
+      <option>Trojaner (L4)</option>
+      <option>Figur 8 (Choreografie)</option>
+      <option>Butterfly I</option>
+      <option>Moth I</option>
+      <option>Goggles</option>
+      <option>Yarn</option>
+      <option>Leeres System</option>
+      <option>TRAPPIST-1</option>
+      <option>Alpha Centauri</option>
+      <option>Kepler-16</option>
+    </select>
+    <div style="display:flex; gap:4px; margin-top:6px;">
+      <button id="mob-btn-save-cfg" style="flex:1; font-size:12px;">Speichern</button>
+      <button id="mob-btn-export-cfg" style="flex:1; font-size:12px;">Export</button>
+      <button id="mob-btn-import-cfg" style="flex:1; font-size:12px;">Import</button>
+    </div>
+  </details>
+  <h2>&#x2699; Zeitsteuerung</h2>
+  <label>Zeitschritt (Tage) <span class="val" id="mob-dt-val">1</span></label>
+  <input type="range" id="mob-dt-slider" min="0.1" max="50" step="0.1" value="1">
+  <label>Verlangsamung <span class="val" id="mob-slow-val">1.0×</span></label>
+  <input type="range" id="mob-slow-slider" min="-1" max="2" step="0.05" value="0">
+
+  <h2>&#x1F52D; Anzeige</h2>
+  <label>Zoom <span class="val" id="mob-zoom-val">0.35</span></label>
+  <input type="range" id="mob-zoom-slider" min="0.05" max="500" step="0.05" value="0.35">
+  <label><input type="checkbox" id="mob-chk-trails" checked> Bahnspuren</label>
+  <label>Bahnspur-L&auml;nge <span class="val" id="mob-trail-val">150</span></label>
+  <input type="range" id="mob-trail-slider" min="50" max="3000" step="50" value="150">
+  <label><input type="checkbox" id="mob-chk-vectors"> Kraftvektoren</label>
+  <label><input type="checkbox" id="mob-chk-grid" checked> Gitternetz</label>
+  <label><input type="checkbox" id="mob-chk-logzoom"> Log-Zoom</label>
+  <label><input type="checkbox" id="mob-chk-baryctr"> Schwerpunkt zentrieren</label>
+  <label>Sichtbare K&ouml;rper:</label>
+  <div id="mob-planet-checks"></div>
+  <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
+
+  <h2>&#x2604; St&ouml;rmasse</h2>
+  <label>Masse (Erdmassen) <span class="val" id="mob-p-mass-val">1000.0</span></label>
+  <input type="range" id="mob-p-mass" min="-3" max="6" step="0.1" value="3">
+  <label>Geschwindigkeit (km/s) <span class="val" id="mob-p-speed-val">30</span></label>
+  <input type="range" id="mob-p-speed" min="0" max="100" step="1" value="30">
+  <label>Richtung (&deg;) <span class="val" id="mob-p-angle-val">270&deg;</span></label>
+  <input type="range" id="mob-p-angle" min="0" max="360" step="1" value="270">
+  <label style="color:#faa; font-size:11px;">Tipp: 1-Finger auf Canvas tippen &amp; ziehen = Position + Vektor</label>
+  <div style="margin-top:8px;">
+    <button id="mob-inject">&#x2604; Injizieren</button>
+    <button id="mob-clear-pert" class="danger">L&ouml;schen</button>
+  </div>
+  <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
+
+  <h2>&#x1F4CA; Statistik</h2>
+  <div id="mob-stats" style="font-size:11px;"></div>
+</div>
+
+<div id="mobile-menu-btn" title="Einstellungen">&#x2630;</div>
+
+<script>
+// ============================================================
+//  SONNENSYSTEM N-K&Ouml;RPER-SIMULATION
+//  Newtonsche Gravitation + Velocity Verlet-Integration
+//  Mobil-optimiert mit Touch-Support
+// ============================================================
+
+const G_SI = 6.674e-11;
+const AU = 1.495978707e11;
+const DAY = 86400;
+const M_EARTH = 5.972e24;
+const M_SUN = 1.98842e30;
+const G_AU = 4 * Math.PI * Math.PI;
+
+// 1 km/s in AU/Jahr: (1 km / 1 AU) * (Sekunden pro Jahr) ≈ 0.2109
+const KM_S_TO_AU_YR = (1000 / AU) * (365.25 * DAY);
+
+// Maximaler Sub-Zeitschritt (Jahre) — haelt die innerste Bahn glatt
+const MAX_SUB_DT_YEARS = 0.5 / 365.25;
+
+// Ab dieser Masse (Sonnenmassen) gilt ein Koerper als Stern — die
+// Mindestmasse fuer Wasserstoff-Fusion liegt bei ~0.08 M_sonne.
+const STAR_MASS_THRESHOLD = 0.08;
+
+// Ab diesem Sonnenabstand (AU) gilt ein ungebundenes Objekt als
+// "auf Fluchtkurs" — weit jenseits der Neptunbahn (~30 AU).
+const ESCAPE_MARK_AU = 45;
+
+// rkm = echter physikalischer Radius in km (fuer die Kollisionsphysik).
+const PLANET_DATA = [
+  { name: "Sonne",   mass: 1.0,      color: "#ffdd44", a: 0,      ecc: 0,      rkm: 696000 },
+  { name: "Merkur",  mass: 1.660e-7, color: "#aaaaaa", a: 0.3871, ecc: 0.2056, rkm: 2440 },
+  { name: "Venus",   mass: 2.447e-6, color: "#e8cda0", a: 0.7233, ecc: 0.0068, rkm: 6052 },
+  { name: "Erde",    mass: 3.003e-6, color: "#4488ff", a: 1.0000, ecc: 0.0167, rkm: 6371 },
+  { name: "Mars",    mass: 3.229e-7, color: "#dd5533", a: 1.5237, ecc: 0.0934, rkm: 3390 },
+  { name: "Jupiter", mass: 9.543e-4, color: "#ddaa77", a: 5.2026, ecc: 0.0484, rkm: 69911 },
+  { name: "Saturn",  mass: 2.855e-4, color: "#ddcc88", a: 9.5549, ecc: 0.0547, rkm: 58232 },
+  { name: "Uranus",  mass: 4.366e-5, color: "#88ccdd", a: 19.218, ecc: 0.0473, rkm: 25362 },
+  { name: "Neptun",  mass: 5.151e-5, color: "#4466dd", a: 30.110, ecc: 0.0086, rkm: 24622 },
+];
+
+// Echte Radien & Ableitung aus der Masse (gleiche Dichte wie die Erde).
+const M_EARTH_SUN = M_EARTH / M_SUN;          // Erdmasse in Sonnenmassen
+const R_EARTH_AU  = 6371e3 / AU;              // Erdradius in AU
+function realRadiusFromMass(massSun) {
+  return R_EARTH_AU * Math.cbrt(Math.max(massSun, 1e-30) / M_EARTH_SUN);
+}
+
+// Einheitlicher Darstellungsradius aus der Masse (in Sonnenmassen).
+// Gleiche Masse => gleiche Groesse, egal ob Planet, Sonne oder
+// Stoermasse. Log-Mapping, weil die Massen ~8 Groessenordnungen
+// ueberspannen (Merkur ~1.7e-7 M_sun .. Sonne 1.0 M_sun).
+function massToRadius(massSun) {
+  const logM = Math.log10(Math.max(massSun, 1e-12));
+  const t = (logM + 8) / 8;          // 1e-8 M_sun -> 0, 1.0 M_sun -> 1
+  return Math.max(1.5, Math.min(6, 1.5 + t * 4.5));
+}
+
+// Masse-Anzeige: Tausenderpunkte + Dezimalkomma, nie Exponentialschreibweise.
+function formatMass(v) {
+  return v.toLocaleString('de-DE', { maximumFractionDigits: 6, useGrouping: true });
+}
+// Masse-Eingabe (deutsche Notation): Punkte = Tausender, Komma = Dezimal.
+function parseMass(s) {
+  return parseFloat(String(s).replace(/\./g, '').replace(',', '.'));
+}
+
+// Canvas
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+// Sichtbare Canvas-Mitte: die Sidebar verdeckt links einen Streifen, also
+// wandert die nutzbare Mitte nach rechts. Geschlossene Sidebar / mobil:
+// getBoundingClientRect().width ist 0 (display:none) -> Mitte = W/2.
+let viewCX = window.innerWidth / 2;
+function updateViewCenter() {
+  const sb = document.getElementById('sidebar');
+  const w = sb ? sb.getBoundingClientRect().width : 0;
+  viewCX = (w + W) / 2;
+}
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  updateViewCenter();
+}
+resize();
+window.addEventListener('resize', resize);
+
+// --- Simulation ---
+let bodies = [];
+let trails = {};
+let MAX_TRAIL = 150;   // per Slider konfigurierbare Bahnspur-Laenge
+
+// ============================================================
+//  SZENARIEN
+// ============================================================
+let currentScenario = 'Sonnensystem';
+
+// Koerper mit Standardfeldern in bodies + trails einhaengen.
+function pushBody(o) {
+  bodies.push({
+    name: o.name, mass: o.mass,
+    x: o.x, y: o.y, vx: o.vx || 0, vy: o.vy || 0, ax: 0, ay: 0,
+    color: o.color, radius: massToRadius(o.mass),
+    realR: o.rkm ? o.rkm * 1000 / AU : realRadiusFromMass(o.mass),
+    visible: true, isStar: !!o.isStar, escapeScore: 0,
+  });
+  trails[o.name] = [];
+}
+
+// Alle Koerper ins Schwerpunkt-Ruhesystem schieben: Gesamtimpuls = 0,
+// Schwerpunkt im Ursprung. Funktioniert fuer beliebig viele Sterne.
+function centerOfMassCorrection() {
+  let px=0, py=0, cx=0, cy=0, mt=0;
+  for (const b of bodies) {
+    px += b.mass*b.vx; py += b.mass*b.vy;
+    cx += b.mass*b.x;  cy += b.mass*b.y;  mt += b.mass;
+  }
+  if (mt <= 0) return;
+  px/=mt; py/=mt; cx/=mt; cy/=mt;
+  for (const b of bodies) {
+    b.vx -= px; b.vy -= py;
+    b.x  -= cx; b.y  -= cy;
+  }
+}
+
+// Planet auf Kepler-Ellipse (Perihel-Start) um eine Zentralmasse M
+// im Ursprung. p: {name, mass, color, a, ecc, rkm}
+function planetOnOrbit(p, M) {
+  const rPeri = p.a * (1 - p.ecc);
+  const vPeri = Math.sqrt(G_AU * M * (1 + p.ecc) / (p.a * (1 - p.ecc)));
+  const ang = Math.random() * Math.PI * 2;
+  pushBody({
+    name: p.name, mass: p.mass, color: p.color, rkm: p.rkm, isStar: !!p.isStar,
+    x: rPeri*Math.cos(ang), y: rPeri*Math.sin(ang),
+    vx: -vPeri*Math.sin(ang), vy: vPeri*Math.cos(ang),
+  });
+}
+
+// Zwei Sterne auf gemeinsamer Kepler-Ellipse um ihren Schwerpunkt.
+function buildBinary(s1, s2, a, ecc) {
+  const mt = s1.mass + s2.mass;
+  const rPeri = a * (1 - ecc);
+  const vRel = Math.sqrt(G_AU * mt * (1 + ecc) / (a * (1 - ecc)));
+  pushBody({ ...s1, isStar:true, x:  rPeri*s2.mass/mt, y:0, vx:0, vy:  vRel*s2.mass/mt });
+  pushBody({ ...s2, isStar:true, x: -rPeri*s1.mass/mt, y:0, vx:0, vy: -vRel*s1.mass/mt });
+}
+
+function buildSolarSystem() {
+  const sun = PLANET_DATA[0];
+  pushBody({ name:sun.name, mass:sun.mass, color:sun.color, rkm:sun.rkm,
+             x:0, y:0, vx:0, vy:0, isStar:true });
+  for (let i = 1; i < PLANET_DATA.length; i++) planetOnOrbit(PLANET_DATA[i], sun.mass);
+}
+
+function buildEmpty() { /* leer — Koerper per Klick setzen (Bau-Modus) */ }
+
+function buildTrappist() {
+  const sm = 0.0898;   // Sternmasse in Sonnenmassen
+  pushBody({ name:'TRAPPIST-1', mass:sm, color:'#ff6644', rkm:83000,
+             x:0, y:0, vx:0, vy:0, isStar:true });
+  // [Name, a (AU), Masse (Erdmassen), ecc] — Agol et al. 2021
+  const pl = [
+    ['b',0.01154,1.374,0.006], ['c',0.01580,1.308,0.007],
+    ['d',0.02227,0.388,0.008], ['e',0.02925,0.692,0.005],
+    ['f',0.03849,1.039,0.010], ['g',0.04683,1.321,0.002],
+    ['h',0.06189,0.326,0.006],
+  ];
+  const cols = ['#88ccff','#aaddcc','#ddcc88','#88ddaa','#ffcc99','#ccaaee','#aabbdd'];
+  pl.forEach(([n,a,me,e],i) => planetOnOrbit({
+    name:'TRAPPIST-1'+n, mass:me*M_EARTH_SUN, color:cols[i],
+    a:a, ecc:e, rkm:6371*Math.cbrt(me) }, sm));
+}
+
+function buildAlphaCentauri() {
+  buildBinary(
+    { name:'α Centauri A', mass:1.079, color:'#fff0cc', rkm:851000 },
+    { name:'α Centauri B', mass:0.909, color:'#ffddaa', rkm:601000 },
+    23.5, 0.518);
+}
+
+function buildKepler16() {
+  const mA = 0.6897, mB = 0.20255;
+  buildBinary(
+    { name:'Kepler-16 A', mass:mA, color:'#ffddaa', rkm:451600 },
+    { name:'Kepler-16 B', mass:mB, color:'#ff8866', rkm:157000 },
+    0.224, 0.159);
+  // zirkumbinaerer Planet — umkreist den gemeinsamen Schwerpunkt
+  planetOnOrbit({ name:'Kepler-16 b', mass:105.8*M_EARTH_SUN, color:'#bb9977',
+                  a:0.7048, ecc:0.0069, rkm:53800 }, mA + mB);
+}
+
+function buildTrisolaris() {
+  // Chaotisches Dreikoerpersystem aus Liu Cixins "Drei-Koerper-Problem".
+  const stars = [
+    { name:'Sonne I',   mass:1.0, color:'#ffdd44', rkm:696000, x: 0,   y: 4,  vx: 1.4, vy: 0    },
+    { name:'Sonne II',  mass:1.0, color:'#ff9944', rkm:696000, x:-3.5, y:-2,  vx:-0.7, vy:-1.2  },
+    { name:'Sonne III', mass:1.0, color:'#ffcc88', rkm:696000, x: 3.5, y:-2,  vx:-0.7, vy: 1.2  },
+  ];
+  for (const s of stars) pushBody({ ...s, isStar:true });
+  pushBody({ name:'Trisolaris', mass:3*M_EARTH_SUN, color:'#4488ff', rkm:8000,
+             x:0.5, y:0, vx:0, vy:5 });
+}
+
+function buildLagrange() {
+  // Echte Lagrange-Loesung (L4/L5): drei gleiche Massen an den Ecken eines
+  // gleichseitigen Dreiecks, das als Ganzes starr rotiert. Jede Sonne zieht
+  // einen exakten Kreis um den gemeinsamen Schwerpunkt — keine Pirouetten.
+  // Bedingung fuer rigide Rotation:  omega^2 = 3*G*m / L^3,  woraus die
+  // Bahngeschwindigkeit  v = sqrt(G*m / L)  folgt (m = Einzelmasse).
+  const m = 1.0;                      // Sonnenmassen je Stern
+  const L = 6;                        // Seitenlaenge des Dreiecks (AU)
+  const R = L / Math.sqrt(3);         // Abstand jeder Sonne vom Schwerpunkt
+  const v = Math.sqrt(G_AU * m / L);  // Bahngeschwindigkeit (AU/Jahr)
+  const colors = ['#ffdd44', '#ff9944', '#ffcc88'];
+  const roman = ['I', 'II', 'III'];
+  for (let k = 0; k < 3; k++) {
+    const ang = Math.PI/2 + k * 2*Math.PI/3;   // 90, 210, 330 Grad
+    pushBody({
+      name: 'Lagrange ' + roman[k], mass: m, color: colors[k],
+      rkm: 696000, isStar: true,
+      x: R * Math.cos(ang), y: R * Math.sin(ang),
+      vx: -v * Math.sin(ang), vy: v * Math.cos(ang),   // tangential, CCW
+    });
+  }
+}
+
+function buildLagrangeStable() {
+  // Stabile Lagrange-Loesung: eine schwere Zentralmasse, zwei leichte
+  // Begleiter. Erfuellt das Routh-Kriterium (1877):
+  //   (m1+m2+m3)^2 >= 27*(m1*m2 + m2*m3 + m3*m1)
+  // Allgemeine rigide Rotation:  omega^2 = G*M_gesamt / L^3.
+  const masses = [30, 0.5, 0.5];        // Sonnenmassen — 31 gesamt
+  const L = 8;                          // Seitenlaenge des Dreiecks (AU)
+  const Rg = L / Math.sqrt(3);          // Eckenabstand vom Geometrie-Zentrum
+  const mTot = masses[0] + masses[1] + masses[2];
+  const omega = Math.sqrt(G_AU * mTot / (L*L*L));   // rigide Rotationsrate
+  // Eckpunkte des gleichseitigen Dreiecks
+  const pos = [];
+  for (let k = 0; k < 3; k++) {
+    const ang = Math.PI/2 + k * 2*Math.PI/3;
+    pos.push([Rg * Math.cos(ang), Rg * Math.sin(ang)]);
+  }
+  // Massenschwerpunkt — bei ungleichen Massen NICHT das Geometrie-Zentrum.
+  let cx = 0, cy = 0;
+  for (let k = 0; k < 3; k++) { cx += masses[k]*pos[k][0]; cy += masses[k]*pos[k][1]; }
+  cx /= mTot; cy /= mTot;
+  // Jeder Koerper rotiert mit omega um den Schwerpunkt:  v = omega x r.
+  const colors = ['#ffeecc', '#ff8866', '#ffaa66'];
+  const roman = ['A', 'B', 'C'];
+  for (let k = 0; k < 3; k++) {
+    const rx = pos[k][0] - cx, ry = pos[k][1] - cy;
+    pushBody({
+      name: 'Lagrange ' + roman[k], mass: masses[k], color: colors[k],
+      rkm: k === 0 ? 2500000 : 350000, isStar: true,
+      x: pos[k][0], y: pos[k][1],
+      vx: -omega * ry, vy: omega * rx,
+    });
+  }
+}
+
+function buildTrojan() {
+  // Klassischer L4-Punkt im Wortsinn: Sonne + Jupiter auf Kreisbahn, dazu
+  // ein winziger Trojaner-Asteroid exakt 60 Grad VOR Jupiter. Die drei
+  // bilden ein gleichseitiges Dreieck und rotieren rigide mit
+  //   omega^2 = G*M_gesamt / L^3.
+  // Massenverhaeltnis Sonne/Jupiter ~1000:1 erfuellt das Gascheau-
+  // Stabilitaetskriterium (>= 24.96) muehelos -> L4 ist stabil.
+  const M_JUP = 9.543e-4;   // Jupitermasse in Sonnenmassen
+  const M_TRO = 1e-9;       // Trojaner: gravitativ vernachlaessigbar
+  const L = 5.2;            // Sonne-Jupiter-Abstand (AU)
+  const mTot = 1.0 + M_JUP + M_TRO;
+  const omega = Math.sqrt(G_AU * mTot / (L*L*L));
+  // Eckpunkte relativ zur Sonne: Jupiter bei 0 Grad, Trojaner 60 Grad voraus.
+  const def = [
+    { name:'Sonne',    mass:1.0,   color:'#ffdd44', rkm:696000, isStar:true,  x:0,       y:0 },
+    { name:'Jupiter',  mass:M_JUP, color:'#ccaa88', rkm:69911,  isStar:false, x:L,       y:0 },
+    { name:'Trojaner', mass:M_TRO, color:'#88ccff', rkm:120,    isStar:false,
+      x:L*0.5, y:L*Math.sqrt(3)/2 },
+  ];
+  // Massenschwerpunkt -> rigide Rotation:  v = omega x (r - Schwerpunkt).
+  let cx = 0, cy = 0;
+  for (const d of def) { cx += d.mass*d.x; cy += d.mass*d.y; }
+  cx /= mTot; cy /= mTot;
+  for (const d of def) {
+    pushBody({
+      name:d.name, mass:d.mass, color:d.color, rkm:d.rkm, isStar:d.isStar,
+      x:d.x, y:d.y,
+      vx:-omega*(d.y-cy), vy:omega*(d.x-cx),
+    });
+  }
+}
+
+function buildFigure8() {
+  // Chenciner-Montgomery Figur-8-Choreografie (2000): drei gleiche Massen
+  // jagen einander auf EINER gemeinsamen 8-foermigen Bahn. Eine der wenigen
+  // linear STABILEN Choreografien. Kanonische Startwerte (Carles Simo)
+  // gelten fuer G=1, m=1; hier skaliert auf AU/Jahr/Sonnenmasse ueber
+  // die Massstabsrelation  gamma^2 = alpha^3 / (G*m).
+  const m = 1.0;             // Sonnenmassen je Koerper
+  const alpha = 3.0;         // Laengenskala (AU) — Groesse der Acht
+  const gamma = Math.sqrt(alpha*alpha*alpha / (G_AU * m));
+  const vs = alpha / gamma;  // Geschwindigkeitsskala
+  // Kanonische Figur-8-Startwerte
+  const px = 0.97000436, py = 0.24308753;
+  const vx = 0.4662036850, vy = 0.4323657300;
+  const def = [
+    { name:'Acht I',   x:-px, y: py, vx: vx,   vy: vy   },
+    { name:'Acht II',  x: px, y:-py, vx: vx,   vy: vy   },
+    { name:'Acht III', x: 0,  y: 0,  vx:-2*vx, vy:-2*vy },
+  ];
+  const colors = ['#88ccff', '#ffcc66', '#ff8888'];
+  for (let k = 0; k < 3; k++) {
+    const d = def[k];
+    pushBody({
+      name:d.name, mass:m, color:colors[k], rkm:696000, isStar:true,
+      x: alpha*d.x, y: alpha*d.y,
+      vx: vs*d.vx, vy: vs*d.vy,
+    });
+  }
+}
+
+// Suvakov-Dmitrasinovic-Choreografie (PRL 2013): drei gleiche Massen auf
+// EINER gemeinsamen Bahn. Kanonische Startwerte (G=1, m=1): Koerper bei
+// (-1,0),(1,0),(0,0), Geschwindigkeiten (v1,v2),(v1,v2),(-2v1,-2v2).
+// Skaliert auf unsere Einheiten ueber  gamma^2 = alpha^3 / (G*m).
+function buildChoreography(v1, v2, alpha) {
+  const m = 1.0;
+  const gamma = Math.sqrt(alpha*alpha*alpha / (G_AU * m));
+  const vs = alpha / gamma;
+  const def = [
+    { name:'Koerper I',   x:-1, y:0, vx: v1,   vy: v2   },
+    { name:'Koerper II',  x: 1, y:0, vx: v1,   vy: v2   },
+    { name:'Koerper III', x: 0, y:0, vx:-2*v1, vy:-2*v2 },
+  ];
+  const colors = ['#88ccff', '#ffcc66', '#ff8888'];
+  for (let k = 0; k < 3; k++) {
+    const d = def[k];
+    pushBody({
+      name:d.name, mass:m, color:colors[k], rkm:696000, isStar:true,
+      x: alpha*d.x, y: alpha*d.y,
+      vx: vs*d.vx, vy: vs*d.vy,
+    });
+  }
+}
+
+// Pro Szenario: Aufbau-Funktion + sinnvolle Voreinstellungen.
+// zoom    = Kamera-Zoom im linearen Modus
+// zoomLog = Kamera-Zoom im logarithmischen Modus (andere Skala!)
+// dt      = Zeitschritt Tage/Frame
+// slow    = Verlangsamungs-Slider-Wert (log10 des Faktors; 0 = 1x).
+const SCENARIOS = {
+  'Sonnensystem':          { build: buildSolarSystem,   zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
+  'Trisolaris (3 Sonnen)': { build: buildTrisolaris,    zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Lagrange (instabil)':   { build: buildLagrange,       zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Lagrange (stabil)':     { build: buildLagrangeStable, zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Trojaner (L4)':         { build: buildTrojan,         zoom: 0.6,  zoomLog: 6.55, dt: 1,   slow: 0 },
+  'Figur 8 (Choreografie)':{ build: buildFigure8,        zoom: 0.8,  zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Butterfly I':           { build: () => buildChoreography(0.30689, 0.12551, 2.5), zoom: 0.8, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Moth I':                { build: () => buildChoreography(0.46444, 0.39606, 2.5), zoom: 0.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Goggles':               { build: () => buildChoreography(0.08330, 0.12789, 2.5), zoom: 0.7, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Yarn':                  { build: () => buildChoreography(0.55906, 0.34919, 2.5), zoom: 0.9, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Leeres System':         { build: buildEmpty,         zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
+  'TRAPPIST-1':            { build: buildTrappist,      zoom: 96,   zoomLog: 330,  dt: 0.1, slow: Math.log10(7) },
+  'Alpha Centauri':        { build: buildAlphaCentauri, zoom: 0.15, zoomLog: 6.55, dt: 5,   slow: 0 },
+  'Kepler-16':             { build: buildKepler16,      zoom: 8,    zoomLog: 30,   dt: 0.5, slow: 0 },
+};
+
+// Liefert den Szenario-Zoom passend zum aktiven Modus (linear vs. log).
+function scenarioZoom(name) {
+  const sc = SCENARIOS[name];
+  if (!sc) return useLogZoom ? 6.55 : 0.35;
+  return useLogZoom ? sc.zoomLog : sc.zoom;
+}
+
+function initBodies() {
+  bodies = [];
+  trails = {};
+  (SCENARIOS[currentScenario] || SCENARIOS['Sonnensystem']).build();
+  centerOfMassCorrection();
+  computeAccelerations();
+  computeTrailInterval();
+}
+
+// Koerper-Liste-UI (Checkboxen + Masse/Geschw.-Felder) neu aufbauen.
+function rebuildBodyList() {
+  [checkDiv, mobCheckDiv].forEach(c => { c.innerHTML = ''; });
+  for (const b of bodies) {
+    addPlanetCheckbox(b, checkDiv);
+    addPlanetCheckbox(b, mobCheckDiv);
+  }
+  updatePerturberList();
+  updateApplyButton();
+}
+
+// Szenario laden: Koerper neu aufbauen + Koerper-Liste-UI neu erzeugen.
+function loadScenario(name) {
+  currentScenario = name;
+  perturbers = [];
+  perturberCounter = 0;
+  fragmentCounter = 0;
+  simTime = 0;
+  injectMarked = false;
+  initBodies();
+  rebuildBodyList();
+}
+
+// ============================================================
+//  KONFIGURATIONEN SPEICHERN / LADEN
+// ============================================================
+// Aktuellen Zustand (alle Koerper + Ansicht) als serialisierbares Objekt.
+function captureState() {
+  return {
+    v: 1,
+    zoom: cam.zoom,
+    logZoom: useLogZoom,
+    dt: parseFloat(document.getElementById('dt-slider').value),
+    slow: parseFloat(document.getElementById('slow-slider').value),
+    bodies: bodies.map(b => ({
+      name: b.name, mass: b.mass, x: b.x, y: b.y, vx: b.vx, vy: b.vy,
+      color: b.color, isStar: b.isStar, realR: b.realR, visible: b.visible,
+    })),
+  };
+}
+
+// Zustand wiederherstellen — ersetzt alle Koerper.
+function restoreState(state) {
+  if (!state || !Array.isArray(state.bodies)) return false;
+  bodies = [];
+  trails = {};
+  for (const s of state.bodies) {
+    bodies.push({
+      name: s.name, mass: s.mass, x: s.x, y: s.y, vx: s.vx, vy: s.vy,
+      ax: 0, ay: 0, color: s.color, radius: massToRadius(s.mass),
+      realR: s.realR != null ? s.realR : realRadiusFromMass(s.mass),
+      visible: s.visible !== false, isStar: !!s.isStar, escapeScore: 0,
+    });
+    trails[s.name] = [];
+  }
+  perturbers = []; perturberCounter = 0; fragmentCounter = 0;
+  simTime = 0; injectMarked = false;
+  computeAccelerations();
+  computeTrailInterval();
+  rebuildBodyList();
+  // Zoom-Modus mitrestaurieren: der gespeicherte zoom-Wert gilt fuer genau
+  // diesen Modus (lineare und log. Skala sind nicht vergleichbar).
+  if (state.logZoom != null) {
+    useLogZoom = state.logZoom;
+    document.getElementById('chk-logzoom').checked = useLogZoom;
+    document.getElementById('mob-chk-logzoom').checked = useLogZoom;
+    try { localStorage.setItem('sim_useLogZoom', useLogZoom ? '1' : '0'); } catch (e) {}
+  }
+  if (state.zoom) applyZoom(state.zoom);
+  if (state.dt) applyDt(state.dt);
+  if (state.slow != null) applySlow(state.slow);
+  return true;
+}
+
+function savedConfigNames() {
+  try { return JSON.parse(localStorage.getItem('sim_cfg_index') || '[]'); }
+  catch (e) { return []; }
+}
+
+function saveConfig() {
+  const name = prompt('Name für diese Konfiguration:');
+  if (!name) return;
+  try {
+    localStorage.setItem('sim_cfg_' + name, JSON.stringify(captureState()));
+    const idx = savedConfigNames();
+    if (!idx.includes(name)) {
+      idx.push(name);
+      localStorage.setItem('sim_cfg_index', JSON.stringify(idx));
+    }
+    refreshScenarioOptions();
+    document.getElementById('scenario-select').value = '★ ' + name;
+    document.getElementById('mob-scenario-select').value = '★ ' + name;
+  } catch (e) { alert('Speichern fehlgeschlagen: ' + e); }
+}
+
+function exportConfig() {
+  const blob = new Blob([JSON.stringify(captureState(), null, 1)],
+                        { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'simulator-konfiguration.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function importConfig(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      if (restoreState(JSON.parse(reader.result))) {
+        cam.cx = 0; cam.cy = 0;
+      } else {
+        alert('Datei enthält keine gültige Konfiguration.');
+      }
+    } catch (e) { alert('Import fehlgeschlagen: ' + e); }
+  };
+  reader.readAsText(file);
+}
+
+// Szenario-Auswahl neu befuellen: Presets + gespeicherte Konfigurationen.
+function refreshScenarioOptions() {
+  const saved = savedConfigNames();
+  for (const id of ['scenario-select', 'mob-scenario-select']) {
+    const sel = document.getElementById(id);
+    const cur = sel.value;
+    sel.innerHTML = '';
+    for (const name of Object.keys(SCENARIOS)) {
+      const o = document.createElement('option');
+      o.textContent = name; sel.appendChild(o);
+    }
+    for (const name of saved) {
+      const o = document.createElement('option');
+      o.textContent = '★ ' + name; sel.appendChild(o);
+    }
+    if (cur) sel.value = cur;
+  }
+}
+
+function computeAccelerations() {
+  const G = G_AU;
+  const softening = 1e-6;
+  for (let i = 0; i < bodies.length; i++) {
+    bodies[i].ax = 0; bodies[i].ay = 0;
+  }
+  for (let i = 0; i < bodies.length; i++) {
+    if (!bodies[i].visible) continue;   // ausgeschaltete Koerper: keine Gravitation
+    for (let j = i + 1; j < bodies.length; j++) {
+      if (!bodies[j].visible) continue;
+      const dx = bodies[j].x - bodies[i].x;
+      const dy = bodies[j].y - bodies[i].y;
+      const r2 = dx*dx + dy*dy + softening;
+      const r = Math.sqrt(r2);
+      const f = G / (r2 * r);
+      bodies[i].ax += f * bodies[j].mass * dx;
+      bodies[i].ay += f * bodies[j].mass * dy;
+      bodies[j].ax -= f * bodies[i].mass * dx;
+      bodies[j].ay -= f * bodies[i].mass * dy;
+    }
+  }
+}
+
+// Velocity-Verlet — symmetrischer, symplektischer Integrator 2. Ordnung.
+// Setzt voraus, dass die Beschleunigungen fuer die aktuellen Positionen
+// gueltig sind, und hinterlaesst sie ebenso aktuell — damit die drei
+// Yoshida-Teilschritte lueckenlos aneinander anschliessen.
+function verletStep(dt) {
+  const N = bodies.length;
+  for (let i = 0; i < N; i++) {
+    if (!bodies[i].visible) continue;   // ausgeschaltete Koerper: eingefroren
+    bodies[i].x += bodies[i].vx * dt + 0.5 * bodies[i].ax * dt * dt;
+    bodies[i].y += bodies[i].vy * dt + 0.5 * bodies[i].ay * dt * dt;
+  }
+  const oldAx = bodies.map(b => b.ax);
+  const oldAy = bodies.map(b => b.ay);
+  computeAccelerations();
+  for (let i = 0; i < N; i++) {
+    if (!bodies[i].visible) continue;
+    bodies[i].vx += 0.5 * (oldAx[i] + bodies[i].ax) * dt;
+    bodies[i].vy += 0.5 * (oldAy[i] + bodies[i].ay) * dt;
+  }
+}
+
+// Yoshida-Integrator 4. Ordnung: drei gewichtete Velocity-Verlet-Schritte.
+// Globaler Fehler O(dt^4) statt O(dt^2), weiterhin symplektisch (Energie-
+// erhaltung ohne Drift). Der mittlere Teilschritt laeuft mit negativem
+// Zeitschritt — das ist die korrekte Yoshida-Komposition, kein Fehler.
+// Summe der Gewichte = 1, der Gesamtschritt advanciert also exakt um dt.
+const YOSHIDA_W1 = 1 / (2 - Math.cbrt(2));
+const YOSHIDA_W0 = -Math.cbrt(2) / (2 - Math.cbrt(2));
+function step(dt) {
+  verletStep(YOSHIDA_W1 * dt);
+  verletStep(YOSHIDA_W0 * dt);
+  verletStep(YOSHIDA_W1 * dt);
+}
+
+// Bahnspur-Punkte aufzeichnen — pro Substep aufgerufen. Aufgezeichnet wird
+// zeitgesteuert (trailIntervalDays) ODER bei Richtungsaenderung > ~4 Grad.
+// So bleiben enge Begegnungen rund statt eckig, ohne die Spur zu fluten.
+function recordTrails() {
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.visible || !trails[b.name]) continue;
+    const tr = trails[b.name];
+    const sp = Math.hypot(b.vx, b.vy);
+    const dx = sp > 1e-12 ? b.vx / sp : 1;
+    const dy = sp > 1e-12 ? b.vy / sp : 0;
+    let record = tr.length === 0;
+    if (!record) {
+      const elapsed = simTime - (b._trailT || 0);
+      const turned = (dx * (b._trailDx ?? dx) + dy * (b._trailDy ?? dy)) < 0.997;
+      record = elapsed >= trailIntervalDays || turned;
+    }
+    if (record) {
+      tr.push({ x: b.x, y: b.y });
+      if (tr.length > MAX_TRAIL) tr.shift();
+      b._trailT = simTime;
+      b._trailDx = dx; b._trailDy = dy;
+    }
+  }
+}
+
+// --- Camera ---
+let cam = { cx: 0, cy: 0, zoom: 0.35 };
+var useLogZoom = false;
+
+function logTransform(r) {
+  return Math.sign(r) * Math.log(1 + Math.abs(r)) / Math.log(1 + 32);
+}
+
+function invLogTransform(rLog) {
+  return Math.sign(rLog) * (Math.exp(Math.abs(rLog) * Math.log(1 + 32)) - 1);
+}
+
+function worldToScreen(wx, wy) {
+  let sx, sy;
+  if (useLogZoom) {
+    const r = Math.sqrt(wx*wx + wy*wy);
+    const angle = Math.atan2(wy, wx);
+    const rLog = logTransform(r);
+    sx = rLog * Math.cos(angle);
+    sy = rLog * Math.sin(angle);
+  } else {
+    sx = wx; sy = wy;
+  }
+  return [
+    viewCX + (sx - cam.cx) * cam.zoom * 80,
+    H/2 + (sy - cam.cy) * cam.zoom * 80
+  ];
+}
+
+function screenToWorld(sx, sy) {
+  let wx = (sx - viewCX) / (cam.zoom * 80) + cam.cx;
+  let wy = (sy - H/2) / (cam.zoom * 80) + cam.cy;
+  if (useLogZoom) {
+    const rLog = Math.sqrt(wx*wx + wy*wy);
+    const angle = Math.atan2(wy, wx);
+    const r = invLogTransform(rLog);
+    wx = r * Math.cos(angle);
+    wy = r * Math.sin(angle);
+  }
+  return [wx, wy];
+}
+
+// --- Rendering ---
+var showTrails = true;
+var showVectors = false;
+var showGrid = true;
+var lockBarycenter = false;   // Kamera haelt den Massenschwerpunkt mittig
+
+// Massenschwerpunkt des gebundenen Systems. Solange ein Koerper an die
+// Sonne gebunden ist, zaehlt er voll mit — auch ein sehr massereicher.
+// Erst wenn er als Fluchtkoerper erkannt ist, faellt er heraus: er
+// gehoert dann nicht mehr zum System. (updateBoundState laeuft zuvor.)
+function barycenter() {
+  let mx = 0, my = 0, mt = 0;
+  for (const b of bodies) {
+    if (!b.visible || b.unbound) continue;
+    mx += b.mass * b.x; my += b.mass * b.y; mt += b.mass;
+  }
+  return mt > 0 ? [mx / mt, my / mt] : [0, 0];
+}
+
+// Schwerster (sichtbarer) Koerper — Bezugspunkt fuer das Gitternetz.
+function heaviestBody() {
+  if (!bodies.length) return null;
+  let h = bodies[0];
+  for (const b of bodies) {
+    if (b.visible && b.mass > h.mass) h = b;
+  }
+  return h;
+}
+
+// Markiert pro Frame Koerper, die das System gravitativ verlassen:
+// kinetische Energie (im Schwerpunkt-Ruhesystem) > Bindungsenergie an
+// den Rest  ->  KE + PE > 0  ->  Hyperbelbahn, entkommt.
+function updateBoundState() {
+  // Fluchtkriterium pro Frame:
+  //  (1) spez. Bahnenergie eps = v_rel^2/2 - G*M_sonne/r > 0  (Hyperbel)
+  //  (2) das Objekt entfernt sich gerade  (radiale Geschw. vrad > 0)
+  // Beides ist eine Momentaufnahme und flackert bei nahen Begegnungen.
+  // Deshalb eine Hysterese ueber escapeScore: der unbound-Status kippt
+  // erst nach ~25 Frames anhaltendem Kriterium und zurueck erst nach
+  // ~25 Frames ohne. Das stabilisiert auch das Baryzentrum, das sonst
+  // mit der flackernden Klassifikation hin- und herspringt.
+  const sun = bodies[0];
+  for (const b of bodies) {
+    if (!b.visible || b === sun) { b.unbound = false; b.escapeScore = 0; continue; }
+    const dvx = b.vx - sun.vx, dvy = b.vy - sun.vy;
+    const dx = b.x - sun.x, dy = b.y - sun.y;
+    const r = Math.sqrt(dx*dx + dy*dy + 1e-12);
+    const eps = 0.5 * (dvx*dvx + dvy*dvy) - G_AU * sun.mass / r;
+    // "Auf Fluchtkurs" = ungebunden UND bereits deutlich ausserhalb des
+    // Systems. Die zweite Bedingung verhindert, dass ein gestoerter,
+    // aber gebundener Planet (dessen eps beim Pendeln kurz positiv wird)
+    // flackernd markiert wird — was sonst auch das Baryzentrum springen
+    // laesst. Die Hysterese glaettet zusaetzlich den Schwellen-Uebergang.
+    const escaping = eps > 0 && r > ESCAPE_MARK_AU;
+    const sc = escaping
+      ? Math.min(30, (b.escapeScore || 0) + 1)
+      : Math.max(0, (b.escapeScore || 0) - 1);
+    b.escapeScore = sc;
+    if (sc >= 25) b.unbound = true;
+    else if (sc <= 5) b.unbound = false;
+    // dazwischen: b.unbound bleibt unveraendert (Hysterese)
+  }
+}
+
+function drawArrow(fromX, fromY, toX, toY, color, width) {
+  const headLen = Math.max(6, width * 4);
+  const dx = toX - fromX;
+  const dy = toY - fromY;
+  const angle = Math.atan2(dy, dx);
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.moveTo(fromX, fromY);
+  ctx.lineTo(toX, toY);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.fillStyle = color;
+  ctx.moveTo(toX, toY);
+  ctx.lineTo(toX - headLen * Math.cos(angle - 0.4), toY - headLen * Math.sin(angle - 0.4));
+  ctx.lineTo(toX - headLen * Math.cos(angle + 0.4), toY - headLen * Math.sin(angle + 0.4));
+  ctx.closePath();
+  ctx.fill();
+}
+
+function draw() {
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid — konzentrische Kreise um den SCHWERPUNKT des gebundenen Systems.
+  // Stetiger Bezugspunkt: springt nie zwischen gleich schweren Sonnen, die
+  // Koerper wackeln sichtbar darum herum.
+  if (showGrid && bodies.length) {
+    const [gWx, gWy] = barycenter();
+    const [scx, scy] = worldToScreen(gWx, gWy);
+    const maxR = Math.hypot(W, H);
+    ctx.strokeStyle = '#3a3a5a';
+    ctx.lineWidth = 0.8;
+    const gridRadii = [0.1, 0.2, 0.4, 0.7, 1, 1.5, 2, 3, 5, 8, 13, 20, 32];
+    // Labels auf der 45-Grad-Diagonale platzieren — so liegen sie auf dem
+    // Ring statt alle auf der Waagerechten. Liegt ein Label zu dicht am
+    // vorigen, wird es uebersprungen (sonst Klumpen bei engen Ringen).
+    ctx.font = '11px monospace';
+    const DIAG = Math.SQRT1_2;   // cos(45 Grad) = sin(45 Grad)
+    let lastLabelR = -1e9;
+    for (const a of gridRadii) {
+      const rPix = (useLogZoom ? logTransform(a) : a) * cam.zoom * 80;
+      if (rPix > 10 && rPix < maxR) {
+        ctx.beginPath();
+        ctx.arc(scx, scy, rPix, 0, Math.PI*2);
+        ctx.stroke();
+        if (rPix - lastLabelR >= 16) {
+          ctx.fillStyle = '#667';
+          ctx.fillText(a + ' AU', scx + rPix*DIAG + 3, scy - rPix*DIAG - 3);
+          lastLabelR = rPix;
+        }
+      }
+    }
+    // Achsenkreuz durch den Schwerpunkt
+    ctx.strokeStyle = '#2e2e4a';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(scx, 0); ctx.lineTo(scx, H);
+    ctx.moveTo(0, scy); ctx.lineTo(W, scy);
+    ctx.stroke();
+  }
+
+  // Schwerpunkt-Marker (Baryzentrum) — unabhaengig vom Gitternetz.
+  // Die Sonne wackelt sichtbar darum herum, sobald Stoermassen wirken.
+  {
+    const [bWx, bWy] = barycenter();
+    const [bcx, bcy] = worldToScreen(bWx, bWy);
+    ctx.strokeStyle = '#7af';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(bcx - 7, bcy); ctx.lineTo(bcx + 7, bcy);
+    ctx.moveTo(bcx, bcy - 7); ctx.lineTo(bcx, bcy + 7);
+    ctx.stroke();
+    ctx.fillStyle = '#7af';
+    ctx.font = '10px monospace';
+    ctx.fillText('Schwerpunkt', bcx + 9, bcy - 5);
+  }
+
+  // Trails — alle Koerper (auch Sterne, die sich ja bewegen)
+  if (showTrails) {
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i];
+      if (!b.visible) continue;
+      const trail = trails[b.name];
+      if (!trail || trail.length < 2) continue;
+      ctx.lineWidth = 1.2;
+      for (let j = 1; j < trail.length; j++) {
+        const alpha = (j / trail.length) * 0.55;
+        ctx.strokeStyle = b.color + Math.round(alpha * 255).toString(16).padStart(2, '0');
+        const [sx1, sy1] = worldToScreen(trail[j-1].x, trail[j-1].y);
+        const [sx2, sy2] = worldToScreen(trail[j].x, trail[j].y);
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1);
+        ctx.lineTo(sx2, sy2);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Force vectors
+  if (showVectors) {
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i];
+      if (!b.visible) continue;
+      const [sx, sy] = worldToScreen(b.x, b.y);
+      const mag = Math.sqrt(b.ax*b.ax + b.ay*b.ay);
+      if (mag < 1e-15) continue;
+      const vecLen = Math.min(80, Math.max(8, mag * 5e-6 * cam.zoom * 80));
+      const nx = b.ax / mag;
+      const ny = b.ay / mag;
+      drawArrow(sx, sy, sx + nx * vecLen, sy + ny * vecLen, '#ff4444', 1.5);
+    }
+  }
+
+  // Bodies
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.visible) continue;
+    const [sx, sy] = worldToScreen(b.x, b.y);
+
+    if (b.isStar) {
+      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, b.radius * 2.5);
+      grad.addColorStop(0, 'rgba(255,220,60,0.6)');
+      grad.addColorStop(0.4, 'rgba(255,180,40,0.15)');
+      grad.addColorStop(1, 'rgba(255,220,60,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(sx, sy, b.radius * 2.5, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    ctx.beginPath();
+    ctx.fillStyle = b.color;
+    ctx.arc(sx, sy, Math.max(b.radius, 1.5), 0, Math.PI*2);
+    ctx.fill();
+
+    // Fluchtkurs-Markierung: pulsierender roter Ring
+    if (b.unbound) {
+      const ph = (Math.sin(performance.now() / 160) + 1) / 2;  // 0..1
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(255,90,90,${(0.25 + 0.7 * ph).toFixed(3)})`;
+      ctx.lineWidth = 2;
+      ctx.arc(sx, sy, Math.max(b.radius, 1.5) + 5 + ph * 6, 0, Math.PI*2);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = b.unbound ? '#ff6a6a' : b.color + 'dd';
+    ctx.font = '11px monospace';
+    ctx.fillText(b.unbound ? b.name + ' ⇗' : b.name, sx + b.radius + 5, sy + 4);
+  }
+
+  // Perturber injection preview — zeigt die Stoermasse schon beim
+  // Ziehen als gefuellten Kreis in ihrer echten Darstellungsgroesse.
+  if (dragging || injectMarked) {
+    const [sx, sy] = worldToScreen(injectPos.wx, injectPos.wy);
+    const previewMassSun = Math.pow(10, parseFloat(document.getElementById('p-mass').value)) * M_EARTH / M_SUN;
+    const previewR = massToRadius(previewMassSun);
+    const isStar = previewMassSun >= STAR_MASS_THRESHOLD;
+    ctx.beginPath();
+    ctx.fillStyle = isStar ? 'rgba(255,221,68,0.85)' : 'rgba(255,68,68,0.8)';
+    ctx.arc(sx, sy, previewR, 0, Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.strokeStyle = isStar ? '#ffee99' : '#ff8888';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.arc(sx, sy, previewR + 4, 0, Math.PI*2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Geschwindigkeitsvektor: beim Ziehen aus der Drag-Strecke,
+    // sonst aus den Slidern (Geschwindigkeit + Richtung).
+    const dragDx = dragCurrent.x - dragStart.x, dragDy = dragCurrent.y - dragStart.y;
+    const dragDist = Math.sqrt(dragDx*dragDx + dragDy*dragDy);
+    let pvx, pvy, kmS;
+    if (dragging && dragDist > 5) {
+      pvx = dragDx; pvy = dragDy;
+      kmS = Math.min(100, dragDist / 2);
+    } else {
+      kmS = parseFloat(document.getElementById('p-speed').value);
+      const ang = parseFloat(document.getElementById('p-angle').value) * Math.PI / 180;
+      const len = Math.max(10, kmS * 2);
+      pvx = Math.cos(ang) * len; pvy = Math.sin(ang) * len;
+    }
+    if (kmS > 0.05) {
+      drawArrow(sx, sy, sx + pvx, sy + pvy, '#ff6644', 2.5);
+      ctx.fillStyle = '#ff8866';
+      ctx.font = 'bold 12px monospace';
+      ctx.fillText('v=' + kmS.toFixed(1) + ' km/s', sx + pvx + 8, sy + pvy - 8);
+    }
+  }
+}
+
+// --- Simulation Loop ---
+let paused = false;
+let simTime = 0;
+
+// Adaptiver Sub-Zeitschritt. Normal = MAX_SUB_DT_YEARS (haelt die
+// innerste Bahn glatt). Naehern sich aber zwei Koerper schnell an, wird
+// der Schritt verkleinert, damit ihre Kollision nicht zwischen zwei
+// Schritten "uebersprungen" wird (Tunneling).
+function adaptiveSubDt() {
+  let dt = MAX_SUB_DT_YEARS;
+  for (let i = 0; i < bodies.length; i++) {
+    if (!bodies[i].visible) continue;
+    for (let j = i+1; j < bodies.length; j++) {
+      if (!bodies[j].visible) continue;
+      const a = bodies[i], b = bodies[j];
+      const dx = b.x-a.x, dy = b.y-a.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
+      const gap = dist - (a.realR + b.realR);   // Luft bis zur Beruehrung
+      if (gap <= 0) continue;                   // Kontakt -> handleCollisions
+      const dvx = b.vx-a.vx, dvy = b.vy-a.vy;
+      const vrel = Math.sqrt(dvx*dvx + dvy*dvy);
+      // (1) Kollisions-Annaeherung — Schritt < Zeit bis zur Beruehrung
+      const vrad = (dx*dvx + dy*dvy) / dist;
+      if (vrad < 0) {
+        const tContact = gap / (-vrad);
+        if (tContact / 4 < dt) dt = tContact / 4;
+      }
+      // (2) enge schnelle Begegnung allgemein — bei heftiger Gravitation
+      //     (z.B. ein massereicher Koerper) soll der Schritt ein kleiner
+      //     Bruchteil der Begegnungs-Zeitskala dist/vrel sein, sonst
+      //     wird die Bahn numerisch unsauber (eckig, S-Schlenker).
+      if (vrel > 1e-9) {
+        const tEnc = dist / vrel;
+        if (tEnc / 20 < dt) dt = tEnc / 20;
+      }
+    }
+  }
+  return Math.max(dt, MAX_SUB_DT_YEARS / 1000);  // Untergrenze gegen Einfrieren
+}
+
+// Bahnspur-Intervall (Sim-Tage). Adaptiv: ~120 Punkte pro Umlauf des
+// SCHNELLSTEN Koerpers — so bleiben die Spuren auch bei sehr schnellen
+// Planeten (z.B. TRAPPIST-1, Umlauf ~1,5 Tage) rund statt eckig.
+let trailIntervalDays = 1;
+
+function computeTrailInterval() {
+  const heavy = heaviestBody();
+  let tMin = Infinity;
+  if (heavy) {
+    for (const b of bodies) {
+      if (b === heavy || !b.visible) continue;
+      const r = Math.hypot(b.x - heavy.x, b.y - heavy.y);
+      if (r < 1e-6) continue;
+      const T = 2*Math.PI*Math.sqrt(r*r*r / (G_AU * heavy.mass));  // Umlaufzeit (Jahre)
+      if (T < tMin) tMin = T;
+    }
+  }
+  trailIntervalDays = (tMin === Infinity) ? 1
+                    : Math.max(0.005, tMin * 365.25 / 120);
+}
+
+function advance(dtYears) {
+  let remaining = dtYears, guard = 0;
+  while (remaining > 1e-12 && guard++ < 100000) {
+    const subDt = Math.min(remaining, adaptiveSubDt());
+    step(subDt);
+    handleCollisions();
+    simTime += subDt * 365.25;
+    recordTrails();
+    remaining -= subDt;
+  }
+}
+
+// ============================================================
+//  KOLLISIONEN
+//  Treffer, wenn der Abstand < Summe der echten Radien.
+//  v_impact < 1.5*v_escape -> Verschmelzung, sonst Zerbersten.
+// ============================================================
+let fragmentCounter = 0;
+let perturberCounter = 0;   // monoton — eindeutige Stoermassen-Namen
+
+function removeBody(b) {
+  const i = bodies.indexOf(b);
+  if (i >= 0) bodies.splice(i, 1);
+  delete trails[b.name];
+  const pi = perturbers.indexOf(b);
+  if (pi >= 0) perturbers.splice(pi, 1);
+  document.querySelectorAll(`[data-body="${b.name}"]`).forEach(el => el.remove());
+}
+
+function merge(a, b) {
+  // Perfekt inelastisch: der massereichere Koerper schluckt den anderen.
+  const big = a.mass >= b.mass ? a : b;
+  const small = big === a ? b : a;
+  const mt = a.mass + b.mass;
+  big.vx = (a.mass*a.vx + b.mass*b.vx) / mt;
+  big.vy = (a.mass*a.vy + b.mass*b.vy) / mt;
+  big.x  = (a.mass*a.x  + b.mass*b.x)  / mt;
+  big.y  = (a.mass*a.y  + b.mass*b.y)  / mt;
+  big.mass = mt;
+  big.radius = massToRadius(mt);
+  big.realR = Math.cbrt(a.realR**3 + b.realR**3);   // Volumenerhaltung
+  removeBody(small);
+}
+
+function shatter(a, b) {
+  // Zerbersten in 5 Fragmente — Gesamtmasse und -impuls bleiben erhalten.
+  const mt = a.mass + b.mass;
+  const cx  = (a.mass*a.x  + b.mass*b.x)  / mt;
+  const cy  = (a.mass*a.y  + b.mass*b.y)  / mt;
+  const cvx = (a.mass*a.vx + b.mass*b.vx) / mt;
+  const cvy = (a.mass*a.vy + b.mass*b.vy) / mt;
+  const vImp = Math.hypot(b.vx-a.vx, b.vy-a.vy);
+  const N = 5, fm = mt / N, ringR = a.realR + b.realR;
+  const fr = realRadiusFromMass(fm);
+  const sv = [];
+  for (let k = 0; k < N; k++) {
+    const ang = (k/N)*2*Math.PI + (Math.random()-0.5)*0.6;
+    const spd = vImp * (0.25 + Math.random()*0.35);
+    sv.push([Math.cos(ang)*spd, Math.sin(ang)*spd]);
+  }
+  // Mittelwert der Streuung abziehen -> Gesamtimpuls bleibt erhalten
+  let mvx = 0, mvy = 0;
+  for (const v of sv) { mvx += v[0]; mvy += v[1]; }
+  mvx /= N; mvy /= N;
+  removeBody(a); removeBody(b);
+  for (let k = 0; k < N; k++) {
+    const ang = (k/N)*2*Math.PI;
+    const name = 'Fragment ' + (++fragmentCounter);
+    bodies.push({
+      name, mass: fm,
+      x: cx + Math.cos(ang)*ringR, y: cy + Math.sin(ang)*ringR,
+      vx: cvx + sv[k][0]-mvx, vy: cvy + sv[k][1]-mvy, ax: 0, ay: 0,
+      color: '#cc8866', radius: massToRadius(fm), realR: fr,
+      visible: true, isStar: false, escapeScore: 0,
+    });
+    trails[name] = [];
+  }
+}
+
+function handleCollisions() {
+  for (let i = 0; i < bodies.length; i++) {
+    if (!bodies[i].visible) continue;
+    for (let j = i+1; j < bodies.length; j++) {
+      if (!bodies[j].visible) continue;
+      const a = bodies[i], b = bodies[j];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const touch = a.realR + b.realR;
+      if (dx*dx + dy*dy >= touch*touch) continue;
+      const vImp = Math.hypot(b.vx-a.vx, b.vy-a.vy);
+      const vEsc = Math.sqrt(2 * G_AU * (a.mass + b.mass) / touch);
+      if (vImp < 1.5 * vEsc) merge(a, b);
+      else shatter(a, b);
+      computeAccelerations();
+      updatePerturberList();
+      return;   // bodies-Array geaendert -> eine Kollision pro Aufruf
+    }
+  }
+}
+
+function simLoop() {
+  if (!paused) {
+    const dtDays = parseFloat(document.getElementById('dt-slider').value);
+    // Slider ist logarithmisch: Wert = log10(Verlangsamungsfaktor)
+    const slowFactor = Math.pow(10, parseFloat(document.getElementById('slow-slider').value));
+    advance(dtDays / 365.25 / slowFactor);
+  }
+  // Fluchtkurs zuerst auswerten — barycenter() braucht die unbound-Flags.
+  updateBoundState();
+  // Schwerpunkt zentrieren: Kamera auf das Baryzentrum des gebundenen
+  // Systems setzen.
+  if (lockBarycenter) {
+    const [bx, by] = barycenter();
+    if (useLogZoom) {
+      const r = Math.hypot(bx, by), ang = Math.atan2(by, bx);
+      const rLog = logTransform(r);
+      cam.cx = rLog * Math.cos(ang);
+      cam.cy = rLog * Math.sin(ang);
+    } else {
+      cam.cx = bx;
+      cam.cy = by;
+    }
+  }
+  draw();
+  updateStats();
+  updateBodyFields();
+  requestAnimationFrame(simLoop);
+}
+
+// --- UI Controls (Desktop + Mobile sync) ---
+function syncSliderTo(id, valId, parser, formatter) {
+  const el = document.getElementById(id);
+  const vel = document.getElementById(valId);
+  el.addEventListener('input', function() {
+    if (vel) vel.textContent = formatter ? formatter(this.value) : this.value;
+  });
+}
+
+// Desktop sliders
+document.getElementById('dt-slider').addEventListener('input', function() {
+  document.getElementById('dt-val').textContent = this.value;
+  document.getElementById('mob-dt-slider').value = this.value;
+  document.getElementById('mob-dt-val').textContent = this.value;
+});
+// Logarithmischer Verlangsamungs-Slider: Wert = log10(Faktor).
+// Label zeigt den tatsaechlichen Faktor (0.10\u00D7 .. 100\u00D7).
+function slowLabel(sliderVal) {
+  const f = Math.pow(10, parseFloat(sliderVal));
+  const s = f < 1 ? f.toFixed(2) : f < 10 ? f.toFixed(1) : f.toFixed(0);
+  return s + '\u00D7';
+}
+document.getElementById('slow-slider').addEventListener('input', function() {
+  document.getElementById('slow-val').textContent = slowLabel(this.value);
+  document.getElementById('mob-slow-slider').value = this.value;
+  document.getElementById('mob-slow-val').textContent = slowLabel(this.value);
+});
+document.getElementById('zoom-slider').addEventListener('input', function() {
+  cam.zoom = parseFloat(this.value);
+  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-slider').value = this.value;
+  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+});
+
+// Bahnspur-Laenge — sofort wirksam, kuerzt bestehende Spuren mit.
+function setTrailLength(n) {
+  MAX_TRAIL = n;
+  for (const k in trails) {
+    if (trails[k].length > n) trails[k].splice(0, trails[k].length - n);
+  }
+}
+document.getElementById('trail-slider').addEventListener('input', function() {
+  setTrailLength(parseInt(this.value));
+  document.getElementById('trail-val').textContent = this.value;
+  document.getElementById('mob-trail-slider').value = this.value;
+  document.getElementById('mob-trail-val').textContent = this.value;
+});
+document.getElementById('mob-trail-slider').addEventListener('input', function() {
+  setTrailLength(parseInt(this.value));
+  document.getElementById('mob-trail-val').textContent = this.value;
+  document.getElementById('trail-slider').value = this.value;
+  document.getElementById('trail-val').textContent = this.value;
+});
+
+// --- Szenario-Auswahl ---
+function onScenarioChange(name) {
+  cam.cx = 0; cam.cy = 0;
+  if (SCENARIOS[name]) {
+    loadScenario(name);
+    // Szenario-Voreinstellungen: Zoom + Zeitschritt + Verlangsamung
+    applyZoom(scenarioZoom(name));
+    applyDt(SCENARIOS[name].dt);
+    applySlow(SCENARIOS[name].slow);
+  } else if (name.indexOf('★ ') === 0) {
+    // gespeicherte Konfiguration — restoreState stellt Zoom/dt selbst her
+    const raw = localStorage.getItem('sim_cfg_' + name.slice(2));
+    if (raw) { try { restoreState(JSON.parse(raw)); } catch (e) {} }
+    currentScenario = name;
+  }
+  document.getElementById('scenario-select').value = name;
+  document.getElementById('mob-scenario-select').value = name;
+  // Leeres System startet pausiert — zum Bauen per Klick.
+  setPaused(name === 'Leeres System');
+  try { localStorage.setItem('sim_scenario', name); } catch (e) {}
+}
+document.getElementById('scenario-select').addEventListener('change', function() {
+  onScenarioChange(this.value);
+});
+document.getElementById('mob-scenario-select').addEventListener('change', function() {
+  onScenarioChange(this.value);
+});
+// Konfiguration speichern / exportieren / importieren
+document.getElementById('btn-save-cfg').addEventListener('click', saveConfig);
+document.getElementById('mob-btn-save-cfg').addEventListener('click', saveConfig);
+document.getElementById('btn-export-cfg').addEventListener('click', exportConfig);
+document.getElementById('mob-btn-export-cfg').addEventListener('click', exportConfig);
+const importFileInput = document.getElementById('import-file');
+document.getElementById('btn-import-cfg').addEventListener('click', () => importFileInput.click());
+document.getElementById('mob-btn-import-cfg').addEventListener('click', () => importFileInput.click());
+importFileInput.addEventListener('change', function() {
+  if (this.files[0]) importConfig(this.files[0]);
+  this.value = '';
+});
+document.getElementById('p-mass').addEventListener('input', function() {
+  document.getElementById('p-mass-val').textContent = Math.pow(10, parseFloat(this.value)).toFixed(1);
+  document.getElementById('mob-p-mass').value = this.value;
+  document.getElementById('mob-p-mass-val').textContent = Math.pow(10, parseFloat(this.value)).toFixed(1);
+});
+document.getElementById('p-speed').addEventListener('input', function() {
+  document.getElementById('p-speed-val').textContent = this.value;
+  document.getElementById('mob-p-speed').value = this.value;
+  document.getElementById('mob-p-speed-val').textContent = this.value;
+});
+document.getElementById('p-angle').addEventListener('input', function() {
+  document.getElementById('p-angle-val').textContent = this.value + '\u00B0';
+  document.getElementById('mob-p-angle').value = this.value;
+  document.getElementById('mob-p-angle-val').textContent = this.value + '\u00B0';
+});
+
+// Mobile sliders (sync back to desktop)
+document.getElementById('mob-dt-slider').addEventListener('input', function() {
+  document.getElementById('mob-dt-val').textContent = this.value;
+  document.getElementById('dt-slider').value = this.value;
+  document.getElementById('dt-val').textContent = this.value;
+});
+document.getElementById('mob-slow-slider').addEventListener('input', function() {
+  document.getElementById('mob-slow-val').textContent = slowLabel(this.value);
+  document.getElementById('slow-slider').value = this.value;
+  document.getElementById('slow-val').textContent = slowLabel(this.value);
+});
+document.getElementById('mob-zoom-slider').addEventListener('input', function() {
+  cam.zoom = parseFloat(this.value);
+  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('zoom-slider').value = this.value;
+  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+});
+document.getElementById('mob-p-mass').addEventListener('input', function() {
+  document.getElementById('mob-p-mass-val').textContent = Math.pow(10, parseFloat(this.value)).toFixed(1);
+  document.getElementById('p-mass').value = this.value;
+  document.getElementById('p-mass-val').textContent = Math.pow(10, parseFloat(this.value)).toFixed(1);
+});
+document.getElementById('mob-p-speed').addEventListener('input', function() {
+  document.getElementById('mob-p-speed-val').textContent = this.value;
+  document.getElementById('p-speed').value = this.value;
+  document.getElementById('p-speed-val').textContent = this.value;
+});
+document.getElementById('mob-p-angle').addEventListener('input', function() {
+  document.getElementById('mob-p-angle-val').textContent = this.value + '\u00B0';
+  document.getElementById('p-angle').value = this.value;
+  document.getElementById('p-angle-val').textContent = this.value + '\u00B0';
+});
+
+// Setzt den Kamera-Zoom und synchronisiert beide Slider + Anzeigen.
+function applyZoom(z) {
+  cam.zoom = z;
+  document.getElementById('zoom-slider').value = z;
+  document.getElementById('zoom-val').textContent = z.toFixed(2);
+  document.getElementById('mob-zoom-slider').value = z;
+  document.getElementById('mob-zoom-val').textContent = z.toFixed(2);
+}
+
+// Setzt den Zeitschritt (Tage/Frame) und synchronisiert beide Slider.
+function applyDt(d) {
+  document.getElementById('dt-slider').value = d;
+  document.getElementById('dt-val').textContent = d;
+  document.getElementById('mob-dt-slider').value = d;
+  document.getElementById('mob-dt-val').textContent = d;
+}
+
+// Setzt die Verlangsamung (logarithmischer Slider-Wert).
+function applySlow(s) {
+  document.getElementById('slow-slider').value = s;
+  document.getElementById('slow-val').textContent = slowLabel(s);
+  document.getElementById('mob-slow-slider').value = s;
+  document.getElementById('mob-slow-val').textContent = slowLabel(s);
+}
+
+// Checkboxes (sync)
+const chkSync = [
+  ['chk-trails', 'mob-chk-trails', 'showTrails'],
+  ['chk-vectors', 'mob-chk-vectors', 'showVectors'],
+  ['chk-grid', 'mob-chk-grid', 'showGrid'],
+  ['chk-logzoom', 'mob-chk-logzoom', 'useLogZoom'],
+  ['chk-baryctr', 'mob-chk-baryctr', 'lockBarycenter'],
+];
+chkSync.forEach(([desk, mob, varName]) => {
+  const toggle = (val, persist) => {
+    window[varName] = val;
+    document.getElementById(desk).checked = val;
+    document.getElementById(mob).checked = val;
+    // Log-Zoom braucht einen anderen Kamera-Zoom — Szenario-Wert neu setzen.
+    if (varName === 'useLogZoom') applyZoom(scenarioZoom(currentScenario));
+    if (persist) {
+      try { localStorage.setItem('sim_' + varName, val ? '1' : '0'); } catch (e) {}
+    }
+  };
+  document.getElementById(desk).addEventListener('change', function() { toggle(this.checked, true); });
+  document.getElementById(mob).addEventListener('change', function() { toggle(this.checked, true); });
+  // Gespeicherten Zustand beim Laden wiederherstellen (ueberlebt Reload).
+  let saved = null;
+  try { saved = localStorage.getItem('sim_' + varName); } catch (e) {}
+  if (saved !== null) toggle(saved === '1', false);
+});
+
+// Buttons
+function setPaused(p) {
+  paused = p;
+  const btn = document.getElementById('btn-pause');
+  btn.textContent = paused ? '\u25B6 Start' : '\u23F8; Pause';
+  btn.classList.toggle('active', paused);
+  document.getElementById('mob-pause').textContent = paused ? '\u25B6' : '\u23F8;';
+}
+document.getElementById('btn-pause').addEventListener('click', function() {
+  setPaused(!paused);
+});
+
+document.getElementById('mob-pause').addEventListener('click', function() {
+  document.getElementById('btn-pause').click();
+});
+
+document.getElementById('btn-step').addEventListener('click', function() {
+  const dtDays = parseFloat(document.getElementById('dt-slider').value);
+  advance(dtDays / 365.25);
+  draw();
+});
+
+document.getElementById('mob-reset').addEventListener('click', function() {
+  doReset();
+});
+
+document.getElementById('btn-reset').addEventListener('click', function() {
+  doReset();
+});
+
+document.getElementById('mob-zoom-in').addEventListener('click', function() {
+  cam.zoom = Math.min(500, cam.zoom * 1.3);
+  document.getElementById('zoom-slider').value = cam.zoom;
+  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-slider').value = cam.zoom;
+  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+});
+
+document.getElementById('mob-zoom-out').addEventListener('click', function() {
+  cam.zoom = Math.max(0.05, cam.zoom / 1.3);
+  document.getElementById('zoom-slider').value = cam.zoom;
+  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-slider').value = cam.zoom;
+  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+});
+
+// Planet visibility (desktop)
+const checkDiv = document.getElementById('planet-checks');
+const mobCheckDiv = document.getElementById('mob-planet-checks');
+
+function addPlanetCheckbox(p, container) {
+  const row = document.createElement('div');
+  row.style.cssText = 'font-size:11px; margin-top:6px; padding-bottom:5px; border-bottom:1px solid #1e1e2e;';
+  row.dataset.body = p.name;   // fuer removeBody() bei Kollisionen
+  const massEarth0 = p.mass * M_SUN / M_EARTH;
+  const fst = 'flex:1 1 0; width:0; font-size:10px; padding:2px 4px; min-height:24px; ' +
+              'background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:2px;';
+  row.innerHTML =
+    `<div style="display:flex; align-items:center; gap:5px;">` +
+      `<input type="checkbox" checked data-name="${p.name}" style="flex:none; width:auto; min-height:auto;">` +
+      `<span style="color:${p.color}; flex:none;">&#9679;</span>` +
+      `<span style="flex:1 1 auto;">${p.name}</span>` +
+    `</div>` +
+    `<div style="display:flex; align-items:center; gap:3px; margin-top:3px; padding-left:4px;">` +
+      `<span style="color:#888; flex:none;">m</span>` +
+      `<input type="text" inputmode="decimal" class="mass-in" data-name="${p.name}" ` +
+      `value="${formatMass(massEarth0)}" title="Masse in Erdmassen" style="${fst}">` +
+      `<span style="color:#888; flex:none;">v</span>` +
+      `<input type="text" inputmode="decimal" class="vel-in" data-name="${p.name}" ` +
+      `value="–" title="Geschwindigkeit in km/s" style="${fst}">` +
+      `<span style="color:#888; flex:none;">km/s</span>` +
+    `</div>` +
+    `<div style="display:flex; align-items:center; gap:3px; margin-top:3px; padding-left:4px;">` +
+      `<span style="color:#888; flex:none;">Richtung</span>` +
+      `<input type="text" inputmode="decimal" class="dir-in" data-name="${p.name}" ` +
+      `value="–" title="Bewegungsrichtung in Grad (0=rechts, 90=oben)" style="${fst}">` +
+      `<span style="color:#888; flex:none;">&deg;</span>` +
+    `</div>`;
+
+  row.querySelector('input[type=checkbox]').addEventListener('change', function() {
+    const b = bodies.find(b => b.name === this.dataset.name);
+    if (b) { b.visible = this.checked; computeAccelerations(); }
+    const other = container === checkDiv ? mobCheckDiv : checkDiv;
+    const oc = other.querySelector(`input[type=checkbox][data-name="${p.name}"]`);
+    if (oc) oc.checked = this.checked;
+  });
+
+  // Eingaben werden nur als "ausstehend" markiert (gelb) — angewendet
+  // wird alles gesammelt ueber den Uebernehmen-Button.
+  const markPending = function() {
+    this.classList.add('pending');
+    updateApplyButton();
+  };
+  row.querySelector('.mass-in').addEventListener('input', markPending);
+  row.querySelector('.vel-in').addEventListener('input', markPending);
+  row.querySelector('.dir-in').addEventListener('input', markPending);
+
+  container.appendChild(row);
+}
+
+// Wendet alle ausstehenden Masse-/Geschwindigkeitsaenderungen gesammelt
+// an — fuer alle Koerper auf einmal, dann einmalig computeAccelerations.
+function applyPendingChanges() {
+  let changed = false;
+
+  document.querySelectorAll('.mass-in.pending').forEach(inp => {
+    const me = parseMass(inp.value);
+    if (isFinite(me) && me >= 0) {
+      const b = bodies.find(x => x.name === inp.dataset.name);
+      if (b) {
+        const newMass = me * M_EARTH / M_SUN;
+        // echten Radius dichte-erhaltend mitskalieren (r ~ Masse^(1/3))
+        if (b.mass > 0) b.realR *= Math.cbrt(newMass / b.mass);
+        b.mass = newMass;
+        b.radius = massToRadius(newMass);
+        changed = true;
+      }
+    }
+    inp.classList.remove('pending');
+  });
+
+  // Geschwindigkeit: Betrag (km/s) und/oder Richtung (Grad) — beide Felder
+  // eines Koerpers zusammen auswerten, sonst ueberschreiben sie sich.
+  const velNames = new Set();
+  document.querySelectorAll('.vel-in.pending, .dir-in.pending')
+          .forEach(inp => velNames.add(inp.dataset.name));
+  velNames.forEach(name => {
+    const b = bodies.find(x => x.name === name);
+    if (!b) return;
+    const velInp = document.querySelector(`.vel-in[data-name="${name}"]`);
+    const dirInp = document.querySelector(`.dir-in[data-name="${name}"]`);
+    // Betrag bestimmen — aus dem Feld oder vom aktuellen Zustand.
+    let magAU = Math.hypot(b.vx, b.vy);
+    if (velInp.classList.contains('pending')) {
+      const kmS = parseMass(velInp.value);
+      if (isFinite(kmS) && kmS >= 0) magAU = kmS * KM_S_TO_AU_YR;
+    }
+    if (dirInp.classList.contains('pending')) {
+      // Richtung gesetzt: vx/vy aus Betrag + Winkel (0=rechts, 90=oben).
+      const deg = parseMass(dirInp.value);
+      if (isFinite(deg)) {
+        const a = deg * Math.PI / 180;
+        b.vx = magAU * Math.cos(a);
+        b.vy = -magAU * Math.sin(a);
+      }
+    } else {
+      // nur Betrag geaendert: Richtung beibehalten.
+      const cur = Math.hypot(b.vx, b.vy);
+      if (cur > 1e-9) {
+        const s = magAU / cur;
+        b.vx *= s; b.vy *= s;
+      } else {
+        // ruhendes Objekt: tangential zur Sonne in Bewegung setzen.
+        const sun = bodies[0];
+        const rx = b.x - sun.x, ry = b.y - sun.y;
+        const r = Math.hypot(rx, ry) || 1;
+        b.vx = -ry / r * magAU;
+        b.vy =  rx / r * magAU;
+      }
+    }
+    changed = true;
+    velInp.classList.remove('pending');
+    dirInp.classList.remove('pending');
+  });
+
+  if (changed) computeAccelerations();
+  // Masse-Felder auf die uebernommenen Werte normalisieren (Desktop + Mobile)
+  document.querySelectorAll('.mass-in').forEach(inp => {
+    const b = bodies.find(x => x.name === inp.dataset.name);
+    if (b) inp.value = formatMass(b.mass * M_SUN / M_EARTH);
+  });
+  updateApplyButton();
+}
+
+// Hebt den Uebernehmen-Button hervor, solange Aenderungen ausstehen.
+function updateApplyButton() {
+  const has = document.querySelector('.mass-in.pending, .vel-in.pending, .dir-in.pending') !== null;
+  ['btn-apply', 'mob-btn-apply'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.toggle('has-pending', has);
+  });
+}
+
+// Masse-/Geschwindigkeits-/Richtungsfelder live mit dem aktuellen Zustand
+// fuellen — ausser das Feld wird gerade editiert. Wichtig fuer die Masse:
+// bei Verschmelzung waechst sie, der angezeigte Wert muss mitwachsen.
+function updateBodyFields() {
+  document.querySelectorAll('.mass-in').forEach(inp => {
+    if (inp === document.activeElement || inp.classList.contains('pending')) return;
+    const b = bodies.find(x => x.name === inp.dataset.name);
+    if (b) inp.value = formatMass(b.mass * M_SUN / M_EARTH);
+  });
+  document.querySelectorAll('.vel-in').forEach(inp => {
+    // fokussierte und "ausstehende" Felder nicht ueberschreiben
+    if (inp === document.activeElement || inp.classList.contains('pending')) return;
+    const b = bodies.find(x => x.name === inp.dataset.name);
+    if (b) inp.value = formatMass(Math.round(Math.hypot(b.vx, b.vy) / KM_S_TO_AU_YR * 10) / 10);
+  });
+  // Richtungsfelder live mit dem aktuellen Winkel (Grad, 0=rechts, 90=oben).
+  document.querySelectorAll('.dir-in').forEach(inp => {
+    if (inp === document.activeElement || inp.classList.contains('pending')) return;
+    const b = bodies.find(x => x.name === inp.dataset.name);
+    if (b) {
+      let deg = Math.atan2(-b.vy, b.vx) * 180 / Math.PI;
+      if (deg < 0) deg += 360;
+      inp.value = formatMass(Math.round(deg));
+    }
+  });
+}
+
+// Die Koerper-Liste wird von loadScenario() beim Start aufgebaut.
+
+// --- Inject (desktop + mobile) ---
+function doInject() {
+  const massExp = parseFloat(document.getElementById('p-mass').value);
+  const massEarth = Math.pow(10, massExp);
+  const massSun = massEarth * M_EARTH / M_SUN;
+
+  const speedKmS = parseFloat(document.getElementById('p-speed').value);
+  const angleDeg = parseFloat(document.getElementById('p-angle').value);
+  const angleRad = angleDeg * Math.PI / 180;
+  const speedAU = speedKmS * KM_S_TO_AU_YR;
+
+  const pertName = "St\u00F6rmasse " + (++perturberCounter);
+  const pert = {
+    name: pertName,
+    mass: massSun,
+    x: injectPos.wx,
+    y: injectPos.wy,
+    vx: speedAU * Math.cos(angleRad),
+    vy: speedAU * Math.sin(angleRad),
+    ax: 0, ay: 0,
+    color: massSun >= STAR_MASS_THRESHOLD ? '#ffdd44' : '#ff4444',
+    radius: massToRadius(massSun),
+    realR: realRadiusFromMass(massSun),
+    visible: true,
+    isStar: massSun >= STAR_MASS_THRESHOLD,
+    escapeScore: 0,
+    id: bodies.length
+  };
+
+  bodies.push(pert);
+  perturbers.push(pert);
+  trails[pertName] = [];
+
+  // Add checkbox to both lists
+  [checkDiv, mobCheckDiv].forEach(container => {
+    const lbl = document.createElement('label');
+    lbl.style.fontSize = '11px';
+    lbl.style.color = '#f88';
+    lbl.setAttribute('data-perturber', 'true');
+    lbl.dataset.body = pertName;   // fuer removeBody() bei Kollisionen
+    lbl.innerHTML = `<input type="checkbox" checked data-name="${pertName}"> <span style="color:#ff4444">&#9679;</span> ${pertName}`;
+    lbl.querySelector('input').addEventListener('change', function() {
+      const b = bodies.find(b => b.name === this.dataset.name);
+      if (b) { b.visible = this.checked; computeAccelerations(); }
+      const other = container === checkDiv ? mobCheckDiv : checkDiv;
+      const oc = other.querySelector(`input[type=checkbox][data-name="${pertName}"]`);
+      if (oc) oc.checked = this.checked;
+    });
+    container.appendChild(lbl);
+  });
+
+  computeAccelerations();
+  updatePerturberList();
+  dragging = false;
+  injectMarked = false;   // Koerper gesetzt -> Vorschau loeschen
+}
+
+function doClearPerturbers() {
+  perturbers.forEach(p => {
+    const idx = bodies.indexOf(p);
+    if (idx >= 0) bodies.splice(idx, 1);
+    delete trails[p.name];
+  });
+  perturbers = [];
+  perturberCounter = 0;
+  [checkDiv, mobCheckDiv].forEach(container => {
+    container.querySelectorAll('[data-perturber="true"]').forEach(l => l.remove());
+  });
+  updatePerturberList();
+}
+
+function doReset() {
+  if (confirm('Simulation zur\u00FCcksetzen?')) {
+    cam = { cx: 0, cy: 0, zoom: scenarioZoom(currentScenario) };
+    document.getElementById('zoom-slider').value = cam.zoom;
+    document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+    document.getElementById('mob-zoom-slider').value = cam.zoom;
+    document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+    // Aktuelles Szenario komplett neu laden (Koerper + UI-Liste).
+    loadScenario(currentScenario);
+  }
+}
+
+document.getElementById('btn-inject').addEventListener('click', doInject);
+document.getElementById('mob-inject').addEventListener('click', doInject);
+document.getElementById('btn-clear-pert').addEventListener('click', doClearPerturbers);
+document.getElementById('mob-clear-pert').addEventListener('click', doClearPerturbers);
+document.getElementById('btn-apply').addEventListener('click', applyPendingChanges);
+document.getElementById('mob-btn-apply').addEventListener('click', applyPendingChanges);
+
+function updatePerturberList() {
+  [document.getElementById('perturber-list'), document.getElementById('mob-perturber-list')].forEach(div => {
+    if (perturbers.length === 0) { div.textContent = ''; return; }
+    div.innerHTML = perturbers.map(p =>
+      `\u25CF ${p.name}: ${(p.mass * M_SUN / M_EARTH).toFixed(1)} M\u2295<br>` +
+      `  Pos: (${p.x.toFixed(3)}, ${p.y.toFixed(3)}) AU<br>` +
+      `  v: (${p.vx.toFixed(4)}, ${p.vy.toFixed(4)}) AU/J`
+    ).join('<br>');
+  });
+}
+
+// --- Stats ---
+function updateStats() {
+  const years = (simTime / 365.25).toFixed(2);
+  // Nur aktive (sichtbare) Koerper zaehlen \u2014 ausgeschaltete sind aus
+  // der Simulation genommen.
+  const ke = bodies.reduce((s, b) => b.visible ? s + 0.5 * b.mass * (b.vx*b.vx + b.vy*b.vy) : s, 0);
+  let pe = 0;
+  for (let i = 0; i < bodies.length; i++) {
+    if (!bodies[i].visible) continue;
+    for (let j = i+1; j < bodies.length; j++) {
+      if (!bodies[j].visible) continue;
+      const dx = bodies[j].x - bodies[i].x;
+      const dy = bodies[j].y - bodies[i].y;
+      const r = Math.sqrt(dx*dx + dy*dy + 1e-12);
+      pe -= G_AU * bodies[i].mass * bodies[j].mass / r;
+    }
+  }
+  const totalE = ke + pe;
+  const activeCount = bodies.reduce((s, b) => b.visible ? s + 1 : s, 0);
+  const html =
+    `Zeit: <span>${years}</span> Jahre<br>` +
+    `K\u00F6rper: <span>${activeCount}</span> aktiv / ${bodies.length} gesamt (${perturbers.length} St\u00F6rmassen)<br>` +
+    `Kinet. E: <span>${ke.toExponential(2)}</span><br>` +
+    `Pot. E: <span>${pe.toExponential(2)}</span><br>` +
+    `Gesamt-E: <span>${totalE.toExponential(2)}</span>`;
+  document.getElementById('stats').innerHTML = html;
+  document.getElementById('mob-stats').innerHTML = html;
+}
+
+// --- Keyboard ---
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'p' || e.key === 'P') {
+    document.getElementById('btn-pause').click();
+  } else if (e.key === ' ') {
+    e.preventDefault();
+    document.getElementById('btn-step').click();
+  } else if (e.key === 'r' || e.key === 'R') {
+    doReset();
+  }
+});
+
+// --- Sidebar toggle ---
+const sidebar = document.getElementById('sidebar');
+const toggleBtn = document.getElementById('toggle-sidebar');
+toggleBtn.addEventListener('click', function() {
+  sidebar.classList.toggle('collapsed');
+  this.classList.toggle('shifted');
+  this.textContent = sidebar.classList.contains('collapsed') ? '\u25B6' : '\u25C0';
+  updateViewCenter();
+});
+
+// --- Mobile Menu — Schalter oben links oeffnet das Einstellungs-Panel ---
+const mobileSheet = document.getElementById('mobile-sheet');
+const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+let sheetOpen = false;
+mobileMenuBtn.addEventListener('click', function() {
+  sheetOpen = !sheetOpen;
+  mobileSheet.classList.toggle('hidden', !sheetOpen);
+  this.innerHTML = sheetOpen ? '✕' : '☰';  // X bzw. Hamburger
+});
+
+// --- Mouse Interaction (Desktop) ---
+let panStart = null;
+let dragging = false;
+let injectMarked = false;   // Klick-Vorschau bleibt sichtbar (Bau-Modus)
+let injectPos = { wx: 0, wy: 0 };
+let dragStart = { x: 0, y: 0 };
+let dragCurrent = { x: 0, y: 0 };
+let perturbers = [];
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousedown', function(e) {
+  e.preventDefault();
+  if (e.button === 1 || e.button === 2) {
+    panStart = { x: e.clientX, y: e.clientY, cx: cam.cx, cy: cam.cy };
+    canvas.style.cursor = 'grabbing';
+    return;
+  }
+  if (e.button === 0) {
+    const [wx, wy] = screenToWorld(e.clientX, e.clientY);
+    injectPos = { wx, wy };
+    injectMarked = true;
+    dragStart = { x: e.clientX, y: e.clientY };
+    dragCurrent = { x: e.clientX, y: e.clientY };
+    dragging = true;
+  }
+});
+
+canvas.addEventListener('mousemove', function(e) {
+  if (panStart) {
+    cam.cx = panStart.cx - (e.clientX - panStart.x) / (cam.zoom * 80);
+    cam.cy = panStart.cy - (e.clientY - panStart.y) / (cam.zoom * 80);
+    return;
+  }
+  if (dragging) {
+    dragCurrent = { x: e.clientX, y: e.clientY };
+    const dx = dragCurrent.x - dragStart.x;
+    const dy = dragCurrent.y - dragStart.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist > 5) {
+      // 2 px Ziehen = 1 km/s, geklemmt auf den Slider-Bereich 0-100
+      const speedKmS = Math.min(100, dist / 2);
+
+      const speedSlider = document.getElementById('p-speed');
+      const angleSlider = document.getElementById('p-angle');
+      speedSlider.value = speedKmS;
+      document.getElementById('p-speed-val').textContent = speedKmS.toFixed(1);
+      document.getElementById('mob-p-speed').value = speedKmS;
+      document.getElementById('mob-p-speed-val').textContent = speedKmS.toFixed(1);
+
+      let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+      angleDeg = ((angleDeg % 360) + 360) % 360;
+      angleSlider.value = Math.round(angleDeg);
+      document.getElementById('p-angle-val').textContent = Math.round(angleDeg) + '\u00B0';
+      document.getElementById('mob-p-angle').value = Math.round(angleDeg);
+      document.getElementById('mob-p-angle-val').textContent = Math.round(angleDeg) + '\u00B0';
+    }
+  }
+});
+
+canvas.addEventListener('mouseup', function(e) {
+  if (panStart) { panStart = null; canvas.style.cursor = 'crosshair'; return; }
+  if (dragging && e.button === 0) { dragging = false; }
+});
+
+canvas.addEventListener('mouseleave', function() {
+  if (panStart) { panStart = null; canvas.style.cursor = 'crosshair'; }
+  dragging = false;
+});
+
+canvas.addEventListener('wheel', function(e) {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.15 : 0.87;
+  cam.zoom = Math.max(0.05, Math.min(500, cam.zoom * factor));
+  document.getElementById('zoom-slider').value = cam.zoom;
+  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-slider').value = cam.zoom;
+  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+});
+
+// ============================================================
+//  TOUCH EVENTS (Mobile)
+// ============================================================
+let touchState = 'idle'; // 'idle', 'place', 'drag', 'pan', 'pinch'
+let touchStartTime = 0;
+let touchStartPos = { x: 0, y: 0 };
+let touchInjectPos = { wx: 0, wy: 0 };
+let touchDragStart = { x: 0, y: 0 };
+let touchDragCurrent = { x: 0, y: 0 };
+let touchPanStart = { x: 0, y: 0, cx: 0, cy: 0 };
+let touchPinchStartDist = 0;
+let touchPinchStartZoom = 1;
+const DRAG_THRESHOLD = 10; // px to distinguish tap from drag
+
+function getTouchDist(t1, t2) {
+  const dx = t1.clientX - t2.clientX;
+  const dy = t1.clientY - t2.clientY;
+  return Math.sqrt(dx*dx + dy*dy);
+}
+
+function getTouchMidpoint(t1, t2) {
+  return {
+    x: (t1.clientX + t2.clientX) / 2,
+    y: (t1.clientY + t2.clientY) / 2
+  };
+}
+
+canvas.addEventListener('touchstart', function(e) {
+  e.preventDefault();
+
+  if (e.touches.length === 2) {
+    // Two-finger: pan + pinch
+    touchState = 'pinch';
+    touchPinchStartDist = getTouchDist(e.touches[0], e.touches[1]);
+    touchPinchStartZoom = cam.zoom;
+    const mid = getTouchMidpoint(e.touches[0], e.touches[1]);
+    touchPanStart = { x: mid.x, y: mid.y, cx: cam.cx, cy: cam.cy };
+    dragging = false;
+  } else if (e.touches.length === 1) {
+    // Single finger: Position sofort uebernehmen (wie der Desktop-Klick),
+    // damit schon ein Tippen die Stoermasse-Position setzt — nicht erst
+    // das Ziehen. Sonst zeigt doInject() auf eine veraltete Position.
+    touchState = 'place';
+    touchStartTime = Date.now();
+    touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    const [wx, wy] = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
+    touchInjectPos = { wx, wy };
+    touchDragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    touchDragCurrent = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    injectPos = { wx, wy };
+    injectMarked = true;
+    dragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    dragCurrent = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    dragging = true;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', function(e) {
+  e.preventDefault();
+
+  if (e.touches.length === 2 && touchState === 'pinch') {
+    // Pinch zoom
+    const dist = getTouchDist(e.touches[0], e.touches[1]);
+    const scale = dist / touchPinchStartDist;
+    cam.zoom = Math.max(0.05, Math.min(500, touchPinchStartZoom * scale));
+    document.getElementById('zoom-slider').value = cam.zoom;
+    document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+    document.getElementById('mob-zoom-slider').value = cam.zoom;
+    document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+
+    // Pan
+    const mid = getTouchMidpoint(e.touches[0], e.touches[1]);
+    cam.cx = touchPanStart.cx - (mid.x - touchPanStart.x) / (cam.zoom * 80);
+    cam.cy = touchPanStart.cy - (mid.y - touchPanStart.y) / (cam.zoom * 80);
+
+  } else if (e.touches.length === 1 && (touchState === 'place' || touchState === 'drag')) {
+    const dx = e.touches[0].clientX - touchDragStart.x;
+    const dy = e.touches[0].clientY - touchDragStart.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+
+    touchDragCurrent = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+
+    if (dist > DRAG_THRESHOLD && touchState === 'place') {
+      // Transition from place to drag
+      touchState = 'drag';
+      dragging = true;
+      injectPos = touchInjectPos;
+      dragStart = touchDragStart;
+    }
+
+    if (touchState === 'drag') {
+      // Update velocity sliders from drag
+      if (dist > 5) {
+        const speedKmS = Math.min(100, dist / 2);
+
+        const speedSlider = document.getElementById('p-speed');
+        const angleSlider = document.getElementById('p-angle');
+        speedSlider.value = speedKmS;
+        document.getElementById('p-speed-val').textContent = speedKmS.toFixed(1);
+        document.getElementById('mob-p-speed').value = speedKmS;
+        document.getElementById('mob-p-speed-val').textContent = speedKmS.toFixed(1);
+
+        let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+        angleDeg = ((angleDeg % 360) + 360) % 360;
+        angleSlider.value = Math.round(angleDeg);
+        document.getElementById('p-angle-val').textContent = Math.round(angleDeg) + '\u00B0';
+        document.getElementById('mob-p-angle').value = Math.round(angleDeg);
+        document.getElementById('mob-p-angle-val').textContent = Math.round(angleDeg) + '\u00B0';
+
+        // Sync drag visuals
+        injectPos = touchInjectPos;
+        dragStart = touchDragStart;
+        dragCurrent = touchDragCurrent;
+        dragging = true;
+      }
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', function(e) {
+  e.preventDefault();
+
+  if (e.touches.length === 0) {
+    // All fingers lifted
+    if (touchState === 'drag') {
+      // Drag completed — keep dragging=false but keep the position
+      dragging = false;
+    } else if (touchState === 'place') {
+      // Was just a tap — just set position, don't auto-inject
+      // (User can use the inject button or drag to add velocity)
+    }
+    touchState = 'idle';
+    dragging = false;
+  } else if (e.touches.length === 1 && touchState === 'pinch') {
+    // Went from 2 to 1 finger — switch to drag mode
+    touchState = 'drag';
+    dragging = true;
+    const [wx, wy] = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
+    touchInjectPos = { wx, wy };
+    touchDragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    touchDragCurrent = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    injectPos = touchInjectPos;
+    dragStart = touchDragStart;
+    dragCurrent = touchDragCurrent;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchcancel', function(e) {
+  touchState = 'idle';
+  dragging = false;
+}, { passive: false });
+
+// --- Init ---
+refreshScenarioOptions();   // gespeicherte Konfigurationen ins Menue
+let startScenario = 'Sonnensystem';
+try {
+  const s = localStorage.getItem('sim_scenario');
+  if (s && (SCENARIOS[s] ||
+      (s.indexOf('★ ') === 0 && localStorage.getItem('sim_cfg_' + s.slice(2))))) {
+    startScenario = s;
+  }
+} catch (e) {}
+onScenarioChange(startScenario);
+simLoop();
+</script>
+</body>
+</html>
