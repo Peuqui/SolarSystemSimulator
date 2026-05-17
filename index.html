@@ -1862,26 +1862,11 @@ function doInject() {
   perturbers.push(pert);
   trails[pertName] = [];
 
-  // Add checkbox to both lists
-  [checkDiv, mobCheckDiv].forEach(container => {
-    const lbl = document.createElement('label');
-    lbl.style.fontSize = '11px';
-    lbl.style.color = '#f88';
-    lbl.setAttribute('data-perturber', 'true');
-    lbl.dataset.body = pertName;   // fuer removeBody() bei Kollisionen
-    lbl.innerHTML = `<input type="checkbox" checked data-name="${pertName}"> <span style="color:#ff4444">&#9679;</span> ${pertName}`;
-    lbl.querySelector('input').addEventListener('change', function() {
-      const b = bodies.find(b => b.name === this.dataset.name);
-      if (b) { b.visible = this.checked; computeAccelerations(); }
-      const other = container === checkDiv ? mobCheckDiv : checkDiv;
-      const oc = other.querySelector(`input[type=checkbox][data-name="${pertName}"]`);
-      if (oc) oc.checked = this.checked;
-    });
-    container.appendChild(lbl);
-  });
-
+  // Stoermasse bekommt eine vollwertige Koerper-Zeile (Masse/Geschwindig-
+  // keit/Richtung, live aktualisiert) wie jeder andere Koerper —
+  // rebuildBodyList baut die Liste komplett aus `bodies` neu auf.
   computeAccelerations();
-  updatePerturberList();
+  rebuildBodyList();
   dragging = false;
   injectMarked = false;   // Koerper gesetzt -> Vorschau loeschen
 }
@@ -1894,10 +1879,7 @@ function doClearPerturbers() {
   });
   perturbers = [];
   perturberCounter = 0;
-  [checkDiv, mobCheckDiv].forEach(container => {
-    container.querySelectorAll('[data-perturber="true"]').forEach(l => l.remove());
-  });
-  updatePerturberList();
+  rebuildBodyList();
 }
 
 function doReset() {
