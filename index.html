@@ -180,6 +180,7 @@ input[type=range] {
       <option>TRAPPIST-1</option>
       <option>Alpha Centauri</option>
       <option>Kepler-16</option>
+      <option>Kepler-47 (Doppelstern, 3 Planeten)</option>
     </select>
     <div style="display:flex; gap:4px; margin-top:6px;">
       <button id="btn-save-cfg" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Speichern</button>
@@ -281,6 +282,7 @@ input[type=range] {
       <option>TRAPPIST-1</option>
       <option>Alpha Centauri</option>
       <option>Kepler-16</option>
+      <option>Kepler-47 (Doppelstern, 3 Planeten)</option>
     </select>
     <div style="display:flex; gap:4px; margin-top:6px;">
       <button id="mob-btn-save-cfg" style="flex:1; font-size:12px;">Speichern</button>
@@ -522,6 +524,24 @@ function buildKepler16() {
                   a:0.7048, ecc:0.0069, rkm:53800 }, mA + mB);
 }
 
+function buildKepler47() {
+  // Kepler-47 — erstes bekanntes Mehrplaneten-System um einen Doppelstern.
+  // Drei zirkumbinaere Planeten (Orosz et al. 2012/2019). Sternmassen und
+  // Bahnhalbachsen aus den Entdeckungsarbeiten; Planetenmassen sind nur
+  // grob bekannt (reine Transit-Daten) und dynamisch ohnehin vernachlaessigbar.
+  const mA = 1.043, mB = 0.362;
+  buildBinary(
+    { name:'Kepler-47 A', mass:mA, color:'#fff4e0', rkm:668000 },
+    { name:'Kepler-47 B', mass:mB, color:'#ff7a55', rkm:244000 },
+    0.0836, 0.023);
+  const mTot = mA + mB;
+  // a (AU) aus den Entdeckungsarbeiten, alle drei jenseits der Stabilitaets-
+  // grenze (~3.5x Doppelstern-Abstand) — daher langfristig stabil.
+  planetOnOrbit({ name:'Kepler-47 b', mass:10*M_EARTH_SUN, color:'#9fb8c4', a:0.2954, ecc:0.02, rkm:19100 }, mTot);
+  planetOnOrbit({ name:'Kepler-47 d', mass:25*M_EARTH_SUN, color:'#c8b48a', a:0.6992, ecc:0.02, rkm:44600 }, mTot);
+  planetOnOrbit({ name:'Kepler-47 c', mass:20*M_EARTH_SUN, color:'#a8cdd6', a:0.989,  ecc:0.04, rkm:30000 }, mTot);
+}
+
 function buildTrisolaris() {
   // Chaotisches Dreikoerpersystem aus Liu Cixins "Drei-Koerper-Problem".
   const stars = [
@@ -696,6 +716,7 @@ const SCENARIOS = {
   'TRAPPIST-1':            { build: buildTrappist,      zoom: 96,   zoomLog: 330,  dt: 0.1, slow: Math.log10(7) },
   'Alpha Centauri':        { build: buildAlphaCentauri, zoom: 0.15, zoomLog: 6.55, dt: 5,   slow: 0 },
   'Kepler-16':             { build: buildKepler16,      zoom: 8,    zoomLog: 30,   dt: 0.5, slow: 0 },
+  'Kepler-47 (Doppelstern, 3 Planeten)': { build: buildKepler47, zoom: 6, zoomLog: 30, dt: 0.1, slow: 0 },
 };
 
 // Liefert den Szenario-Zoom passend zum aktiven Modus (linear vs. log).
@@ -990,8 +1011,16 @@ var lockBarycenter = true;   // Kamera haelt den Massenschwerpunkt mittig
 function barycenter() {
   let mx = 0, my = 0, mt = 0;
   for (const b of bodies) {
-    if (!b.visible || b.unbound) continue;
-    mx += b.mass * b.x; my += b.mass * b.y; mt += b.mass;
+    if (!b.visible) continue;
+    // Gewicht blendet ueber escapeScore stetig von 1 (gebunden) auf 0
+    // (entflohen) aus. Score <=5 -> w=1, >=25 -> w=0, dazwischen linear
+    // (deckt das Hysterese-Band aus updateBoundState ab). So springt der
+    // Schwerpunkt nicht, wenn ein (womoeglich schwerer) Koerper das
+    // unbound-Flag umklappt — er wandert ueber ~20 Frames sanft hinaus.
+    const w = Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20));
+    if (w <= 0) continue;
+    const m = b.mass * w;
+    mx += m * b.x; my += m * b.y; mt += m;
   }
   return mt > 0 ? [mx / mt, my / mt] : [0, 0];
 }
