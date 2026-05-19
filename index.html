@@ -260,6 +260,7 @@ input[type=range] {
   <button id="mob-pause" title="Pause">&#x23F8;</button>
   <button id="mob-zoom-in" title="Zoom +" style="font-size:24px;">+</button>
   <button id="mob-zoom-out" title="Zoom &minus;" style="font-size:24px;">&minus;</button>
+  <button id="mob-inject-bar" title="Injizieren">&#x2604;</button>
   <button id="mob-reset" title="Reset">&#x21BB;</button>
 </div>
 
@@ -753,6 +754,7 @@ function loadScenario(name) {
   perturberCounter = 0;
   fragmentCounter = 0;
   simTime = 0;
+  realElapsedMs = 0; lastTickMs = 0;
   injectMarked = false;
   initBodies();
   rebuildBodyList();
@@ -792,6 +794,7 @@ function restoreState(state) {
   }
   perturbers = []; perturberCounter = 0; fragmentCounter = 0;
   simTime = 0; injectMarked = false;
+  realElapsedMs = 0; lastTickMs = 0;
   computeAccelerations();
   computeTrailInterval();
   rebuildBodyList();
@@ -1266,6 +1269,8 @@ function draw() {
 // --- Simulation Loop ---
 let paused = false;
 let simTime = 0;
+let realElapsedMs = 0;   // verstrichene Echtzeit, nur waehrend die Sim laeuft
+let lastTickMs = 0;      // Zeitstempel des letzten Frames (performance.now)
 
 // Adaptiver Sub-Zeitschritt. Normal = MAX_SUB_DT_YEARS (haelt die
 // innerste Bahn glatt). Naehern sich aber zwei Koerper schnell an, wird
@@ -1424,6 +1429,10 @@ function handleCollisions() {
 }
 
 function simLoop() {
+  // Echtzeit nur waehrend des Laufs aufaddieren — Pausen zaehlen nicht.
+  const nowMs = performance.now();
+  if (lastTickMs && !paused) realElapsedMs += nowMs - lastTickMs;
+  lastTickMs = nowMs;
   if (!paused) {
     const dtDays = parseFloat(document.getElementById('dt-slider').value);
     // Slider ist logarithmisch: Wert = log10(Verlangsamungsfaktor)
@@ -1923,6 +1932,7 @@ function doReset() {
 
 document.getElementById('btn-inject').addEventListener('click', doInject);
 document.getElementById('mob-inject').addEventListener('click', doInject);
+document.getElementById('mob-inject-bar').addEventListener('click', doInject);
 document.getElementById('btn-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('mob-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('btn-apply').addEventListener('click', applyPendingChanges);
@@ -1940,6 +1950,14 @@ function updatePerturberList() {
 }
 
 // --- Stats ---
+// Echtzeit (ms) menschenlesbar: Sekunden / Minuten / Stunden.
+function formatRealTime(ms) {
+  const s = ms / 1000;
+  if (s < 60) return s.toFixed(1) + ' s';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+  return Math.floor(s / 3600) + 'h ' + Math.round((s % 3600) / 60) + 'm';
+}
+
 function updateStats() {
   const years = (simTime / 365.25).toFixed(2);
   // Nur aktive (sichtbare) Koerper zaehlen \u2014 ausgeschaltete sind aus
@@ -1960,6 +1978,7 @@ function updateStats() {
   const activeCount = bodies.reduce((s, b) => b.visible ? s + 1 : s, 0);
   const html =
     `Zeit: <span>${years}</span> Jahre<br>` +
+    `Echtzeit: <span>${formatRealTime(realElapsedMs)}</span><br>` +
     `K\u00F6rper: <span>${activeCount}</span> aktiv / ${bodies.length} gesamt (${perturbers.length} St\u00F6rmassen)<br>` +
     `Kinet. E: <span>${ke.toExponential(2)}</span><br>` +
     `Pot. E: <span>${pe.toExponential(2)}</span><br>` +
