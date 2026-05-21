@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Sonnensystem-Simulator — N-Körper-Gravitation</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -1240,7 +1243,12 @@ function draw() {
   // Perturber injection preview — zeigt die Stoermasse schon beim
   // Ziehen als gefuellten Kreis in ihrer echten Darstellungsgroesse.
   if (dragging || injectMarked) {
-    const [sx, sy] = worldToScreen(injectPos.wx, injectPos.wy);
+    // Waehrend einer aktiven Long-Press-/Drag-Operation (place/drag) zeigt
+    // der Marker die touchInjectPos (NEW position, noch nicht commited);
+    // sonst die letzte commited injectPos.
+    const previewWx = (touchState === 'place' || touchState === 'drag') ? touchInjectPos.wx : injectPos.wx;
+    const previewWy = (touchState === 'place' || touchState === 'drag') ? touchInjectPos.wy : injectPos.wy;
+    const [sx, sy] = worldToScreen(previewWx, previewWy);
     const previewMassSun = Math.pow(10, parseFloat(document.getElementById('p-mass').value)) * M_EARTH / M_SUN;
     const previewR = massToRadius(previewMassSun);
     const isStar = previewMassSun >= STAR_MASS_THRESHOLD;
@@ -1276,6 +1284,17 @@ function draw() {
       ctx.font = 'bold 12px monospace';
       ctx.fillText('v=' + kmS.toFixed(1) + ' km/s', sx + pvx + 8, sy + pvy - 8);
     }
+
+    // Live-Anzeige der gespeicherten Sonnensystem-Koordinate direkt am
+    // Marker. So sieht der User vor jedem Inject, welche Welt-Position
+    // gerade armiert ist — und ob sie nach Pinch/Zoom stabil bleibt.
+    ctx.fillStyle = '#ffeebb';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText(
+      '(' + previewWx.toFixed(2) + ', ' + previewWy.toFixed(2) + ') AU',
+      sx + previewR + 8,
+      sy - previewR - 6
+    );
   }
 
   // Long-Press Feedback: wachsender Ring + Progress-Bogen am Touch-Punkt
@@ -1945,7 +1964,12 @@ function doInject() {
   computeAccelerations();
   rebuildBodyList();
   dragging = false;
-  injectMarked = false;   // Koerper gesetzt -> Vorschau loeschen
+  // Marker bleibt nach Inject sichtbar: er zeigt die armierte Welt-Koord
+  // (injectPos.wx/wy) auch nach Pinch/Zoom, wo dieselbe Sonnensystem-
+  // Koordinate visuell an einer anderen Bildschirm-Stelle landet. So
+  // sieht der User vor jedem weiteren Klick auf "Injizieren", wohin der
+  // naechste Koerper geht. Geleert wird der Marker durch loadScenario /
+  // Reset / applyState.
 }
 
 function doClearPerturbers() {
@@ -2068,13 +2092,23 @@ let dragStart = { x: 0, y: 0 };
 let dragCurrent = { x: 0, y: 0 };
 let perturbers = [];
 
+// Mobile-Browser feuern nach Touch-Events synthetisch mousedown/mouseup,
+// auch wenn touchstart preventDefault aufruft (Browser-Quirk je nach OS).
+// Das ueberschrieb injectPos.wx/wy mit der Touch-Position nach Pinch und
+// liess die naechste Injection an einer voellig anderen Sonnensystem-
+// Koordinate landen. lastTouchTs speichert den letzten Touch — mousedown
+// innerhalb von 600 ms danach wird als Touch-Echo verworfen.
+let lastTouchTs = 0;
+
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 canvas.addEventListener('mousedown', function(e) {
   e.preventDefault();
+  if (Date.now() - lastTouchTs < 600) return;
   if (e.button === 1 || e.button === 2) {
     panStart = { x: e.clientX, y: e.clientY, cx: cam.cx, cy: cam.cy };
     canvas.style.cursor = 'grabbing';
+    releaseBarycenterLock();
     return;
   }
   if (e.button === 0) {
@@ -2180,8 +2214,24 @@ function getTouchMidpoint(t1, t2) {
   };
 }
 
+// Sobald der User aktiv pannt/pincht, hat er die Kamera in der Hand —
+// der Auto-Lock auf den Schwerpunkt wuerde cam.cx/cy jeden Frame
+// ueberschreiben und beim naechsten Inject die Kamera springen lassen
+// (Schwerpunkt verschiebt sich durch den neuen Koerper). Loesung:
+// lockBarycenter automatisch aus, Checkbox visuell synchron halten.
+function releaseBarycenterLock() {
+  if (!lockBarycenter) return;
+  lockBarycenter = false;
+  const cb1 = document.getElementById('chk-baryctr');
+  const cb2 = document.getElementById('mob-chk-baryctr');
+  if (cb1) cb1.checked = false;
+  if (cb2) cb2.checked = false;
+  try { localStorage.setItem('sim_lockBarycenter', '0'); } catch (e) {}
+}
+
 canvas.addEventListener('touchstart', function(e) {
   e.preventDefault();
+  lastTouchTs = Date.now();
 
   if (e.touches.length === 2) {
     // Two-finger: pan + pinch. Long-Press abbrechen, damit der erste
@@ -2190,6 +2240,7 @@ canvas.addEventListener('touchstart', function(e) {
     // (injectMarked NICHT zuruecksetzen) — der User soll zoomen koennen
     // ohne seinen Marker zu verlieren.
     cancelLongPress();
+    releaseBarycenterLock();
     touchState = 'pinch';
     touchPinchStartDist = getTouchDist(e.touches[0], e.touches[1]);
     touchPinchStartZoom = cam.zoom;
@@ -2206,7 +2257,14 @@ canvas.addEventListener('touchstart', function(e) {
     longPressStartTime = touchStartTime;
     longPressFeedback = { x: touchStartPos.x, y: touchStartPos.y };
     longPressTimer = setTimeout(function() {
-      // Long-Press erfuellt: jetzt Position armieren.
+      // Long-Press-Phase erfuellt: nur Vorschau aktivieren. Die Position
+      // wird ERST committed, wenn der User explizit loslaesst (touchend
+      // im place-State) oder den Finger zieht (drag, Velocity-Setting).
+      // Begruendung: bei langsamen Pinch-Gesten (Finger 1 liegt >500 ms
+      // bevor Finger 2 landet) feuerte der Timer und ueberschrieb
+      // injectPos mit der Finger-1-Position — obwohl der User nur pinchen
+      // wollte. Jetzt: zweiter Finger landet → state='pinch' → kein
+      // Commit, das alte injectPos bleibt erhalten.
       longPressTimer = null;
       longPressFeedback = null;
       touchState = 'place';
@@ -2214,18 +2272,23 @@ canvas.addEventListener('touchstart', function(e) {
       touchInjectPos = { wx, wy };
       touchDragStart = { x: touchStartPos.x, y: touchStartPos.y };
       touchDragCurrent = { x: touchStartPos.x, y: touchStartPos.y };
-      injectPos = { wx, wy };
       injectMarked = true;
       dragStart = { x: touchStartPos.x, y: touchStartPos.y };
       dragCurrent = { x: touchStartPos.x, y: touchStartPos.y };
       dragging = true;
-      if (navigator.vibrate) navigator.vibrate(15);
+      // Vibrate/"Wupp" feuert NICHT hier — das wuerde bei langsamem Pinch
+      // (Finger 1 liegt > LONG_PRESS_MS bevor Finger 2 landet) faelsch-
+      // licherweise haptisches Feedback ausloesen, obwohl der User nur
+      // pinchen wollte. Vibrate kommt erst beim echten Commit:
+      //   - touchend mit state='place'  (tap-and-hold abgeschlossen)
+      //   - place → drag  (Velocity-Geste begonnen)
     }, LONG_PRESS_MS);
   }
 }, { passive: false });
 
 canvas.addEventListener('touchmove', function(e) {
   e.preventDefault();
+  lastTouchTs = Date.now();
 
   // Long-Press-Phase: Bewegung > Toleranz cancelt das Armieren — der
   // User wollte vermutlich pannen oder hat verrissen.
@@ -2249,7 +2312,7 @@ canvas.addEventListener('touchmove', function(e) {
     document.getElementById('mob-zoom-slider').value = cam.zoom;
     document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
 
-    // Pan
+    // Pan (Standard 2-Finger-Pan).
     const mid = getTouchMidpoint(e.touches[0], e.touches[1]);
     cam.cx = touchPanStart.cx - (mid.x - touchPanStart.x) / (cam.zoom * 80);
     cam.cy = touchPanStart.cy - (mid.y - touchPanStart.y) / (cam.zoom * 80);
@@ -2262,15 +2325,20 @@ canvas.addEventListener('touchmove', function(e) {
     touchDragCurrent = { x: e.touches[0].clientX, y: e.touches[0].clientY };
 
     if (dist > DRAG_THRESHOLD && touchState === 'place') {
-      // Transition from place to drag
+      // Transition from place to drag: NUR State wechseln, KEIN Commit
+      // von injectPos. Sonst wuerde minimales Wackeln des ersten Fingers
+      // (waehrend der User auf den zweiten Finger fuer Pinch wartet) als
+      // Drag interpretiert und die alte Sonnensystem-Koord vernichtet.
+      // Commit erfolgt erst beim touchend (= klare Intention).
       touchState = 'drag';
       dragging = true;
-      injectPos = touchInjectPos;
       dragStart = touchDragStart;
     }
 
     if (touchState === 'drag') {
-      // Update velocity sliders from drag
+      // Update velocity sliders from drag (Slider-Updates sind harmlos;
+      // wenn doch ein Pinch beginnt, ueberschreiben wir die Slider eh
+      // erneut via Drag-Geste in einem spaeteren echten Long-Tap.)
       if (dist > 5) {
         const speedKmS = Math.min(100, dist / 2);
 
@@ -2288,8 +2356,8 @@ canvas.addEventListener('touchmove', function(e) {
         document.getElementById('mob-p-angle').value = Math.round(angleDeg);
         document.getElementById('mob-p-angle-val').textContent = Math.round(angleDeg) + '\u00B0';
 
-        // Sync drag visuals
-        injectPos = touchInjectPos;
+        // Drag-visuals: dragCurrent/dragStart fuer den Velocity-Pfeil im
+        // Render. injectPos NICHT setzen \u2014 Commit erst bei touchend.
         dragStart = touchDragStart;
         dragCurrent = touchDragCurrent;
         dragging = true;
@@ -2300,6 +2368,7 @@ canvas.addEventListener('touchmove', function(e) {
 
 canvas.addEventListener('touchend', function(e) {
   e.preventDefault();
+  lastTouchTs = Date.now();
 
   // Loslassen waehrend der Long-Press-Wartezeit: Inject nicht armieren.
   if (touchState === 'wait-longpress') {
@@ -2309,13 +2378,12 @@ canvas.addEventListener('touchend', function(e) {
   }
 
   if (e.touches.length === 0) {
-    // All fingers lifted
-    if (touchState === 'drag') {
-      // Drag completed — keep dragging=false but keep the position
-      dragging = false;
-    } else if (touchState === 'place') {
-      // Was just a tap — just set position, don't auto-inject
-      // (User can use the inject button or drag to add velocity)
+    // All fingers lifted — Commit erfolgt HIER, nicht waehrend touchmove.
+    // Damit ueberlebt eine alte Sonnensystem-Koord jeden Pinch-Versuch
+    // (auch wenn der erste Finger zwischendurch wackelt oder lange liegt).
+    if (touchState === 'drag' || touchState === 'place') {
+      injectPos = { wx: touchInjectPos.wx, wy: touchInjectPos.wy };
+      if (navigator.vibrate) navigator.vibrate(15);
     }
     touchState = 'idle';
     dragging = false;
