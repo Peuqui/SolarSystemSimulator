@@ -1284,17 +1284,6 @@ function draw() {
       ctx.font = 'bold 12px monospace';
       ctx.fillText('v=' + kmS.toFixed(1) + ' km/s', sx + pvx + 8, sy + pvy - 8);
     }
-
-    // Live-Anzeige der gespeicherten Sonnensystem-Koordinate direkt am
-    // Marker. So sieht der User vor jedem Inject, welche Welt-Position
-    // gerade armiert ist — und ob sie nach Pinch/Zoom stabil bleibt.
-    ctx.fillStyle = '#ffeebb';
-    ctx.font = 'bold 12px monospace';
-    ctx.fillText(
-      '(' + previewWx.toFixed(2) + ', ' + previewWy.toFixed(2) + ') AU',
-      sx + previewR + 8,
-      sy - previewR - 6
-    );
   }
 
   // Long-Press Feedback: wachsender Ring + Progress-Bogen am Touch-Punkt
@@ -1964,12 +1953,9 @@ function doInject() {
   computeAccelerations();
   rebuildBodyList();
   dragging = false;
-  // Marker bleibt nach Inject sichtbar: er zeigt die armierte Welt-Koord
-  // (injectPos.wx/wy) auch nach Pinch/Zoom, wo dieselbe Sonnensystem-
-  // Koordinate visuell an einer anderen Bildschirm-Stelle landet. So
-  // sieht der User vor jedem weiteren Klick auf "Injizieren", wohin der
-  // naechste Koerper geht. Geleert wird der Marker durch loadScenario /
-  // Reset / applyState.
+  injectMarked = false;   // Marker verschwindet nach Inject — folgende
+                          // Klicks injizieren weiterhin bei derselben
+                          // injectPos (Welt-Koord bleibt gespeichert).
 }
 
 function doClearPerturbers() {
