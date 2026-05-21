@@ -1,5 +1,7 @@
 # Solar System Simulator
 
+Deutsch | [English](README.en.md)
+
 Browser-basierter N-Körper-Gravitationssimulator. Eine einzige HTML-Datei,
 kein Build, kein Backend — einfach im Browser öffnen oder über jeden
 statischen Webserver ausliefern.
