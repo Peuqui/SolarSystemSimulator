@@ -2186,6 +2186,9 @@ canvas.addEventListener('touchstart', function(e) {
   if (e.touches.length === 2) {
     // Two-finger: pan + pinch. Long-Press abbrechen, damit der erste
     // Finger keine Stoermasse setzt, wenn der zweite Finger schnell folgt.
+    // Hinweis: ein bereits gesetzter injectPos-Marker bleibt sichtbar
+    // (injectMarked NICHT zuruecksetzen) — der User soll zoomen koennen
+    // ohne seinen Marker zu verlieren.
     cancelLongPress();
     touchState = 'pinch';
     touchPinchStartDist = getTouchDist(e.touches[0], e.touches[1]);
@@ -2193,7 +2196,6 @@ canvas.addEventListener('touchstart', function(e) {
     const mid = getTouchMidpoint(e.touches[0], e.touches[1]);
     touchPanStart = { x: mid.x, y: mid.y, cx: cam.cx, cy: cam.cy };
     dragging = false;
-    injectMarked = false;
   } else if (e.touches.length === 1) {
     // Single finger: Inject erst nach Long-Press von LONG_PRESS_MS, sonst
     // wuerde jedes Pinch-Zoom (erste Finger landet zuerst) eine Stoer-
@@ -2318,16 +2320,13 @@ canvas.addEventListener('touchend', function(e) {
     touchState = 'idle';
     dragging = false;
   } else if (e.touches.length === 1 && touchState === 'pinch') {
-    // Went from 2 to 1 finger — switch to drag mode
-    touchState = 'drag';
-    dragging = true;
-    const [wx, wy] = screenToWorld(e.touches[0].clientX, e.touches[0].clientY);
-    touchInjectPos = { wx, wy };
-    touchDragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    touchDragCurrent = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    injectPos = touchInjectPos;
-    dragStart = touchDragStart;
-    dragCurrent = touchDragCurrent;
+    // 2→1 Finger: Pinch ist vorbei, der verbleibende Finger soll NICHT
+    // automatisch zur neuen Stoermasse-Position werden — sonst springt
+    // ein bereits gesetzter Marker auf die Finger-Position. State auf
+    // 'idle' setzen; wenn der User wirklich neu setzen will, macht er
+    // einen frischen Long-Press.
+    touchState = 'idle';
+    dragging = false;
   }
 }, { passive: false });
 
