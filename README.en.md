@@ -67,16 +67,24 @@ python3 -m http.server 8080
 # Browser: http://localhost:8080/
 ```
 
-Alternatively just open `index.html` from disk (`file://`) — all modern
-browsers support it because no external resources are loaded at runtime.
+Alternatively just open `index.html` from disk (`file://`) — the
+simulation itself runs fully offline; only the optional footer widgets
+(GoatCounter pageview hit, GitHub stars badge) stay inactive without
+network access.
 
 ## Technical notes
 
 - **Pure HTML / CSS / Canvas 2D / vanilla JS**, single file
 - **Symplectic Verlet integrator** for the N-body step
-- **Zero external dependencies** — no npm, no build, no tracking, no
-  network access at runtime
+- **No build pipeline, no npm, no libraries** — the sim engine itself
+  fetches nothing. The footer optionally pulls GoatCounter (privacy-
+  friendly pageview counter) and the current GitHub star count from the
+  GitHub API; offline this only hides the stars badge
 - **`localStorage`** for saved configurations and UI settings
+
+## Stargazers over time
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Peuqui/SolarSystemSimulator&type=Date)](https://star-history.com/#Peuqui/SolarSystemSimulator&Date)
 
 ## License
 
