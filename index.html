@@ -170,6 +170,29 @@ input[type=range] {
   background: linear-gradient(to right, #335 0%, #335 50%, #1a1a2e 50%);
   border-radius: 3px;
 }
+
+/* Footer mit Repo-Link + Stars */
+#site-footer {
+  position: fixed; right: 8px; bottom: 6px;
+  z-index: 20; pointer-events: auto;
+  display: flex; gap: 8px; align-items: center;
+  font-size: 11px; color: #aaa;
+  background: rgba(10,12,20,0.55);
+  padding: 4px 8px; border-radius: 4px;
+  border: 1px solid rgba(80,80,100,0.25);
+}
+#site-footer a {
+  color: #aaa; text-decoration: none;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+#site-footer a:hover { color: #7af; }
+#gh-stars-wrap {
+  display: none; align-items: center; gap: 3px; color: #f3c969;
+}
+@media (max-width: 768px) {
+  #site-footer { font-size: 10px; bottom: 4px; right: 4px; padding: 3px 6px; }
+  #site-footer a span { display: none; } /* nur Icon auf Mobile */
+}
 </style>
 </head>
 <body>
@@ -245,8 +268,8 @@ input[type=range] {
   <label>Start: Mausposition auf Canvas klicken</label>
   <label>Geschwindigkeit (km/s) <span class="val" id="p-speed-val">30</span></label>
   <input type="range" id="p-speed" min="0" max="100" step="1" value="30">
-  <label>Richtung (&deg; von rechts) <span class="val" id="p-angle-val">270&deg;</span></label>
-  <input type="range" id="p-angle" min="0" max="360" step="1" value="270">
+  <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="p-angle-val">270&deg;</span></label>
+  <input type="range" id="p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
   <label>Oder: Klick + Ziehen auf Canvas = Vektor</label>
   <div>
     <button id="btn-inject">&#x2604; Injizieren</button>
@@ -332,8 +355,8 @@ input[type=range] {
   <input type="range" id="mob-p-mass" min="-3" max="6" step="0.1" value="3">
   <label>Geschwindigkeit (km/s) <span class="val" id="mob-p-speed-val">30</span></label>
   <input type="range" id="mob-p-speed" min="0" max="100" step="1" value="30">
-  <label>Richtung (&deg;) <span class="val" id="mob-p-angle-val">270&deg;</span></label>
-  <input type="range" id="mob-p-angle" min="0" max="360" step="1" value="270">
+  <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="mob-p-angle-val">270&deg;</span></label>
+  <input type="range" id="mob-p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
   <label style="color:#faa; font-size:11px;">Tipp: 1-Finger auf Canvas tippen &amp; ziehen = Position + Vektor</label>
   <div style="margin-top:8px;">
     <button id="mob-inject">&#x2604; Injizieren</button>
@@ -1274,9 +1297,11 @@ function draw() {
       kmS = Math.min(100, dragDist / 2);
     } else {
       kmS = parseFloat(document.getElementById('p-speed').value);
+      // Kompass-Konvention: 0=N (oben), 90=O (rechts), im Uhrzeigersinn.
+      // Canvas-Y zeigt nach unten, daher cos negiert.
       const ang = parseFloat(document.getElementById('p-angle').value) * Math.PI / 180;
       const len = Math.max(10, kmS * 2);
-      pvx = Math.cos(ang) * len; pvy = Math.sin(ang) * len;
+      pvx = Math.sin(ang) * len; pvy = -Math.cos(ang) * len;
     }
     if (kmS > 0.05) {
       drawArrow(sx, sy, sx + pvx, sy + pvy, '#ff6644', 2.5);
@@ -1318,6 +1343,12 @@ let paused = false;
 let simTime = 0;
 let realElapsedMs = 0;   // verstrichene Echtzeit, nur waehrend die Sim laeuft
 let lastTickMs = 0;      // Zeitstempel des letzten Frames (performance.now)
+
+// Tab-Wechsel: lastTickMs verwerfen, damit der erste sichtbare Frame
+// keinen Delta-Sprung in den Echtzeit-Zaehler schreibt.
+document.addEventListener('visibilitychange', () => {
+  lastTickMs = 0;
+});
 
 // Adaptiver Sub-Zeitschritt. Normal = MAX_SUB_DT_YEARS (haelt die
 // innerste Bahn glatt). Naehern sich aber zwei Koerper schnell an, wird
@@ -1476,11 +1507,19 @@ function handleCollisions() {
 }
 
 function simLoop() {
-  // Echtzeit nur waehrend des Laufs aufaddieren — Pausen zaehlen nicht.
+  // Browser drosseln rAF bei inaktivem Tab stark (oft 0–1 Hz). Eine
+  // sinnvolle Simulation ist da nicht moeglich — also wird inaktiver
+  // Tab wie eine Pause behandelt: weder Sim-Zeit noch Echtzeit-Zaehler
+  // laufen weiter. Der 250-ms-Cap fangt zusaetzlich Rest-Drift beim
+  // ersten Wake-Up-Tick ab.
   const nowMs = performance.now();
-  if (lastTickMs && !paused) realElapsedMs += nowMs - lastTickMs;
+  const effectivelyPaused = paused || document.hidden;
+  if (lastTickMs && !effectivelyPaused) {
+    const delta = nowMs - lastTickMs;
+    if (delta < 250) realElapsedMs += delta;
+  }
   lastTickMs = nowMs;
-  if (!paused) {
+  if (!effectivelyPaused) {
     const dtDays = parseFloat(document.getElementById('dt-slider').value);
     // Slider ist logarithmisch: Wert = log10(Verlangsamungsfaktor)
     const slowFactor = Math.pow(10, parseFloat(document.getElementById('slow-slider').value));
@@ -1775,9 +1814,9 @@ function addPlanetCheckbox(p, container) {
       `<span style="color:#888; flex:none;">km/s</span>` +
     `</div>` +
     `<div style="display:flex; align-items:center; gap:3px; margin-top:3px; padding-left:4px;">` +
-      `<span style="color:#888; flex:none;">Richtung</span>` +
+      `<span style="color:#888; flex:none;">Kurs</span>` +
       `<input type="text" inputmode="decimal" class="dir-in" data-name="${p.name}" ` +
-      `value="–" title="Bewegungsrichtung in Grad (0=rechts, 90=oben)" style="${fst}">` +
+      `value="–" title="Kompass-Kurs in Grad (0=N, 90=O, 180=S, 270=W)" style="${fst}">` +
       `<span style="color:#888; flex:none;">&deg;</span>` +
     `</div>`;
 
@@ -1840,12 +1879,12 @@ function applyPendingChanges() {
       if (isFinite(kmS) && kmS >= 0) magAU = kmS * KM_S_TO_AU_YR;
     }
     if (dirInp.classList.contains('pending')) {
-      // Richtung gesetzt: vx/vy aus Betrag + Winkel (0=rechts, 90=oben).
+      // Kurs gesetzt: vx/vy aus Betrag + Kompass-Kurs (0=N, 90=O, im Uhrzeigersinn).
       const deg = parseMass(dirInp.value);
       if (isFinite(deg)) {
         const a = deg * Math.PI / 180;
-        b.vx = magAU * Math.cos(a);
-        b.vy = -magAU * Math.sin(a);
+        b.vx =  magAU * Math.sin(a);
+        b.vy = -magAU * Math.cos(a);
       }
     } else {
       // nur Betrag geaendert: Richtung beibehalten.
@@ -1900,12 +1939,12 @@ function updateBodyFields() {
     const b = bodies.find(x => x.name === inp.dataset.name);
     if (b) inp.value = formatMass(Math.round(Math.hypot(b.vx, b.vy) / KM_S_TO_AU_YR * 10) / 10);
   });
-  // Richtungsfelder live mit dem aktuellen Winkel (Grad, 0=rechts, 90=oben).
+  // Kursfelder live mit dem aktuellen Kompass-Kurs (Grad, 0=N, 90=O).
   document.querySelectorAll('.dir-in').forEach(inp => {
     if (inp === document.activeElement || inp.classList.contains('pending')) return;
     const b = bodies.find(x => x.name === inp.dataset.name);
     if (b) {
-      let deg = Math.atan2(-b.vy, b.vx) * 180 / Math.PI;
+      let deg = Math.atan2(b.vx, -b.vy) * 180 / Math.PI;
       if (deg < 0) deg += 360;
       inp.value = formatMass(Math.round(deg));
     }
@@ -1922,6 +1961,8 @@ function doInject() {
 
   const speedKmS = parseFloat(document.getElementById('p-speed').value);
   const angleDeg = parseFloat(document.getElementById('p-angle').value);
+  // Kompass-Konvention: 0=N, 90=O, 180=S, 270=W (im Uhrzeigersinn).
+  // Welt-Y zeigt nach unten (wie Canvas), also Norden = negatives vy.
   const angleRad = angleDeg * Math.PI / 180;
   const speedAU = speedKmS * KM_S_TO_AU_YR;
 
@@ -1931,8 +1972,8 @@ function doInject() {
     mass: massSun,
     x: injectPos.wx,
     y: injectPos.wy,
-    vx: speedAU * Math.cos(angleRad),
-    vy: speedAU * Math.sin(angleRad),
+    vx:  speedAU * Math.sin(angleRad),
+    vy: -speedAU * Math.cos(angleRad),
     ax: 0, ay: 0,
     color: massSun >= STAR_MASS_THRESHOLD ? '#ffdd44' : '#ff4444',
     radius: massToRadius(massSun),
@@ -2427,6 +2468,40 @@ try {
 } catch (e) {}
 onScenarioChange(startScenario);
 simLoop();
+
+// --- GitHub-Stars im Footer (nutzt GitHub-API ohne Token, ungetrackt) ---
+(async function loadStars() {
+  try {
+    const r = await fetch('https://api.github.com/repos/Peuqui/SolarSystemSimulator');
+    if (!r.ok) return;
+    const d = await r.json();
+    const el = document.getElementById('gh-stars');
+    if (el && typeof d.stargazers_count === 'number') {
+      el.textContent = d.stargazers_count.toLocaleString('de-DE');
+      el.parentElement.style.display = 'inline-flex';
+    }
+  } catch (e) { /* offline / Rate-Limit -> Badge bleibt verborgen */ }
+})();
 </script>
+
+<!-- Footer: Repo-Link + Stars -->
+<div id="site-footer">
+  <a href="https://github.com/Peuqui/SolarSystemSimulator" target="_blank" rel="noopener" title="GitHub Repository">
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+    <span>Peuqui/SolarSystemSimulator</span>
+  </a>
+  <span id="gh-stars-wrap" title="GitHub Stars">
+    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true">
+      <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/>
+    </svg>
+    <span id="gh-stars">–</span>
+  </span>
+</div>
+
+<!-- GoatCounter (privacy-friendly analytics) -->
+<script data-goatcounter="https://peuqui.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js"></script>
 </body>
 </html>
