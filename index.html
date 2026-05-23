@@ -2170,7 +2170,9 @@ canvas.addEventListener('mousemove', function(e) {
       document.getElementById('mob-p-speed').value = speedKmS;
       document.getElementById('mob-p-speed-val').textContent = speedKmS.toFixed(1);
 
-      let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+      // atan2 = mathematische Konvention (0\u00B0 = +x / rechts), Slider = Kompass
+      // (0\u00B0 = N / oben, im Uhrzeigersinn). Differenz ist +90\u00B0.
+      let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI + 90;
       angleDeg = ((angleDeg % 360) + 360) % 360;
       angleSlider.value = Math.round(angleDeg);
       document.getElementById('p-angle-val').textContent = Math.round(angleDeg) + '\u00B0';
@@ -2376,7 +2378,9 @@ canvas.addEventListener('touchmove', function(e) {
         document.getElementById('mob-p-speed').value = speedKmS;
         document.getElementById('mob-p-speed-val').textContent = speedKmS.toFixed(1);
 
-        let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+        // atan2 = mathematische Konvention (0\u00B0 = +x / rechts), Slider = Kompass
+        // (0\u00B0 = N / oben, im Uhrzeigersinn). Differenz ist +90\u00B0.
+        let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI + 90;
         angleDeg = ((angleDeg % 360) + 360) % 360;
         angleSlider.value = Math.round(angleDeg);
         document.getElementById('p-angle-val').textContent = Math.round(angleDeg) + '\u00B0';
