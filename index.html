@@ -106,7 +106,7 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 }
 
 /* Floating-Inject-Button — unten mittig, auf Desktop UND Mobile sichtbar.
-   Prominent platziert weil "St&ouml;rmasse injizieren" die Hauptinteraktion
+   Prominent platziert weil "Rogue injizieren" die Hauptinteraktion
    ist und in der Sidebar/im Sheet schnell aus dem Blickfeld geraet. */
 #float-inject {
   position: absolute; bottom: 40px; right: 16px;
@@ -278,9 +278,9 @@ input[type=range] {
   <div id="planet-checks"></div>
   <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
-  <h2>&#x2604; St&ouml;rmasse injizieren</h2>
-  <label>St&ouml;rmasse (Erdmassen) <span class="val" id="p-mass-val">1.0</span></label>
-  <input type="range" id="p-mass" min="-3" max="6" step="0.1" value="0">
+  <h2>&#x2604; Rogue injizieren</h2>
+  <label>Masse <span class="val" id="p-mass-val">1,0 M⊕</span></label>
+  <input type="range" id="p-mass" min="-3" max="16" step="0.1" value="0">
   <label>Start: Mausposition auf Canvas klicken</label>
   <label>Geschwindigkeit (km/s) <span class="val" id="p-speed-val">30</span></label>
   <input type="range" id="p-speed" min="0" max="100" step="1" value="30">
@@ -289,7 +289,7 @@ input[type=range] {
   <label>Oder: Klick + Ziehen auf Canvas = Vektor</label>
   <div>
     <button id="btn-inject">&#x2604; Injizieren</button>
-    <button id="btn-clear-pert" class="danger">St&ouml;rmassen l&ouml;schen</button>
+    <button id="btn-clear-pert" class="danger">Alle Rogues l&ouml;schen</button>
   </div>
   <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
@@ -302,10 +302,12 @@ input[type=range] {
 <div id="help-toggle" title="Steuerung anzeigen">&#x1F4A1;</div>
 <div id="info-panel">
   Mausrad: Zoom &nbsp;|&nbsp; Rechts-/Mittelklick: Verschieben<br>
-  Linksklick: St&ouml;rmasse-Position w&auml;hlen<br>
+  Linksklick: Rogue-Position w&auml;hlen<br>
   Klick+Ziehen: Geschwindigkeitsvektor setzen<br>
-  Touch: 2-Finger=Zoom/Pan, 1-Finger lang halten=St&ouml;rmasse<br>
-  <span>Taste:</span> P=Pause, R=Reset, Space=Schritt
+  Touch: 2-Finger=Zoom/Pan, 1-Finger lang halten=Rogue<br>
+  <span>Taste:</span> P=Pause, R=Reset, Space=Schritt<br>
+  <span style="color:#7af;">Einheiten:</span> M&#x2295; = Erdmasse (5,97&#x2009;&middot;&#x2009;10<sup>24</sup>&nbsp;kg) &nbsp;|&nbsp;
+  M&#x2299; = Sonnenmasse (1,99&#x2009;&middot;&#x2009;10<sup>30</sup>&nbsp;kg, &#x2248;&nbsp;333.000&nbsp;M&#x2295;)
 </div>
 
 <div id="perturber-info"></div>
@@ -319,7 +321,7 @@ input[type=range] {
 </div>
 
 <!-- Floating-Inject-Button — auf allen Bildschirmgr&ouml;&szlig;en sichtbar -->
-<button id="float-inject" title="St&ouml;rmasse injizieren">&#x2604;</button>
+<button id="float-inject" title="Rogue injizieren">&#x2604;</button>
 
 <!-- Mobile Bottom Sheet -->
 <div id="mobile-sheet" class="hidden">
@@ -368,9 +370,9 @@ input[type=range] {
   <div id="mob-planet-checks"></div>
   <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
-  <h2>&#x2604; St&ouml;rmasse</h2>
-  <label>Masse (Erdmassen) <span class="val" id="mob-p-mass-val">1.0</span></label>
-  <input type="range" id="mob-p-mass" min="-3" max="6" step="0.1" value="0">
+  <h2>&#x2604; Rogue</h2>
+  <label>Masse <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
+  <input type="range" id="mob-p-mass" min="-3" max="16" step="0.1" value="0">
   <label>Geschwindigkeit (km/s) <span class="val" id="mob-p-speed-val">30</span></label>
   <input type="range" id="mob-p-speed" min="0" max="100" step="1" value="30">
   <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="mob-p-angle-val">270&deg;</span></label>
@@ -453,6 +455,44 @@ function formatMass(v) {
 // Masse-Eingabe (deutsche Notation): Punkte = Tausender, Komma = Dezimal.
 function parseMass(s) {
   return parseFloat(String(s).replace(/\./g, '').replace(',', '.'));
+}
+
+// Zentrale Zahlenformatierung — Tausenderpunkte, Komma als Dezimal-
+// trennzeichen, feste Nachkommastellen. Fuer alle UI-sichtbaren Zahlen
+// verwenden (Statistik, Slider-Werte, Stoermassen-Info, Canvas-Texte).
+function fmtDE(v, digits) {
+  if (!isFinite(v)) return String(v);
+  return v.toLocaleString('de-DE', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+    useGrouping: true,
+  });
+}
+// Exponentialschreibweise mit Dezimalkomma (deutsche Notation).
+function fmtDExp(v, digits) {
+  if (!isFinite(v)) return String(v);
+  return v.toExponential(digits).replace('.', ',');
+}
+
+// Masse-Anzeige in Erdmassen mit Sonnenmassen-Klammer:
+//   < 0,5 M☉                    -> "1,0 M⊕"
+//   ≥ 0,5 M☉ bis 10⁵ M☉         -> "1.000.000 M⊕ (3,0 M☉)"
+//   > 10⁵ M☉ (schwere SLer)     -> "2,2e+16 M⊕ (6,6e+10 M☉)"
+// M_SUN_IN_EARTH ≈ 332.946 — 1 Sonnenmasse in Erdmassen.
+function fmtMassWithSun(earthMasses) {
+  const main = earthMasses >= 1e6 ? fmtDExp(earthMasses, 2)
+             : earthMasses >= 100 ? fmtDE(earthMasses, 0)
+             : fmtDE(earthMasses, 1);
+  const sun = earthMasses * M_EARTH / M_SUN;
+  let result = main + ' M⊕';
+  if (sun >= 0.5) {
+    const sunStr = sun >= 1e5 ? fmtDExp(sun, 2)
+                 : sun >= 100 ? fmtDE(sun, 0)
+                 : sun >= 10  ? fmtDE(sun, 1)
+                 : fmtDE(sun, 2);
+    result += ' (' + sunStr + ' M☉)';
+  }
+  return result;
 }
 
 // Canvas
@@ -1325,7 +1365,7 @@ function draw() {
       drawArrow(sx, sy, sx + pvx, sy + pvy, '#ff6644', 2.5);
       ctx.fillStyle = '#ff8866';
       ctx.font = 'bold 12px monospace';
-      ctx.fillText('v=' + kmS.toFixed(1) + ' km/s', sx + pvx + 8, sy + pvy - 8);
+      ctx.fillText('v=' + fmtDE(kmS, 1) + ' km/s', sx + pvx + 8, sy + pvy - 8);
     }
   }
 
@@ -1584,8 +1624,8 @@ document.getElementById('dt-slider').addEventListener('input', function() {
 // Label zeigt den tatsaechlichen Faktor (0.10\u00D7 .. 100\u00D7).
 function slowLabel(sliderVal) {
   const f = Math.pow(10, parseFloat(sliderVal));
-  const s = f < 1 ? f.toFixed(2) : f < 10 ? f.toFixed(1) : f.toFixed(0);
-  return s + '\u00D7';
+  const digits = f < 1 ? 2 : f < 10 ? 1 : 0;
+  return fmtDE(f, digits) + '\u00D7';
 }
 document.getElementById('slow-slider').addEventListener('input', function() {
   document.getElementById('slow-val').textContent = slowLabel(this.value);
@@ -1594,9 +1634,9 @@ document.getElementById('slow-slider').addEventListener('input', function() {
 });
 document.getElementById('zoom-slider').addEventListener('input', function() {
   cam.zoom = parseFloat(this.value);
-  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
   document.getElementById('mob-zoom-slider').value = this.value;
-  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
 });
 
 // Bahnspur-Laenge — sofort wirksam, kuerzt bestehende Spuren mit.
@@ -1659,9 +1699,9 @@ importFileInput.addEventListener('change', function() {
   this.value = '';
 });
 document.getElementById('p-mass').addEventListener('input', function() {
-  document.getElementById('p-mass-val').textContent = Math.pow(10, parseFloat(this.value)).toFixed(1);
+  document.getElementById('p-mass-val').textContent = fmtMassWithSun(Math.pow(10, parseFloat(this.value)));
   document.getElementById('mob-p-mass').value = this.value;
-  document.getElementById('mob-p-mass-val').textContent = Math.pow(10, parseFloat(this.value)).toFixed(1);
+  document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(Math.pow(10, parseFloat(this.value)));
 });
 document.getElementById('p-speed').addEventListener('input', function() {
   document.getElementById('p-speed-val').textContent = this.value;
@@ -1687,14 +1727,14 @@ document.getElementById('mob-slow-slider').addEventListener('input', function() 
 });
 document.getElementById('mob-zoom-slider').addEventListener('input', function() {
   cam.zoom = parseFloat(this.value);
-  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
   document.getElementById('zoom-slider').value = this.value;
-  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
 });
 document.getElementById('mob-p-mass').addEventListener('input', function() {
-  document.getElementById('mob-p-mass-val').textContent = Math.pow(10, parseFloat(this.value)).toFixed(1);
+  document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(Math.pow(10, parseFloat(this.value)));
   document.getElementById('p-mass').value = this.value;
-  document.getElementById('p-mass-val').textContent = Math.pow(10, parseFloat(this.value)).toFixed(1);
+  document.getElementById('p-mass-val').textContent = fmtMassWithSun(Math.pow(10, parseFloat(this.value)));
 });
 document.getElementById('mob-p-speed').addEventListener('input', function() {
   document.getElementById('mob-p-speed-val').textContent = this.value;
@@ -1711,9 +1751,9 @@ document.getElementById('mob-p-angle').addEventListener('input', function() {
 function applyZoom(z) {
   cam.zoom = z;
   document.getElementById('zoom-slider').value = z;
-  document.getElementById('zoom-val').textContent = z.toFixed(2);
+  document.getElementById('zoom-val').textContent = fmtDE(z, 2);
   document.getElementById('mob-zoom-slider').value = z;
-  document.getElementById('mob-zoom-val').textContent = z.toFixed(2);
+  document.getElementById('mob-zoom-val').textContent = fmtDE(z, 2);
 }
 
 // Setzt den Zeitschritt (Tage/Frame) und synchronisiert beide Slider.
@@ -1792,17 +1832,17 @@ document.getElementById('btn-reset').addEventListener('click', function() {
 document.getElementById('mob-zoom-in').addEventListener('click', function() {
   cam.zoom = Math.min(500, cam.zoom * 1.3);
   document.getElementById('zoom-slider').value = cam.zoom;
-  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
   document.getElementById('mob-zoom-slider').value = cam.zoom;
-  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
 });
 
 document.getElementById('mob-zoom-out').addEventListener('click', function() {
   cam.zoom = Math.max(0.05, cam.zoom / 1.3);
   document.getElementById('zoom-slider').value = cam.zoom;
-  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
   document.getElementById('mob-zoom-slider').value = cam.zoom;
-  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
 });
 
 // Planet visibility (desktop)
@@ -1818,7 +1858,7 @@ function addPlanetCheckbox(p, container) {
               'background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:2px;';
   const isPert = perturbers.indexOf(p) >= 0;
   const delBtnHtml = isPert
-    ? `<button class="del-pert" data-name="${p.name}" title="Störmasse entfernen" ` +
+    ? `<button class="del-pert" data-name="${p.name}" title="Rogue entfernen" ` +
       `style="flex:none; width:22px; height:22px; padding:0; min-height:0; ` +
       `background:#5a2222; color:#f88; border:1px solid #a44; border-radius:3px; ` +
       `font-size:13px; line-height:1; cursor:pointer;">✕</button>`
@@ -2000,7 +2040,7 @@ function doInject() {
   const angleRad = angleDeg * Math.PI / 180;
   const speedAU = speedKmS * KM_S_TO_AU_YR;
 
-  const pertName = "St\u00F6rmasse " + (++perturberCounter);
+  const pertName = "Rogue " + (++perturberCounter);
   const pert = {
     name: pertName,
     mass: massSun,
@@ -2047,9 +2087,9 @@ function doClearPerturbers() {
 function doReset() {
   cam = { cx: 0, cy: 0, zoom: scenarioZoom(currentScenario) };
   document.getElementById('zoom-slider').value = cam.zoom;
-  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
   document.getElementById('mob-zoom-slider').value = cam.zoom;
-  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
   // Aktuelles Szenario komplett neu laden (Koerper + UI-Liste).
   loadScenario(currentScenario);
 }
@@ -2066,9 +2106,9 @@ function updatePerturberList() {
   [document.getElementById('perturber-list'), document.getElementById('mob-perturber-list')].forEach(div => {
     if (perturbers.length === 0) { div.textContent = ''; return; }
     div.innerHTML = perturbers.map(p =>
-      `\u25CF ${p.name}: ${(p.mass * M_SUN / M_EARTH).toFixed(1)} M\u2295<br>` +
-      `  Pos: (${p.x.toFixed(3)}, ${p.y.toFixed(3)}) AU<br>` +
-      `  v: (${p.vx.toFixed(4)}, ${p.vy.toFixed(4)}) AU/J`
+      `\u25CF ${p.name}: ${fmtMassWithSun(p.mass * M_SUN / M_EARTH)}<br>` +
+      `  Pos: (${fmtDE(p.x, 3)}, ${fmtDE(p.y, 3)}) AU<br>` +
+      `  v: (${fmtDE(p.vx, 4)}, ${fmtDE(p.vy, 4)}) AU/J`
     ).join('<br>');
   });
 }
@@ -2077,13 +2117,13 @@ function updatePerturberList() {
 // Echtzeit (ms) menschenlesbar: Sekunden / Minuten / Stunden.
 function formatRealTime(ms) {
   const s = ms / 1000;
-  if (s < 60) return s.toFixed(1) + ' s';
+  if (s < 60) return fmtDE(s, 1) + ' s';
   if (s < 3600) return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
   return Math.floor(s / 3600) + 'h ' + Math.round((s % 3600) / 60) + 'm';
 }
 
 function updateStats() {
-  const years = (simTime / 365.25).toFixed(2);
+  const years = fmtDE(simTime / 365.25, 2);
   // Nur aktive (sichtbare) Koerper zaehlen \u2014 ausgeschaltete sind aus
   // der Simulation genommen.
   const ke = bodies.reduce((s, b) => b.visible ? s + 0.5 * b.mass * (b.vx*b.vx + b.vy*b.vy) : s, 0);
@@ -2103,10 +2143,10 @@ function updateStats() {
   const html =
     `Zeit: <span>${years}</span> Jahre<br>` +
     `Echtzeit: <span>${formatRealTime(realElapsedMs)}</span><br>` +
-    `K\u00F6rper: <span>${activeCount}</span> aktiv / ${bodies.length} gesamt (${perturbers.length} St\u00F6rmassen)<br>` +
-    `Kinet. E: <span>${ke.toExponential(2)}</span><br>` +
-    `Pot. E: <span>${pe.toExponential(2)}</span><br>` +
-    `Gesamt-E: <span>${totalE.toExponential(2)}</span>`;
+    `K\u00F6rper: <span>${activeCount}</span> aktiv / ${bodies.length} gesamt (${perturbers.length} Rogues)<br>` +
+    `Kinet. E: <span>${fmtDExp(ke, 2)}</span><br>` +
+    `Pot. E: <span>${fmtDExp(pe, 2)}</span><br>` +
+    `Gesamt-E: <span>${fmtDExp(totalE, 2)}</span>`;
   document.getElementById('stats').innerHTML = html;
   document.getElementById('mob-stats').innerHTML = html;
 }
@@ -2200,9 +2240,9 @@ canvas.addEventListener('mousemove', function(e) {
       const speedSlider = document.getElementById('p-speed');
       const angleSlider = document.getElementById('p-angle');
       speedSlider.value = speedKmS;
-      document.getElementById('p-speed-val').textContent = speedKmS.toFixed(1);
+      document.getElementById('p-speed-val').textContent = fmtDE(speedKmS, 1);
       document.getElementById('mob-p-speed').value = speedKmS;
-      document.getElementById('mob-p-speed-val').textContent = speedKmS.toFixed(1);
+      document.getElementById('mob-p-speed-val').textContent = fmtDE(speedKmS, 1);
 
       // atan2 = mathematische Konvention (0\u00B0 = +x / rechts), Slider = Kompass
       // (0\u00B0 = N / oben, im Uhrzeigersinn). Differenz ist +90\u00B0.
@@ -2231,9 +2271,9 @@ canvas.addEventListener('wheel', function(e) {
   const factor = e.deltaY < 0 ? 1.15 : 0.87;
   cam.zoom = Math.max(0.05, Math.min(500, cam.zoom * factor));
   document.getElementById('zoom-slider').value = cam.zoom;
-  document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
   document.getElementById('mob-zoom-slider').value = cam.zoom;
-  document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
 });
 
 // ============================================================
@@ -2371,9 +2411,9 @@ canvas.addEventListener('touchmove', function(e) {
     const scale = dist / touchPinchStartDist;
     cam.zoom = Math.max(0.05, Math.min(500, touchPinchStartZoom * scale));
     document.getElementById('zoom-slider').value = cam.zoom;
-    document.getElementById('zoom-val').textContent = cam.zoom.toFixed(2);
+    document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
     document.getElementById('mob-zoom-slider').value = cam.zoom;
-    document.getElementById('mob-zoom-val').textContent = cam.zoom.toFixed(2);
+    document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
 
     // Pan (Standard 2-Finger-Pan).
     const mid = getTouchMidpoint(e.touches[0], e.touches[1]);
@@ -2408,9 +2448,9 @@ canvas.addEventListener('touchmove', function(e) {
         const speedSlider = document.getElementById('p-speed');
         const angleSlider = document.getElementById('p-angle');
         speedSlider.value = speedKmS;
-        document.getElementById('p-speed-val').textContent = speedKmS.toFixed(1);
+        document.getElementById('p-speed-val').textContent = fmtDE(speedKmS, 1);
         document.getElementById('mob-p-speed').value = speedKmS;
-        document.getElementById('mob-p-speed-val').textContent = speedKmS.toFixed(1);
+        document.getElementById('mob-p-speed-val').textContent = fmtDE(speedKmS, 1);
 
         // atan2 = mathematische Konvention (0\u00B0 = +x / rechts), Slider = Kompass
         // (0\u00B0 = N / oben, im Uhrzeigersinn). Differenz ist +90\u00B0.
