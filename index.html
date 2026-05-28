@@ -414,9 +414,11 @@ const MAX_SUB_DT_YEARS = 0.5 / 365.25;
 // Mindestmasse fuer Wasserstoff-Fusion liegt bei ~0.08 M_sonne.
 const STAR_MASS_THRESHOLD = 0.08;
 
-// Ab ~3 M_sonne (Tolman-Oppenheimer-Volkoff-Grenze) kann kein Neutronen-
-// stern mehr existieren -> stellare Endprodukte werden zum Schwarzen Loch.
-const BH_MASS_THRESHOLD = 3.0;
+// Schwelle fuer Schwarze-Loch-Darstellung: oberhalb des massereichsten
+// beobachteten Hauptreihensterns (BAT99-98 ≈ 226 M_sonne, R136a1 ≈ 196).
+// Lebende Sterne koennen theoretisch bis ~300 M_sonne existieren (Pair-
+// Instability-Region 130–250), darueber direkter Kollaps zum SL.
+const BH_MASS_THRESHOLD = 230.0;
 
 // Ab diesem Sonnenabstand (AU) gilt ein ungebundenes Objekt als
 // "auf Fluchtkurs" — weit jenseits der Neptunbahn (~30 AU).
