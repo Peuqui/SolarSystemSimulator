@@ -105,6 +105,22 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   align-items: center; justify-content: center;
 }
 
+/* Floating-Inject-Button — unten mittig, auf Desktop UND Mobile sichtbar.
+   Prominent platziert weil "St&ouml;rmasse injizieren" die Hauptinteraktion
+   ist und in der Sidebar/im Sheet schnell aus dem Blickfeld geraet. */
+#float-inject {
+  position: absolute; bottom: 40px; right: 16px;
+  z-index: 16;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: #aa3333; border: 2px solid #cc5555; color: #fff;
+  font-size: 24px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+  -webkit-tap-highlight-color: transparent;
+}
+#float-inject:hover { background: #cc4444; }
+#float-inject:active { background: #dd5555; }
+
 /* Mobile settings panel — faehrt von links ein (wie die Desktop-Sidebar),
    geoeffnet ueber den Schalter oben links. Nicht mehr von unten, damit es
    nicht mit den Steuer-Buttons unten links konkurriert. */
@@ -263,8 +279,8 @@ input[type=range] {
   <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
   <h2>&#x2604; St&ouml;rmasse injizieren</h2>
-  <label>St&ouml;rmasse (Erdmassen) <span class="val" id="p-mass-val">1000.0</span></label>
-  <input type="range" id="p-mass" min="-3" max="6" step="0.1" value="3">
+  <label>St&ouml;rmasse (Erdmassen) <span class="val" id="p-mass-val">1.0</span></label>
+  <input type="range" id="p-mass" min="-3" max="6" step="0.1" value="0">
   <label>Start: Mausposition auf Canvas klicken</label>
   <label>Geschwindigkeit (km/s) <span class="val" id="p-speed-val">30</span></label>
   <input type="range" id="p-speed" min="0" max="100" step="1" value="30">
@@ -299,9 +315,11 @@ input[type=range] {
   <button id="mob-pause" title="Pause">&#x23F8;</button>
   <button id="mob-zoom-in" title="Zoom +" style="font-size:24px;">+</button>
   <button id="mob-zoom-out" title="Zoom &minus;" style="font-size:24px;">&minus;</button>
-  <button id="mob-inject-bar" title="Injizieren">&#x2604;</button>
   <button id="mob-reset" title="Reset">&#x21BB;</button>
 </div>
+
+<!-- Floating-Inject-Button — auf allen Bildschirmgr&ouml;&szlig;en sichtbar -->
+<button id="float-inject" title="St&ouml;rmasse injizieren">&#x2604;</button>
 
 <!-- Mobile Bottom Sheet -->
 <div id="mobile-sheet" class="hidden">
@@ -351,8 +369,8 @@ input[type=range] {
   <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
   <h2>&#x2604; St&ouml;rmasse</h2>
-  <label>Masse (Erdmassen) <span class="val" id="mob-p-mass-val">1000.0</span></label>
-  <input type="range" id="mob-p-mass" min="-3" max="6" step="0.1" value="3">
+  <label>Masse (Erdmassen) <span class="val" id="mob-p-mass-val">1.0</span></label>
+  <input type="range" id="mob-p-mass" min="-3" max="6" step="0.1" value="0">
   <label>Geschwindigkeit (km/s) <span class="val" id="mob-p-speed-val">30</span></label>
   <input type="range" id="mob-p-speed" min="0" max="100" step="1" value="30">
   <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="mob-p-angle-val">270&deg;</span></label>
@@ -1798,11 +1816,19 @@ function addPlanetCheckbox(p, container) {
   const massEarth0 = p.mass * M_SUN / M_EARTH;
   const fst = 'flex:1 1 0; width:0; font-size:10px; padding:2px 4px; min-height:24px; ' +
               'background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:2px;';
+  const isPert = perturbers.indexOf(p) >= 0;
+  const delBtnHtml = isPert
+    ? `<button class="del-pert" data-name="${p.name}" title="Störmasse entfernen" ` +
+      `style="flex:none; width:22px; height:22px; padding:0; min-height:0; ` +
+      `background:#5a2222; color:#f88; border:1px solid #a44; border-radius:3px; ` +
+      `font-size:13px; line-height:1; cursor:pointer;">✕</button>`
+    : '';
   row.innerHTML =
     `<div style="display:flex; align-items:center; gap:5px;">` +
       `<input type="checkbox" checked data-name="${p.name}" style="flex:none; width:auto; min-height:auto;">` +
       `<span style="color:${p.color}; flex:none;">&#9679;</span>` +
       `<span style="flex:1 1 auto;">${p.name}</span>` +
+      delBtnHtml +
     `</div>` +
     `<div style="display:flex; align-items:center; gap:3px; margin-top:3px; padding-left:4px;">` +
       `<span style="color:#888; flex:none;">m</span>` +
@@ -1827,6 +1853,14 @@ function addPlanetCheckbox(p, container) {
     const oc = other.querySelector(`input[type=checkbox][data-name="${p.name}"]`);
     if (oc) oc.checked = this.checked;
   });
+
+  const delBtn = row.querySelector('.del-pert');
+  if (delBtn) {
+    delBtn.addEventListener('click', function() {
+      const b = bodies.find(x => x.name === this.dataset.name);
+      if (b) { removeBody(b); rebuildBodyList(); }
+    });
+  }
 
   // Eingaben werden nur als "ausstehend" markiert (gelb) — angewendet
   // wird alles gesammelt ueber den Uebernehmen-Button.
@@ -2022,7 +2056,7 @@ function doReset() {
 
 document.getElementById('btn-inject').addEventListener('click', doInject);
 document.getElementById('mob-inject').addEventListener('click', doInject);
-document.getElementById('mob-inject-bar').addEventListener('click', doInject);
+document.getElementById('float-inject').addEventListener('click', doInject);
 document.getElementById('btn-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('mob-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('btn-apply').addEventListener('click', applyPendingChanges);
