@@ -278,7 +278,7 @@ input[type=range] {
   <div id="planet-checks"></div>
   <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
-  <h2>&#x2604; Rogue injizieren</h2>
+  <h2>&#x1FA90; Rogue injizieren</h2>
   <label>Masse <span class="val" id="p-mass-val">1,0 M⊕</span></label>
   <input type="range" id="p-mass" min="-3" max="16" step="0.1" value="0">
   <label>Start: Mausposition auf Canvas klicken</label>
@@ -288,7 +288,7 @@ input[type=range] {
   <input type="range" id="p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
   <label>Oder: Klick + Ziehen auf Canvas = Vektor</label>
   <div>
-    <button id="btn-inject">&#x2604; Injizieren</button>
+    <button id="btn-inject">&#x1FA90; Injizieren</button>
     <button id="btn-clear-pert" class="danger">Alle Rogues l&ouml;schen</button>
   </div>
   <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
@@ -321,7 +321,7 @@ input[type=range] {
 </div>
 
 <!-- Floating-Inject-Button — auf allen Bildschirmgr&ouml;&szlig;en sichtbar -->
-<button id="float-inject" title="Rogue injizieren">&#x2604;</button>
+<button id="float-inject" title="Rogue injizieren">&#x1FA90;</button>
 
 <!-- Mobile Bottom Sheet -->
 <div id="mobile-sheet" class="hidden">
@@ -370,7 +370,7 @@ input[type=range] {
   <div id="mob-planet-checks"></div>
   <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
-  <h2>&#x2604; Rogue</h2>
+  <h2>&#x1FA90; Rogue</h2>
   <label>Masse <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
   <input type="range" id="mob-p-mass" min="-3" max="16" step="0.1" value="0">
   <label>Geschwindigkeit (km/s) <span class="val" id="mob-p-speed-val">30</span></label>
@@ -379,7 +379,7 @@ input[type=range] {
   <input type="range" id="mob-p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
   <label style="color:#faa; font-size:11px;">Tipp: 1-Finger auf Canvas tippen &amp; ziehen = Position + Vektor</label>
   <div style="margin-top:8px;">
-    <button id="mob-inject">&#x2604; Injizieren</button>
+    <button id="mob-inject">&#x1FA90; Injizieren</button>
     <button id="mob-clear-pert" class="danger">L&ouml;schen</button>
   </div>
   <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
@@ -413,6 +413,10 @@ const MAX_SUB_DT_YEARS = 0.5 / 365.25;
 // Ab dieser Masse (Sonnenmassen) gilt ein Koerper als Stern — die
 // Mindestmasse fuer Wasserstoff-Fusion liegt bei ~0.08 M_sonne.
 const STAR_MASS_THRESHOLD = 0.08;
+
+// Ab ~3 M_sonne (Tolman-Oppenheimer-Volkoff-Grenze) kann kein Neutronen-
+// stern mehr existieren -> stellare Endprodukte werden zum Schwarzen Loch.
+const BH_MASS_THRESHOLD = 3.0;
 
 // Ab diesem Sonnenabstand (AU) gilt ein ungebundenes Objekt als
 // "auf Fluchtkurs" — weit jenseits der Neptunbahn (~30 AU).
@@ -478,7 +482,7 @@ function fmtDExp(v, digits) {
 //   < 0,5 M☉                    -> "1,0 M⊕"
 //   ≥ 0,5 M☉ bis 10⁵ M☉         -> "1.000.000 M⊕ (3,0 M☉)"
 //   > 10⁵ M☉ (schwere SLer)     -> "2,2e+16 M⊕ (6,6e+10 M☉)"
-// M_SUN_IN_EARTH ≈ 332.946 — 1 Sonnenmasse in Erdmassen.
+// Ab BH_MASS_THRESHOLD wird zusätzlich "⚫ SL" angehängt.
 function fmtMassWithSun(earthMasses) {
   const main = earthMasses >= 1e6 ? fmtDExp(earthMasses, 2)
              : earthMasses >= 100 ? fmtDE(earthMasses, 0)
@@ -492,6 +496,7 @@ function fmtMassWithSun(earthMasses) {
                  : fmtDE(sun, 2);
     result += ' (' + sunStr + ' M☉)';
   }
+  if (sun >= BH_MASS_THRESHOLD) result += ' ⚫ SL';
   return result;
 }
 
@@ -1290,7 +1295,21 @@ function draw() {
     if (!b.visible) continue;
     const [sx, sy] = worldToScreen(b.x, b.y);
 
-    if (b.isStar) {
+    if (b.isBlackHole) {
+      // Akkretionsdisc-Glut: orange-violetter Halo deutet die Disc
+      // ohne sie geometrisch zu zeichnen. Reicht von Photonenring (~1×R)
+      // bis ~4×R in den Hintergrund aus.
+      const haloR = Math.max(b.radius, 2) * 4;
+      const halo = ctx.createRadialGradient(sx, sy, Math.max(b.radius, 2) * 0.95, sx, sy, haloR);
+      halo.addColorStop(0,    'rgba(255,140,40,0.55)');
+      halo.addColorStop(0.35, 'rgba(220,90,120,0.30)');
+      halo.addColorStop(0.7,  'rgba(120,50,180,0.12)');
+      halo.addColorStop(1,    'rgba(40,20,60,0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(sx, sy, haloR, 0, Math.PI*2);
+      ctx.fill();
+    } else if (b.isStar) {
       const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, b.radius * 2.5);
       grad.addColorStop(0, 'rgba(255,220,60,0.6)');
       grad.addColorStop(0.4, 'rgba(255,180,40,0.15)');
@@ -1305,6 +1324,16 @@ function draw() {
     ctx.fillStyle = b.color;
     ctx.arc(sx, sy, Math.max(b.radius, 1.5), 0, Math.PI*2);
     ctx.fill();
+
+    if (b.isBlackHole) {
+      // Photonensphaere: duenner heller Rand am Ereignishorizont,
+      // macht das SL trotz Schwarzfaerbung klar erkennbar.
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255,200,140,0.85)';
+      ctx.lineWidth = 1.2;
+      ctx.arc(sx, sy, Math.max(b.radius, 1.5) + 0.5, 0, Math.PI*2);
+      ctx.stroke();
+    }
 
     // Fluchtkurs-Markierung: pulsierender roter Ring
     if (b.unbound) {
@@ -1332,11 +1361,21 @@ function draw() {
     const [sx, sy] = worldToScreen(previewWx, previewWy);
     const previewMassSun = Math.pow(10, parseFloat(document.getElementById('p-mass').value)) * M_EARTH / M_SUN;
     const previewR = massToRadius(previewMassSun);
-    const isStar = previewMassSun >= STAR_MASS_THRESHOLD;
+    const isBH = previewMassSun >= BH_MASS_THRESHOLD;
+    const isStar = !isBH && previewMassSun >= STAR_MASS_THRESHOLD;
     ctx.beginPath();
-    ctx.fillStyle = isStar ? 'rgba(255,221,68,0.85)' : 'rgba(255,68,68,0.8)';
+    ctx.fillStyle = isBH   ? 'rgba(10,10,20,0.95)'
+                  : isStar ? 'rgba(255,221,68,0.85)'
+                  :          'rgba(255,68,68,0.8)';
     ctx.arc(sx, sy, previewR, 0, Math.PI*2);
     ctx.fill();
+    if (isBH) {
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255,200,140,0.85)';
+      ctx.lineWidth = 1.2;
+      ctx.arc(sx, sy, previewR + 0.5, 0, Math.PI*2);
+      ctx.stroke();
+    }
     ctx.beginPath();
     ctx.strokeStyle = isStar ? '#ffee99' : '#ff8888';
     ctx.lineWidth = 1.5;
@@ -2041,6 +2080,7 @@ function doInject() {
   const speedAU = speedKmS * KM_S_TO_AU_YR;
 
   const pertName = "Rogue " + (++perturberCounter);
+  const isBH = massSun >= BH_MASS_THRESHOLD;
   const pert = {
     name: pertName,
     mass: massSun,
@@ -2049,11 +2089,14 @@ function doInject() {
     vx:  speedAU * Math.sin(angleRad),
     vy: -speedAU * Math.cos(angleRad),
     ax: 0, ay: 0,
-    color: massSun >= STAR_MASS_THRESHOLD ? '#ffdd44' : '#ff4444',
+    color: isBH ? '#0a0a14'
+         : massSun >= STAR_MASS_THRESHOLD ? '#ffdd44'
+         : '#ff4444',
     radius: massToRadius(massSun),
     realR: realRadiusFromMass(massSun),
     visible: true,
-    isStar: massSun >= STAR_MASS_THRESHOLD,
+    isStar: !isBH && massSun >= STAR_MASS_THRESHOLD,
+    isBlackHole: isBH,
     escapeScore: 0,
     id: bodies.length
   };
