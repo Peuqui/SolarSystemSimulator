@@ -808,7 +808,7 @@ function buildChoreography(v1, v2, alpha) {
 // slow    = Verlangsamungs-Slider-Wert (log10 des Faktors; 0 = 1x).
 const SCENARIOS = {
   'Sonnensystem':          { build: buildSolarSystem,   zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
-  'Trisolaris (3 Sonnen)': { build: buildTrisolaris,    zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Trisolaris (3 Sonnen)': { build: buildTrisolaris,    zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, injectAngle: 180 },
   'Lagrange (instabil)':   { build: buildLagrange,       zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
   'Lagrange (stabil)':     { build: buildLagrangeStable, zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
   'Trojaner (L4)':         { build: buildTrojan,         zoom: 0.6,  zoomLog: 6.55, dt: 1,   slow: 0 },
@@ -1709,6 +1709,7 @@ function onScenarioChange(name) {
     applyZoom(scenarioZoom(name));
     applyDt(SCENARIOS[name].dt);
     applySlow(SCENARIOS[name].slow);
+    if (SCENARIOS[name].injectAngle != null) applyInjectAngle(SCENARIOS[name].injectAngle);
   } else if (name.indexOf('★ ') === 0) {
     // gespeicherte Konfiguration — restoreState stellt Zoom/dt selbst her
     const raw = localStorage.getItem('sim_cfg_' + name.slice(2));
@@ -1811,6 +1812,14 @@ function applySlow(s) {
   document.getElementById('slow-val').textContent = slowLabel(s);
   document.getElementById('mob-slow-slider').value = s;
   document.getElementById('mob-slow-val').textContent = slowLabel(s);
+}
+
+// Setzt den Rogue-Inject-Kompasskurs (Grad, 0–360).
+function applyInjectAngle(deg) {
+  document.getElementById('p-angle').value = deg;
+  document.getElementById('p-angle-val').textContent = deg + '°';
+  document.getElementById('mob-p-angle').value = deg;
+  document.getElementById('mob-p-angle-val').textContent = deg + '°';
 }
 
 // Checkboxes (sync)
