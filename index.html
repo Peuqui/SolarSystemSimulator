@@ -1763,9 +1763,9 @@ chkSync.forEach(([desk, mob, varName]) => {
 function setPaused(p) {
   paused = p;
   const btn = document.getElementById('btn-pause');
-  btn.textContent = paused ? '\u25B6 Start' : '\u23F8; Pause';
+  btn.textContent = paused ? '\u25B6 Start' : '\u23F8 Pause';
   btn.classList.toggle('active', paused);
-  document.getElementById('mob-pause').textContent = paused ? '\u25B6' : '\u23F8;';
+  document.getElementById('mob-pause').textContent = paused ? '\u25B6' : '\u23F8';
 }
 document.getElementById('btn-pause').addEventListener('click', function() {
   setPaused(!paused);
