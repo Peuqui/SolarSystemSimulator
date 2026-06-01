@@ -1125,20 +1125,27 @@ var excludeRoguesFromBary = true;  // Rogues nicht zum Schwerpunkt zaehlen
 // von aussen ins Bild kommt und das "Hauptsystem" rutscht weg. Fallback:
 // wenn es nur Rogues gibt (Leeres System + User-Inject), zaehlen sie.
 function barycenter() {
-  let mx = 0, my = 0, mt = 0;            // ohne Rogues
-  let mxAll = 0, myAll = 0, mtAll = 0;   // mit Rogues (Fallback / Toggle aus)
+  let mx = 0, my = 0, mt = 0;            // ohne Rogues (escapeScore-gewichtet)
+  let mxAll = 0, myAll = 0, mtAll = 0;   // mit Rogues (Toggle aus): Rogues mit vollem Gewicht
   for (const b of bodies) {
     if (!b.visible) continue;
+    const isRogue = perturbers.indexOf(b) >= 0;
     // Gewicht blendet ueber escapeScore stetig von 1 (gebunden) auf 0
     // (entflohen) aus. Score <=5 -> w=1, >=25 -> w=0, dazwischen linear
     // (deckt das Hysterese-Band aus updateBoundState ab). So springt der
     // Schwerpunkt nicht, wenn ein (womoeglich schwerer) Koerper das
     // unbound-Flag umklappt — er wandert ueber ~20 Frames sanft hinaus.
-    const w = Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20));
+    //
+    // Rogues sind per Definition meist hyperbolisch zur Sonne, wuerden
+    // also durch escapeScore rausgewogen. Wenn der User Rogues explizit
+    // EINSCHLIESST (Toggle aus), zaehlen sie mit vollem Gewicht — sonst
+    // waere der "alle Bodies"-Modus identisch mit dem Toggle-an-Modus.
+    const w = isRogue ? 1
+            : Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20));
     if (w <= 0) continue;
     const m = b.mass * w;
     mxAll += m * b.x; myAll += m * b.y; mtAll += m;
-    if (perturbers.indexOf(b) < 0) {
+    if (!isRogue) {
       mx += m * b.x; my += m * b.y; mt += m;
     }
   }
