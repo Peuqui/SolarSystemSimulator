@@ -456,6 +456,15 @@ function realRadiusFromMass(massSun) {
   return R_EARTH_AU * Math.cbrt(Math.max(massSun, 1e-30) / M_EARTH_SUN);
 }
 
+// Schwarzschild-Radius r_s = 2GM/c² in AU. Faktor ergibt sich aus
+// 2 * G_SI * M_SUN / c² / AU ≈ 1,974·10⁻⁸ AU pro Sonnenmasse
+// (~2,953 km/M☉). Wird fuer Schwarze Loecher als Kontakt-Radius
+// verwendet — sonst waere der Schluck-Radius ~4000× zu gross.
+const SCHWARZSCHILD_AU_PER_MSUN = 2 * G_SI * M_SUN / (299792458 * 299792458) / AU;
+function schwarzschildRadius(massSun) {
+  return Math.max(massSun, 1e-30) * SCHWARZSCHILD_AU_PER_MSUN;
+}
+
 // Einheitlicher Darstellungsradius aus der Masse (in Sonnenmassen).
 // Gleiche Masse => gleiche Groesse, egal ob Planet, Sonne oder
 // Stoermasse. Log-Mapping, weil die Massen ~8 Groessenordnungen
@@ -1715,7 +1724,16 @@ function merge(a, b) {
   big.y  = (a.mass*a.y  + b.mass*b.y)  / mt;
   big.mass = mt;
   big.radius = massToRadius(mt);
-  big.realR = Math.cbrt(a.realR**3 + b.realR**3);   // Volumenerhaltung
+  // Wenn das Endprodukt jetzt im SL-Massenbereich liegt: Promotion +
+  // Schwarzschild-Radius. Sonst Volumenerhaltung wie bisher.
+  if (mt >= BH_MASS_THRESHOLD) {
+    big.isBlackHole = true;
+    big.isStar = false;
+    big.color = '#0a0a14';
+    big.realR = schwarzschildRadius(mt);
+  } else {
+    big.realR = Math.cbrt(a.realR**3 + b.realR**3);
+  }
   removeBody(small);
 }
 
@@ -2293,7 +2311,7 @@ function doInject() {
          : massSun >= STAR_MASS_THRESHOLD ? '#ffdd44'
          : '#ff4444',
     radius: massToRadius(massSun),
-    realR: realRadiusFromMass(massSun),
+    realR: isBH ? schwarzschildRadius(massSun) : realRadiusFromMass(massSun),
     visible: true,
     isStar: !isBH && massSun >= STAR_MASS_THRESHOLD,
     isBlackHole: isBH,
