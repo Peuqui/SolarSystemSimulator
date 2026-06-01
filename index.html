@@ -274,6 +274,9 @@ input[type=range] {
   <label>
     <input type="checkbox" id="chk-baryctr" checked> Schwerpunkt zentrieren
   </label>
+  <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung — die Kamera bleibt am Hauptsystem, auch wenn schwere Stoermassen einfliegen.">
+    <input type="checkbox" id="chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren
+  </label>
   <label>Sichtbare K&ouml;rper:</label>
   <div id="planet-checks"></div>
   <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
@@ -366,6 +369,7 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-grid" checked> Gitternetz</label>
   <label><input type="checkbox" id="mob-chk-logzoom" checked> Log-Zoom</label>
   <label><input type="checkbox" id="mob-chk-baryctr" checked> Schwerpunkt zentrieren</label>
+  <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung."><input type="checkbox" id="mob-chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren</label>
   <label>Sichtbare K&ouml;rper:</label>
   <div id="mob-planet-checks"></div>
   <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
@@ -1110,13 +1114,19 @@ var showTrails = true;
 var showVectors = false;
 var showGrid = true;
 var lockBarycenter = true;   // Kamera haelt den Massenschwerpunkt mittig
+var excludeRoguesFromBary = true;  // Rogues nicht zum Schwerpunkt zaehlen
 
 // Massenschwerpunkt des gebundenen Systems. Solange ein Koerper an die
 // Sonne gebunden ist, zaehlt er voll mit — auch ein sehr massereicher.
 // Erst wenn er als Fluchtkoerper erkannt ist, faellt er heraus: er
 // gehoert dann nicht mehr zum System. (updateBoundState laeuft zuvor.)
+// Rogues (injizierte Stoermassen) werden aus der Schwerpunkts-Berechnung
+// ausgeklammert — sonst springt die Kamera, sobald eine schwere Sonne
+// von aussen ins Bild kommt und das "Hauptsystem" rutscht weg. Fallback:
+// wenn es nur Rogues gibt (Leeres System + User-Inject), zaehlen sie.
 function barycenter() {
-  let mx = 0, my = 0, mt = 0;
+  let mx = 0, my = 0, mt = 0;            // ohne Rogues
+  let mxAll = 0, myAll = 0, mtAll = 0;   // mit Rogues (Fallback / Toggle aus)
   for (const b of bodies) {
     if (!b.visible) continue;
     // Gewicht blendet ueber escapeScore stetig von 1 (gebunden) auf 0
@@ -1127,9 +1137,16 @@ function barycenter() {
     const w = Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20));
     if (w <= 0) continue;
     const m = b.mass * w;
-    mx += m * b.x; my += m * b.y; mt += m;
+    mxAll += m * b.x; myAll += m * b.y; mtAll += m;
+    if (perturbers.indexOf(b) < 0) {
+      mx += m * b.x; my += m * b.y; mt += m;
+    }
   }
-  return mt > 0 ? [mx / mt, my / mt] : [0, 0];
+  // Toggle: wenn "Rogues ignorieren" UND es Nicht-Rogue-Bodies gibt,
+  // zentriere nur auf das Hauptsystem. Sonst (oder als Fallback) ueber
+  // alle visiblen Bodies.
+  if (excludeRoguesFromBary && mt > 0) return [mx / mt, my / mt];
+  return mtAll > 0 ? [mxAll / mtAll, myAll / mtAll] : [0, 0];
 }
 
 // Schwerster (sichtbarer) Koerper — Bezugspunkt fuer das Gitternetz.
@@ -1846,6 +1863,7 @@ const chkSync = [
   ['chk-grid', 'mob-chk-grid', 'showGrid'],
   ['chk-logzoom', 'mob-chk-logzoom', 'useLogZoom'],
   ['chk-baryctr', 'mob-chk-baryctr', 'lockBarycenter'],
+  ['chk-bary-no-rogue', 'mob-chk-bary-no-rogue', 'excludeRoguesFromBary'],
 ];
 chkSync.forEach(([desk, mob, varName]) => {
   const toggle = (val, persist) => {
