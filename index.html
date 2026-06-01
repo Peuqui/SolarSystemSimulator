@@ -1200,7 +1200,7 @@ function barycenter() {
   }
   // Toggle: wenn "Rogues ignorieren" UND es Nicht-Rogue-Bodies gibt,
   // zentriere nur auf das Hauptsystem. Sonst (oder als Fallback) ueber
-  // alle visiblen Bodies.
+  // alle visiblen Bodies — streng mass-gewichteter Schwerpunkt.
   if (excludeRoguesFromBary && mt > 0) return [mx / mt, my / mt];
   return mtAll > 0 ? [mxAll / mtAll, myAll / mtAll] : [0, 0];
 }
@@ -1783,7 +1783,11 @@ function handleCollisions() {
       if (dx*dx + dy*dy >= touch*touch) continue;
       const vImp = Math.hypot(b.vx-a.vx, b.vy-a.vy);
       const vEsc = Math.sqrt(2 * G_AU * (a.mass + b.mass) / touch);
-      if (vImp < 1.5 * vEsc) merge(a, b);
+      // Schwarze Loecher koennen nicht zerbrechen — innerhalb des
+      // Ereignishorizonts gibt es keine Fragmentierung, alles wird
+      // verschluckt. Daher fuer SL immer merge.
+      const blackHoleInvolved = a.isBlackHole || b.isBlackHole;
+      if (blackHoleInvolved || vImp < 1.5 * vEsc) merge(a, b);
       else shatter(a, b);
       computeAccelerations();
       updatePerturberList();
