@@ -245,9 +245,9 @@ input[type=range] {
   </details>
   <h2>&#x2699; Zeitsteuerung</h2>
   <label>Zeitschritt (Tage/Schritt) <span class="val" id="dt-val">1</span></label>
-  <input type="range" id="dt-slider" min="0.1" max="50" step="0.1" value="1">
+  <input type="range" autocomplete="off"id="dt-slider" min="0.1" max="50" step="0.1" value="1">
   <label>Verlangsamung <span class="val" id="slow-val">1.0×</span></label>
-  <input type="range" id="slow-slider" min="-1" max="2" step="0.05" value="0">
+  <input type="range" autocomplete="off"id="slow-slider" min="-1" max="2" step="0.05" value="0">
   <div style="margin-top:6px">
     <button id="btn-pause">&#x23F8; Pause</button>
     <button id="btn-step">&#x23ED; Schritt</button>
@@ -256,12 +256,12 @@ input[type=range] {
 
   <h2>&#x1F52D; Anzeige</h2>
   <label>Zoom <span class="val" id="zoom-val">0.35</span></label>
-  <input type="range" id="zoom-slider" min="0.05" max="500" step="0.05" value="0.35">
+  <input type="range" autocomplete="off"id="zoom-slider" min="0.05" max="500" step="0.05" value="0.35">
   <label>
     <input type="checkbox" id="chk-trails" checked> Bahnspuren anzeigen
   </label>
   <label>Bahnspur-L&auml;nge <span class="val" id="trail-val">150</span></label>
-  <input type="range" id="trail-slider" min="50" max="3000" step="50" value="150">
+  <input type="range" autocomplete="off"id="trail-slider" min="50" max="3000" step="50" value="150">
   <label>
     <input type="checkbox" id="chk-vectors"> Kraftvektoren anzeigen
   </label>
@@ -280,12 +280,12 @@ input[type=range] {
 
   <h2>&#x1FA90; Rogue injizieren</h2>
   <label>Masse <span class="val" id="p-mass-val">1,0 M⊕</span></label>
-  <input type="range" id="p-mass" min="-3" max="16" step="0.1" value="0">
+  <input type="range" autocomplete="off"id="p-mass" min="-3" max="16" step="0.1" value="0">
   <label>Start: Mausposition auf Canvas klicken</label>
   <label>Geschwindigkeit (km/s) <span class="val" id="p-speed-val">30</span></label>
-  <input type="range" id="p-speed" min="0" max="100" step="1" value="30">
+  <input type="range" autocomplete="off"id="p-speed" min="0" max="100" step="1" value="30">
   <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="p-angle-val">270&deg;</span></label>
-  <input type="range" id="p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
+  <input type="range" autocomplete="off"id="p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
   <label>Oder: Klick + Ziehen auf Canvas = Vektor</label>
   <div>
     <button id="btn-inject">&#x1FA90; Injizieren</button>
@@ -352,16 +352,16 @@ input[type=range] {
   </details>
   <h2>&#x2699; Zeitsteuerung</h2>
   <label>Zeitschritt (Tage) <span class="val" id="mob-dt-val">1</span></label>
-  <input type="range" id="mob-dt-slider" min="0.1" max="50" step="0.1" value="1">
+  <input type="range" autocomplete="off"id="mob-dt-slider" min="0.1" max="50" step="0.1" value="1">
   <label>Verlangsamung <span class="val" id="mob-slow-val">1.0×</span></label>
-  <input type="range" id="mob-slow-slider" min="-1" max="2" step="0.05" value="0">
+  <input type="range" autocomplete="off"id="mob-slow-slider" min="-1" max="2" step="0.05" value="0">
 
   <h2>&#x1F52D; Anzeige</h2>
   <label>Zoom <span class="val" id="mob-zoom-val">0.35</span></label>
-  <input type="range" id="mob-zoom-slider" min="0.05" max="500" step="0.05" value="0.35">
+  <input type="range" autocomplete="off"id="mob-zoom-slider" min="0.05" max="500" step="0.05" value="0.35">
   <label><input type="checkbox" id="mob-chk-trails" checked> Bahnspuren</label>
   <label>Bahnspur-L&auml;nge <span class="val" id="mob-trail-val">150</span></label>
-  <input type="range" id="mob-trail-slider" min="50" max="3000" step="50" value="150">
+  <input type="range" autocomplete="off"id="mob-trail-slider" min="50" max="3000" step="50" value="150">
   <label><input type="checkbox" id="mob-chk-vectors"> Kraftvektoren</label>
   <label><input type="checkbox" id="mob-chk-grid" checked> Gitternetz</label>
   <label><input type="checkbox" id="mob-chk-logzoom" checked> Log-Zoom</label>
@@ -372,11 +372,11 @@ input[type=range] {
 
   <h2>&#x1FA90; Rogue</h2>
   <label>Masse <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
-  <input type="range" id="mob-p-mass" min="-3" max="16" step="0.1" value="0">
+  <input type="range" autocomplete="off"id="mob-p-mass" min="-3" max="16" step="0.1" value="0">
   <label>Geschwindigkeit (km/s) <span class="val" id="mob-p-speed-val">30</span></label>
-  <input type="range" id="mob-p-speed" min="0" max="100" step="1" value="30">
+  <input type="range" autocomplete="off"id="mob-p-speed" min="0" max="100" step="1" value="30">
   <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="mob-p-angle-val">270&deg;</span></label>
-  <input type="range" id="mob-p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
+  <input type="range" autocomplete="off"id="mob-p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
   <label style="color:#faa; font-size:11px;">Tipp: 1-Finger auf Canvas tippen &amp; ziehen = Position + Vektor</label>
   <div style="margin-top:8px;">
     <button id="mob-inject">&#x1FA90; Injizieren</button>
@@ -1822,6 +1822,23 @@ function applyInjectAngle(deg) {
   document.getElementById('mob-p-angle-val').textContent = deg + '°';
 }
 
+// Beim Tab-Reload stellen Browser die alten Range-Slider-Werte wieder her
+// (Form-Restoration). Das HTML-default-Label zeigt aber den HTML-Initial-
+// wert — Diskrepanz: Anzeige "1,0 M⊕", Slider intern noch z. B. 10. Bei
+// Inject wuerde die alte Masse verwendet. Deshalb beim Start explizit
+// auf HTML-Default zuruecksetzen und Anzeigen synchronisieren.
+function initInjectControls() {
+  document.getElementById('p-mass').value = 0;
+  document.getElementById('mob-p-mass').value = 0;
+  document.getElementById('p-mass-val').textContent = fmtMassWithSun(1);
+  document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(1);
+  document.getElementById('p-speed').value = 30;
+  document.getElementById('mob-p-speed').value = 30;
+  document.getElementById('p-speed-val').textContent = '30';
+  document.getElementById('mob-p-speed-val').textContent = '30';
+  applyInjectAngle(270);
+}
+
 // Checkboxes (sync)
 const chkSync = [
   ['chk-trails', 'mob-chk-trails', 'showTrails'],
@@ -2144,6 +2161,12 @@ function doReset() {
   document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
   document.getElementById('mob-zoom-slider').value = cam.zoom;
   document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
+  // Inject-Slider zurueck auf Default — sonst behaelt der User unbemerkt
+  // alte Werte aus der letzten Sitzung / vom letzten Inject.
+  initInjectControls();
+  // Szenario-spezifischer Inject-Winkel (falls definiert) wieder anwenden.
+  const sc = SCENARIOS[currentScenario];
+  if (sc && sc.injectAngle != null) applyInjectAngle(sc.injectAngle);
   // Aktuelles Szenario komplett neu laden (Koerper + UI-Liste).
   loadScenario(currentScenario);
 }
@@ -2590,6 +2613,7 @@ canvas.addEventListener('touchcancel', function(e) {
 
 // --- Init ---
 refreshScenarioOptions();   // gespeicherte Konfigurationen ins Menue
+initInjectControls();       // Browser-Form-Restore neutralisieren
 let startScenario = 'Sonnensystem';
 try {
   const s = localStorage.getItem('sim_scenario');
