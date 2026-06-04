@@ -2071,12 +2071,11 @@ function fitZoomToSystem(smooth = false) {
   let minZoom = Infinity;
   for (const b of bodies) {
     if (!b.visible) continue;
-    // Auf Fluchtkurs (↗) heisst per Definition: Body verlaesst das System.
-    // Solche Outlier sollen das Auto-Fit nicht mehr dominieren — sonst
-    // schrumpft das Hauptsystem ins Mikroskopische und der ausgeworfene
-    // Body sitzt allein am Rand. User kann manuell rauszoomen, wenn er
-    // ihn sehen will.
-    if ((b.escapeScore || 0) >= 25) continue;
+    const isRogue = perturbers.indexOf(b) >= 0;
+    // Ausgeworfene System-Bodies (↗) duerfen das Auto-Fit nicht dominieren.
+    // Rogues sind aber bewusst gesetzte Objekte — die werden IMMER
+    // respektiert, auch wenn sie hyperbolisch sind.
+    if (!isRogue && (b.escapeScore || 0) >= 25) continue;
     const [tsx, tsy] = transform(b.x, b.y);
     const dx = (tsx - bsx) * 80;
     const dy = (tsy - bsy) * 80;
@@ -2439,6 +2438,10 @@ function doInject() {
   // rebuildBodyList baut die Liste komplett aus `bodies` neu auf.
   computeAccelerations();
   rebuildBodyList();
+  // Auto-Fit nach Inject: damit der neu gesetzte Rogue garantiert
+  // sichtbar ist, auch wenn er weit vom Hauptsystem entfernt platziert
+  // wurde. Smooth, damit der Uebergang nicht abrupt wirkt.
+  fitZoomToSystem(true);
   dragging = false;
   injectMarked = false;   // Marker verschwindet nach Inject — folgende
                           // Klicks injizieren weiterhin bei derselben
