@@ -1184,6 +1184,9 @@ function recordTrails() {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible || !trails[b.name]) continue;
+    // Asteroid-Trails komplett skippen, wenn ihre Laenge auf 0 steht
+    // (default). Spart bei 450 Bodies die meiste Trail-Arbeit.
+    if (b.isAsteroid && MAX_TRAIL_AST <= 0) continue;
     const tr = trails[b.name];
     const sp = Math.hypot(b.vx, b.vy);
     const dx = sp > 1e-12 ? b.vx / sp : 1;
@@ -1781,10 +1784,13 @@ function adaptiveSubDt() {
     const aIsAst = bodies[i].isAsteroid;
     for (let j = i+1; j < bodies.length; j++) {
       if (!bodies[j].visible) continue;
-      // Asteroid-Asteroid-Paare ueberspringen — sie wirken sich
-      // weder gravitativ noch ueber Kollisionen aufeinander aus
-      // (siehe computeAccelerations/handleCollisions).
-      if (aIsAst && bodies[j].isAsteroid) continue;
+      // Asteroiden komplett aus dem Sub-Step-Adapter herausnehmen.
+      // Sonst zwingt jeder Asteroid in Jupiter-Naehe dt drastisch nach
+      // unten — bei 450 Asteroiden ruckelt der Browser. Akzeptierter
+      // Trade-off: ein Asteroid kann bei extrem nahem Vorbeiflug
+      // zwischen 2 Frames durch einen Planeten tunneln. Fuer eine
+      // Sandbox-Visualisierung vertretbar.
+      if (aIsAst || bodies[j].isAsteroid) continue;
       const a = bodies[i], b = bodies[j];
       const dx = b.x-a.x, dy = b.y-a.y;
       const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
