@@ -1349,19 +1349,14 @@ function draw() {
     // Schwerpunkt — bewegt sich daher nicht mit der Kamera und dient als
     // absolute Referenz, wenn das System unter dem Einfluss einer schweren
     // Rogue zu wandern beginnt.
-    // Linear-Modus: Rechteckgitter. Log-Modus: Polar-Gitter (Ringe +
-    // Strahlen), weil das Log-Polar-Koordinatensystem rechteckige Welt-
-    // Linien zu einem Fadenkreuz kollabieren laesst.
+    // Linear-Modus: Rechteckgitter (adaptive Schrittweite, alle AU-Werte).
+    // Log-Modus: schlankes Achsenkreuz + Tick-Marks an ±1/±10/±100/±1000 AU
+    //   — gerade Welt-Linien wuerden im Log-Polar zu wirren Kurven kollabieren.
     const pxPerAU = cam.zoom * 80;
     ctx.strokeStyle = 'rgba(120,140,180,0.22)';
     ctx.lineWidth = 0.8;
     ctx.font = '10px monospace';
     if (useLogZoom) {
-      // Welt-Achsenkreuz im Log-Modus: die Welt-Achsen x=0 und y=0 als
-      // gerade Linien durch den Welt-Ursprung (im Log-Polar-System sind
-      // sie tatsaechlich Geraden, weil sin/cos der Winkel 0/π/π/2/3π/2
-      // exakt ±1/0 sind). Plus Tick-Marks an wichtigen AU-Werten.
-      // Damit hat der User eine absolute Welt-Referenz ohne wirre Kurven.
       const [ox, oy] = worldToScreen(0, 0);
       const [xEndPos,] = worldToScreen(5000, 0);
       const [xEndNeg,] = worldToScreen(-5000, 0);
@@ -1373,7 +1368,6 @@ function draw() {
       ctx.moveTo(xEndNeg, oy); ctx.lineTo(xEndPos, oy);
       ctx.moveTo(ox, yEndNeg); ctx.lineTo(ox, yEndPos);
       ctx.stroke();
-      // Tick-Marks an Schluessel-AU-Werten
       const ticks = [-1000, -100, -10, -1, 1, 10, 100, 1000];
       ctx.fillStyle = 'rgba(140,180,220,0.7)';
       for (const v of ticks) {
@@ -1387,7 +1381,6 @@ function draw() {
         if (tx > 20 && tx < W - 50) ctx.fillText(lbl, tx + 4, oy + 14);
         if (ty > 15 && ty < H - 5)  ctx.fillText(lbl, ox + 8, ty - 3);
       }
-      // Welt-Ursprung als kleines Kreuz hervorheben
       ctx.strokeStyle = 'rgba(180,200,240,0.7)';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
@@ -1395,7 +1388,7 @@ function draw() {
       ctx.moveTo(ox, oy - 6); ctx.lineTo(ox, oy + 6);
       ctx.stroke();
     } else {
-      // Linear: echtes Rechteckgitter
+      // Linear: echtes Rechteckgitter (adaptiv).
       const screenDiag = Math.hypot(W, H) / 2;
       const visibleR = screenDiag / pxPerAU + Math.hypot(cam.cx, cam.cy);
       const rawStep = visibleR / 6;
@@ -1841,6 +1834,8 @@ function handleCollisions() {
   }
 }
 
+let centerInTransit = false;   // Kamera faehrt gerade auf ein neues Ziel
+
 function simLoop() {
   // Browser drosseln rAF bei inaktivem Tab stark (oft 0–1 Hz). Eine
   // sinnvolle Simulation ist da nicht moeglich — also wird inaktiver
@@ -1848,7 +1843,28 @@ function simLoop() {
   // laufen weiter. Der 250-ms-Cap fangt zusaetzlich Rest-Drift beim
   // ersten Wake-Up-Tick ab.
   const nowMs = performance.now();
-  const effectivelyPaused = paused || document.hidden;
+  // Schwerpunkt-Ziel vorab bestimmen — wenn Kamera weit davon entfernt
+  // ist (z. B. nach Inject einer schweren Rogue), pausieren wir die Sim,
+  // damit der User die Verschiebung in Ruhe sehen kann.
+  let tx = cam.cx, ty = cam.cy;
+  if (lockBarycenter) {
+    const [bx, by] = barycenter();
+    if (useLogZoom) {
+      const r = Math.hypot(bx, by), ang = Math.atan2(by, bx);
+      const rLog = logTransform(r);
+      tx = rLog * Math.cos(ang);
+      ty = rLog * Math.sin(ang);
+    } else {
+      tx = bx; ty = by;
+    }
+    const distPx = Math.hypot(tx - cam.cx, ty - cam.cy) * cam.zoom * 80;
+    if (distPx > 50) centerInTransit = true;       // Sprung erkannt
+    else if (distPx < 5) centerInTransit = false;  // angekommen
+    // dazwischen: Status bleibt (Hysterese)
+  } else {
+    centerInTransit = false;
+  }
+  const effectivelyPaused = paused || document.hidden || centerInTransit;
   if (lastTickMs && !effectivelyPaused) {
     const delta = nowMs - lastTickMs;
     if (delta < 250) realElapsedMs += delta;
@@ -1856,30 +1872,14 @@ function simLoop() {
   lastTickMs = nowMs;
   if (!effectivelyPaused) {
     const dtDays = parseFloat(document.getElementById('dt-slider').value);
-    // Slider ist logarithmisch: Wert = log10(Verlangsamungsfaktor)
     const slowFactor = Math.pow(10, parseFloat(document.getElementById('slow-slider').value));
     advance(dtDays / 365.25 / slowFactor);
   }
-  // Fluchtkurs zuerst auswerten — barycenter() braucht die unbound-Flags.
+  // Fluchtkurs auswerten — barycenter() braucht die unbound-Flags.
   updateBoundState();
-  // Schwerpunkt zentrieren: Kamera auf das Baryzentrum des gebundenen
-  // Systems setzen. Geglaettet via Lerp — bei plotzlichen Spruengen
-  // (z. B. schwere Rogue injiziert) fahrt die Kamera weich zum neuen
-  // Punkt, statt zu springen. Bei normaler Drift sub-AU/Frame faellt der
-  // Lag nicht auf (Lerp greift jeden Frame an).
+  // Lerp die Kamera zum aktuellen Ziel (Faktor 0,05 = ~1 s fuer 95 %).
   if (lockBarycenter) {
-    const [bx, by] = barycenter();
-    let tx, ty;
-    if (useLogZoom) {
-      const r = Math.hypot(bx, by), ang = Math.atan2(by, bx);
-      const rLog = logTransform(r);
-      tx = rLog * Math.cos(ang);
-      ty = rLog * Math.sin(ang);
-    } else {
-      tx = bx;
-      ty = by;
-    }
-    const SMOOTH = 0.08;   // ~0,5 s fuer 95 % Annaeherung bei 60 fps
+    const SMOOTH = 0.05;
     cam.cx += (tx - cam.cx) * SMOOTH;
     cam.cy += (ty - cam.cy) * SMOOTH;
   }
@@ -2043,6 +2043,32 @@ function applyZoom(z) {
   document.getElementById('mob-zoom-val').textContent = fmtDE(z, 2);
 }
 
+// Auto-Fit: Zoom so waehlen, dass alle relevanten Bodies im Bild
+// sichtbar sind. Verwendet den aktuellen Schwerpunkt als Mitte und den
+// maximalen Abstand davon als Radius. Beim Toggle zwischen Log/Linear
+// wuerde sonst die Szenario-Default-Skala greifen, die aber bei
+// veraenderten Systemen (durch Rogues) nicht mehr passt.
+function fitZoomToSystem() {
+  if (!bodies.length) return;
+  const [bcx, bcy] = barycenter();
+  let maxR = 0;
+  for (const b of bodies) {
+    if (!b.visible) continue;
+    const isRogue = perturbers.indexOf(b) >= 0;
+    // Wenn Toggle "Rogues ignorieren" an: Rogues nicht beruecksichtigen,
+    // sonst wuerde ein weit weggeflogener Rogue das ganze Hauptsystem
+    // mikroskopisch werden lassen.
+    if (excludeRoguesFromBary && isRogue) continue;
+    const dx = b.x - bcx, dy = b.y - bcy;
+    maxR = Math.max(maxR, Math.hypot(dx, dy));
+  }
+  if (maxR <= 0) maxR = 1;
+  const targetPx = Math.min(W, H) * 0.4;
+  const r = useLogZoom ? logTransform(maxR) : maxR;
+  const z = targetPx / (80 * r);
+  applyZoom(Math.max(0.001, Math.min(500, z)));
+}
+
 // Setzt den Zeitschritt (Tage/Frame) und synchronisiert beide Slider.
 function applyDt(d) {
   document.getElementById('dt-slider').value = d;
@@ -2101,7 +2127,7 @@ chkSync.forEach(([desk, mob, varName]) => {
     document.getElementById(desk).checked = val;
     document.getElementById(mob).checked = val;
     // Log-Zoom braucht einen anderen Kamera-Zoom — Szenario-Wert neu setzen.
-    if (varName === 'useLogZoom') applyZoom(scenarioZoom(currentScenario));
+    if (varName === 'useLogZoom') fitZoomToSystem();
     if (persist) {
       try { localStorage.setItem('sim_' + varName, val ? '1' : '0'); } catch (e) {}
     }
