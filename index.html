@@ -2086,11 +2086,12 @@ function fitZoomToSystem(smooth = false) {
   let minZoom = Infinity;
   for (const b of bodies) {
     if (!b.visible) continue;
-    const isRogue = perturbers.indexOf(b) >= 0;
-    // Ausgeworfene System-Bodies (↗) duerfen das Auto-Fit nicht dominieren.
-    // Rogues sind aber bewusst gesetzte Objekte — die werden IMMER
-    // respektiert, auch wenn sie hyperbolisch sind.
-    if (!isRogue && (b.escapeScore || 0) >= 25) continue;
+    // Alle fluechtenden Bodies (↗, escapeScore >= 25) — System-Bodies
+    // wie Rogues gleichermassen — werden aus dem Auto-Fit ausgeschlossen.
+    // Sie sind per Definition "weg" und sollen das Hauptsystem nicht ins
+    // Mikroskopische druecken. Frisch injizierte Rogues haben noch
+    // escapeScore=0 und werden normal erfasst.
+    if ((b.escapeScore || 0) >= 25) continue;
     const [tsx, tsy] = transform(b.x, b.y);
     const dx = (tsx - bsx) * 80;
     const dy = (tsy - bsy) * 80;
