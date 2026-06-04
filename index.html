@@ -299,33 +299,34 @@ input[type=range] {
     <input type="checkbox" id="chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren
   </label>
 
-  <h2>&#x1FA90; Rogue injizieren</h2>
+  <h2>&#x1F30C; Inject</h2>
   <label>Masse <span class="val" id="p-mass-val">1,0 M⊕</span></label>
   <input type="range" autocomplete="off"id="p-mass" min="-3" max="16" step="0.1" value="0">
-  <label>Start: Mausposition auf Canvas klicken</label>
   <label>Geschwindigkeit (km/s) <span class="val" id="p-speed-val">30</span></label>
   <input type="range" autocomplete="off"id="p-speed" min="-1" max="3.5" step="0.005" value="1.477">
   <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="p-angle-val">270&deg;</span></label>
   <input type="range" autocomplete="off"id="p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
-  <label>Oder: Klick + Ziehen auf Canvas = Vektor</label>
+  <label style="color:#aaa; font-size:11px;">Klick+Ziehen auf Canvas = Vektor. Shift+Klick auf den Inject-Button (rechts) = Wolke.</label>
+
+  <label style="color:#7af; margin-top:6px; font-size:12px;">&#x1FA90; Rogue (Einzelkoerper)</label>
   <div>
     <button id="btn-inject">&#x1FA90; Injizieren</button>
     <button id="btn-clear-pert" class="danger">Alle Rogues l&ouml;schen</button>
   </div>
-  <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:4px;" title="Entfernt alle Koerper mit ↗-Markierung">&#x2197; Fl&uuml;chtende entfernen</button>
-  <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
-  <h2>&#x1FAA8; Asteroiden-Wolke</h2>
+  <label style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
   <label>Anzahl <span class="val" id="cloud-n-val">50</span></label>
   <input type="range" autocomplete="off" id="cloud-n" min="5" max="500" step="5" value="50">
   <label title="Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.">Dichte (1/AU²) <span class="val" id="cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="cloud-density" min="-2" max="4" step="0.05" value="1">
-  <label style="color:#aaa; font-size:11px;">Effektiver Radius: <span id="cloud-r-derived">~1,3 AU</span></label>
-  <label style="color:#aaa; font-size:11px;">Klick + Ziehen auf Canvas oder Slider — wie bei Rogue. Geschwindigkeit + Richtung jedes Asteroiden ±15 % zufällig variiert. Shift+Klick auf den Inject-Floating-Button setzt eine Wolke statt Rogue.</label>
-  <div style="margin-top:4px;">
+  <label style="color:#aaa; font-size:11px;">Eff. Radius: <span id="cloud-r-derived">~1,3 AU</span> · Speed+Richtung pro Asteroid ±15 %</label>
+  <div>
     <button id="btn-inject-cloud">&#x1FAA8; Wolke injizieren</button>
     <button id="btn-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
   </div>
+
+  <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:10px;" title="Entfernt alle Koerper mit ↗-Markierung">&#x2197; Fl&uuml;chtende entfernen</button>
+  <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
   <label style="margin-top:10px;">Sichtbare K&ouml;rper:</label>
   <div id="planet-checks"></div>
@@ -410,7 +411,7 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-baryctr" checked> Schwerpunkt zentrieren</label>
   <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung."><input type="checkbox" id="mob-chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren</label>
 
-  <h2>&#x1FA90; Rogue</h2>
+  <h2>&#x1F30C; Inject</h2>
   <label>Masse <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
   <input type="range" autocomplete="off"id="mob-p-mass" min="-3" max="16" step="0.1" value="0">
   <label>Geschwindigkeit (km/s) <span class="val" id="mob-p-speed-val">30</span></label>
@@ -418,23 +419,26 @@ input[type=range] {
   <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="mob-p-angle-val">270&deg;</span></label>
   <input type="range" autocomplete="off"id="mob-p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
   <label style="color:#faa; font-size:11px;">Tipp: 1-Finger auf Canvas tippen &amp; ziehen = Position + Vektor</label>
-  <div style="margin-top:8px;">
+
+  <label style="color:#7af; margin-top:6px; font-size:12px;">&#x1FA90; Rogue (Einzelkoerper)</label>
+  <div style="margin-top:4px;">
     <button id="mob-inject">&#x1FA90; Injizieren</button>
     <button id="mob-clear-pert" class="danger">L&ouml;schen</button>
   </div>
-  <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:4px;">&#x2197; Fl&uuml;chtende entfernen</button>
-  <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
-  <h2>&#x1FAA8; Asteroiden-Wolke</h2>
+  <label style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
   <label>Anzahl <span class="val" id="mob-cloud-n-val">50</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-n" min="5" max="500" step="5" value="50">
   <label>Dichte (1/AU²) <span class="val" id="mob-cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-density" min="-2" max="4" step="0.05" value="1">
-  <label style="color:#aaa; font-size:11px;">Effektiver Radius: <span id="mob-cloud-r-derived">~1,3 AU</span></label>
+  <label style="color:#aaa; font-size:11px;">Eff. Radius: <span id="mob-cloud-r-derived">~1,3 AU</span> · Speed+Richtung ±15 %</label>
   <div style="margin-top:4px;">
     <button id="mob-inject-cloud">&#x1FAA8; Wolke injizieren</button>
     <button id="mob-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
   </div>
+
+  <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:10px;">&#x2197; Fl&uuml;chtende entfernen</button>
+  <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
   <label style="margin-top:10px;">Sichtbare K&ouml;rper:</label>
   <div id="mob-planet-checks"></div>
@@ -1581,9 +1585,14 @@ function draw() {
       ctx.stroke();
     }
 
-    ctx.fillStyle = b.unbound ? '#ff6a6a' : b.color + 'dd';
-    ctx.font = '11px monospace';
-    ctx.fillText(b.unbound ? b.name + ' ⇗' : b.name, sx + b.radius + 5, sy + 4);
+    // Asteroiden bekommen kein Label — bei 100+ Wolken-Bodies wuerden
+    // sich die Labels nur ueberlagern. unbound-Asteroiden zeigen aber
+    // weiterhin den pulsierenden Ring oben.
+    if (!b.isAsteroid) {
+      ctx.fillStyle = b.unbound ? '#ff6a6a' : b.color + 'dd';
+      ctx.font = '11px monospace';
+      ctx.fillText(b.unbound ? b.name + ' ⇗' : b.name, sx + b.radius + 5, sy + 4);
+    }
   }
 
   // Perturber injection preview — zeigt die Stoermasse schon beim
