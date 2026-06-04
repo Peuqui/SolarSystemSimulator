@@ -2475,6 +2475,24 @@ function doInject() {
   // rebuildBodyList baut die Liste komplett aus `bodies` neu auf.
   computeAccelerations();
   rebuildBodyList();
+  // Auto-Fit + Pause nur ausloesen, wenn die Rogue wirklich relevant ist:
+  //   B: ≥ 1 % der Hauptsystem-Masse  (gravitativ relevant)
+  //   C: ≥ 0,5 M☉                     (stellare Klasse)
+  //   a: ausserhalb aktuelles Sichtfeld (User wuerde sie sonst nicht sehen)
+  // Sonst still injizieren, kein Lerp, keine Pause.
+  let mainMass = 0;
+  for (const b of bodies) {
+    if (!b.visible || b === pert) continue;
+    if (perturbers.indexOf(b) >= 0) continue;
+    if ((b.escapeScore || 0) >= 25) continue;
+    mainMass += b.mass;
+  }
+  const massRelevant = (mainMass > 0 && pert.mass >= 0.01 * mainMass) || pert.mass >= 0.5;
+  const [psx, psy] = worldToScreen(pert.x, pert.y);
+  const sb = document.getElementById('sidebar');
+  const sw = sb && sb.getBoundingClientRect().width > 0 ? sb.getBoundingClientRect().width : 0;
+  const offscreen = psx < sw + 50 || psx > W - 50 || psy < 50 || psy > H - 50;
+  if (massRelevant || offscreen) fitZoomToSystem(true);
   dragging = false;
   injectMarked = false;   // Marker verschwindet nach Inject — folgende
                           // Klicks injizieren weiterhin bei derselben
