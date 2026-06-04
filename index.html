@@ -1198,35 +1198,36 @@ const stars = [];
 // von aussen ins Bild kommt und das "Hauptsystem" rutscht weg. Fallback:
 // wenn es nur Rogues gibt (Leeres System + User-Inject), zaehlen sie.
 function barycenter() {
-  let mx = 0, my = 0, mt = 0;            // ohne Rogues (escapeScore-gewichtet)
-  let mxAll = 0, myAll = 0, mtAll = 0;   // mit Rogues (Toggle aus): Rogues mit vollem Gewicht
+  let mx = 0, my = 0, mt = 0;            // Hauptsystem mit escapeScore-Filter
+  let mxR = 0, myR = 0, mtR = 0;         // Hauptsystem OHNE Filter (Fallback)
+  let mxA = 0, myA = 0, mtA = 0;         // alle Bodies inkl. Rogues, voll
   for (const b of bodies) {
     if (!b.visible) continue;
     const isRogue = perturbers.indexOf(b) >= 0;
-    // Gewicht blendet ueber escapeScore stetig von 1 (gebunden) auf 0
-    // (entflohen) aus. Score <=5 -> w=1, >=25 -> w=0, dazwischen linear
-    // (deckt das Hysterese-Band aus updateBoundState ab). So springt der
-    // Schwerpunkt nicht, wenn ein (womoeglich schwerer) Koerper das
-    // unbound-Flag umklappt — er wandert ueber ~20 Frames sanft hinaus.
-    //
-    // Rogues sind per Definition meist hyperbolisch zur Sonne, wuerden
-    // also durch escapeScore rausgewogen. Wenn der User Rogues explizit
-    // EINSCHLIESST (Toggle aus), zaehlen sie mit vollem Gewicht — sonst
-    // waere der "alle Bodies"-Modus identisch mit dem Toggle-an-Modus.
     const w = isRogue ? 1
             : Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20));
-    if (w <= 0) continue;
-    const m = b.mass * w;
-    mxAll += m * b.x; myAll += m * b.y; mtAll += m;
+    const m = b.mass;
+    mxA += m * b.x; myA += m * b.y; mtA += m;
     if (!isRogue) {
-      mx += m * b.x; my += m * b.y; mt += m;
+      mxR += m * b.x; myR += m * b.y; mtR += m;
+      if (w > 0) {
+        const mw = m * w;
+        mx += mw * b.x; my += mw * b.y; mt += mw;
+      }
     }
   }
-  // Toggle: wenn "Rogues ignorieren" UND es Nicht-Rogue-Bodies gibt,
-  // zentriere nur auf das Hauptsystem. Sonst (oder als Fallback) ueber
-  // alle visiblen Bodies — streng mass-gewichteter Schwerpunkt.
-  if (excludeRoguesFromBary && mt > 0) return [mx / mt, my / mt];
-  return mtAll > 0 ? [mxAll / mtAll, myAll / mtAll] : [0, 0];
+  // Drei-stufiger Fallback bei "Rogues ignorieren":
+  //   1. Hauptsystem mit escapeScore-Filter (Normalbetrieb)
+  //   2. Hauptsystem OHNE Filter — alle Hauptsystem-Bodies sind ↗-markiert
+  //      (chaotische Wechselwirkung) — wir wollen den Schwerpunkt trotzdem
+  //      bei den Hauptsystem-Bodies, nicht bei den leichten Rogues
+  //   3. Alle Bodies (z. B. Leeres-System-Szenario mit User-Rogues)
+  // Bei "Rogues ignorieren" = aus: immer Stufe 3 (echter Massenmittelpunkt).
+  if (excludeRoguesFromBary) {
+    if (mt > 0)  return [mx / mt, my / mt];
+    if (mtR > 0) return [mxR / mtR, myR / mtR];
+  }
+  return mtA > 0 ? [mxA / mtA, myA / mtA] : [0, 0];
 }
 
 // Schwerster (sichtbarer) Koerper — Bezugspunkt fuer das Gitternetz.
