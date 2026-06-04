@@ -236,6 +236,7 @@ input[type=range] {
     <summary style="color:#7af; font-size:15px; font-weight:bold; cursor:pointer; padding-bottom:4px; border-bottom:1px solid #333;">&#x1F30C; Szenario</summary>
     <select id="scenario-select" style="width:100%; margin-top:8px; font-size:14px; background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:4px; padding:6px; min-height:34px;">
       <option>Sonnensystem</option>
+      <option>Sonnensystem mit Gürteln</option>
       <option>Trisolaris (3 Sonnen)</option>
       <option>Lagrange (instabil)</option>
       <option>Lagrange (stabil)</option>
@@ -373,6 +374,7 @@ input[type=range] {
     <summary style="color:#7af; font-size:14px; font-weight:bold; cursor:pointer;">&#x1F30C; Szenario</summary>
     <select id="mob-scenario-select" style="width:100%; margin-top:6px; font-size:14px; background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:4px; padding:6px; min-height:36px;">
       <option>Sonnensystem</option>
+      <option>Sonnensystem mit Gürteln</option>
       <option>Trisolaris (3 Sonnen)</option>
       <option>Lagrange (instabil)</option>
       <option>Lagrange (stabil)</option>
@@ -672,6 +674,44 @@ function buildSolarSystem() {
   for (let i = 1; i < PLANET_DATA.length; i++) planetOnOrbit(PLANET_DATA[i], sun.mass);
 }
 
+// Asteroiden in einem Ringbereich um die Sonne. Wird fuer Asteroiden-
+// gürtel UND Kuipergürtel verwendet (gleiche Mechanik, unterschiedliche
+// Parameter). isAsteroid=true -> profitiert von der Performance-
+// Optimierung (Asteroid-Asteroid-Wechselwirkung wird uebersprungen).
+function addBelt(prefix, count, aMin, aMax, eMax, totalMassEarth, color) {
+  const sun = PLANET_DATA[0];
+  const massPer = (totalMassEarth * M_EARTH_SUN) / count;
+  for (let i = 0; i < count; i++) {
+    const a = aMin + Math.random() * (aMax - aMin);
+    const ecc = Math.random() * eMax;
+    const rPeri = a * (1 - ecc);
+    const vPeri = Math.sqrt(G_AU * sun.mass * (1 + ecc) / (a * (1 - ecc)));
+    const ang = Math.random() * 2 * Math.PI;
+    pushBody({
+      name: prefix + (i+1),
+      mass: massPer,
+      color,
+      x: rPeri * Math.cos(ang),
+      y: rPeri * Math.sin(ang),
+      vx: -vPeri * Math.sin(ang),
+      vy:  vPeri * Math.cos(ang),
+      rkm: 1,
+      isStar: false,
+      isAsteroid: true,
+    });
+  }
+}
+
+function buildSolarSystemWithBelts() {
+  buildSolarSystem();
+  // Asteroidengürtel: 2,1–3,3 AU, Gesamtmasse ~Mondmasse/30 (~0,001 M⊕),
+  // moderate Excentricity.
+  addBelt('AB', 250, 2.1, 3.3, 0.15, 0.001, '#aa8866');
+  // Kuipergürtel: 30–50 AU, Gesamtmasse ~0,04 M⊕ (klassische Schaetzung),
+  // etwas hoehere Excentricity als der Asteroidengürtel.
+  addBelt('KB', 200, 30, 50, 0.2, 0.04, '#88aabb');
+}
+
 function buildEmpty() { /* leer — Koerper per Klick setzen (Bau-Modus) */ }
 
 function buildTrappist() {
@@ -888,6 +928,7 @@ function buildChoreography(v1, v2, alpha) {
 // slow    = Verlangsamungs-Slider-Wert (log10 des Faktors; 0 = 1x).
 const SCENARIOS = {
   'Sonnensystem':          { build: buildSolarSystem,   zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
+  'Sonnensystem mit Gürteln': { build: buildSolarSystemWithBelts, zoom: 0.02, zoomLog: 4, dt: 1, slow: 0 },
   'Trisolaris (3 Sonnen)': { build: buildTrisolaris,    zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, injectAngle: 180 },
   'Lagrange (instabil)':   { build: buildLagrange,       zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
   'Lagrange (stabil)':     { build: buildLagrangeStable, zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
