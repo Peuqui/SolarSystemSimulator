@@ -298,9 +298,6 @@ input[type=range] {
   <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung — die Kamera bleibt am Hauptsystem, auch wenn schwere Stoermassen einfliegen.">
     <input type="checkbox" id="chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren
   </label>
-  <label>Sichtbare K&ouml;rper:</label>
-  <div id="planet-checks"></div>
-  <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
   <h2>&#x1FA90; Rogue injizieren</h2>
   <label>Masse <span class="val" id="p-mass-val">1,0 M⊕</span></label>
@@ -317,6 +314,10 @@ input[type=range] {
   </div>
   <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:4px;" title="Entfernt alle Koerper mit ↗-Markierung">&#x2197; Fl&uuml;chtende entfernen</button>
   <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
+
+  <label style="margin-top:10px;">Sichtbare K&ouml;rper:</label>
+  <div id="planet-checks"></div>
+  <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
   <h2>&#x1F4CA; Statistik</h2>
   <div id="stats" style="font-size:11px;"></div>
@@ -395,9 +396,6 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-logzoom" checked> Log-Zoom</label>
   <label><input type="checkbox" id="mob-chk-baryctr" checked> Schwerpunkt zentrieren</label>
   <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung."><input type="checkbox" id="mob-chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren</label>
-  <label>Sichtbare K&ouml;rper:</label>
-  <div id="mob-planet-checks"></div>
-  <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
   <h2>&#x1FA90; Rogue</h2>
   <label>Masse <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
@@ -413,6 +411,10 @@ input[type=range] {
   </div>
   <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:4px;">&#x2197; Fl&uuml;chtende entfernen</button>
   <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
+
+  <label style="margin-top:10px;">Sichtbare K&ouml;rper:</label>
+  <div id="mob-planet-checks"></div>
+  <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
 
   <h2>&#x1F4CA; Statistik</h2>
   <div id="mob-stats" style="font-size:11px;"></div>
