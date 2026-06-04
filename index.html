@@ -318,12 +318,10 @@ input[type=range] {
   <h2>&#x1FAA8; Asteroiden-Wolke</h2>
   <label>Anzahl <span class="val" id="cloud-n-val">50</span></label>
   <input type="range" autocomplete="off" id="cloud-n" min="5" max="500" step="5" value="50">
-  <label title="Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.">Dichte (1/AU²) <span class="val" id="cloud-density-val">1,0</span></label>
-  <input type="range" autocomplete="off" id="cloud-density" min="-2" max="2" step="0.05" value="0">
-  <label style="color:#aaa; font-size:11px;">Effektiver Radius: <span id="cloud-r-derived">~4,0 AU</span></label>
-  <label title="Tangentiale Geschwindigkeit jedes Asteroiden um den Wolken-Schwerpunkt — wie ein rotierender Gürtel. 0 = nur Translation.">Spin (km/s) <span class="val" id="cloud-spin-val">0</span></label>
-  <input type="range" autocomplete="off" id="cloud-spin" min="0" max="50" step="0.5" value="0">
-  <label style="color:#aaa; font-size:11px;">Klick + Ziehen auf Canvas oder Slider — wie bei Rogue. Shift+Klick auf den Inject-Floating-Button setzt eine Wolke statt Rogue.</label>
+  <label title="Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.">Dichte (1/AU²) <span class="val" id="cloud-density-val">10</span></label>
+  <input type="range" autocomplete="off" id="cloud-density" min="-2" max="4" step="0.05" value="1">
+  <label style="color:#aaa; font-size:11px;">Effektiver Radius: <span id="cloud-r-derived">~1,3 AU</span></label>
+  <label style="color:#aaa; font-size:11px;">Klick + Ziehen auf Canvas oder Slider — wie bei Rogue. Geschwindigkeit + Richtung jedes Asteroiden ±15 % zufällig variiert. Shift+Klick auf den Inject-Floating-Button setzt eine Wolke statt Rogue.</label>
   <div style="margin-top:4px;">
     <button id="btn-inject-cloud">&#x1FAA8; Wolke injizieren</button>
     <button id="btn-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
@@ -430,11 +428,9 @@ input[type=range] {
   <h2>&#x1FAA8; Asteroiden-Wolke</h2>
   <label>Anzahl <span class="val" id="mob-cloud-n-val">50</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-n" min="5" max="500" step="5" value="50">
-  <label>Dichte (1/AU²) <span class="val" id="mob-cloud-density-val">1,0</span></label>
-  <input type="range" autocomplete="off" id="mob-cloud-density" min="-2" max="2" step="0.05" value="0">
-  <label style="color:#aaa; font-size:11px;">Effektiver Radius: <span id="mob-cloud-r-derived">~4,0 AU</span></label>
-  <label>Spin (km/s) <span class="val" id="mob-cloud-spin-val">0</span></label>
-  <input type="range" autocomplete="off" id="mob-cloud-spin" min="0" max="50" step="0.5" value="0">
+  <label>Dichte (1/AU²) <span class="val" id="mob-cloud-density-val">10</span></label>
+  <input type="range" autocomplete="off" id="mob-cloud-density" min="-2" max="4" step="0.05" value="1">
+  <label style="color:#aaa; font-size:11px;">Effektiver Radius: <span id="mob-cloud-r-derived">~1,3 AU</span></label>
   <div style="margin-top:4px;">
     <button id="mob-inject-cloud">&#x1FAA8; Wolke injizieren</button>
     <button id="mob-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
@@ -2118,15 +2114,6 @@ function updateCloudDerived() {
     updateCloudDerived();
   });
 });
-['cloud-spin', 'mob-cloud-spin'].forEach(id => {
-  document.getElementById(id).addEventListener('input', function() {
-    const v = fmtSpeed(parseFloat(this.value));
-    document.getElementById('cloud-spin-val').textContent = v;
-    document.getElementById('mob-cloud-spin-val').textContent = v;
-    document.getElementById('cloud-spin').value = this.value;
-    document.getElementById('mob-cloud-spin').value = this.value;
-  });
-});
 
 let targetZoom = 0.35;
 let zoomLerping = false;
@@ -2599,10 +2586,10 @@ function doInjectCloud() {
   const density = Math.pow(10, parseFloat(document.getElementById('cloud-density').value));
   // Wolkenradius aus Anzahl und Flaechen-Dichte: R = sqrt(N / (π · ρ))
   const R = Math.sqrt(N / (Math.PI * density));
-  const spinKmS = parseFloat(document.getElementById('cloud-spin').value);
-  const spinAU = spinKmS * KM_S_TO_AU_YR;
   const massEarthPer = totalMassEarth / N;
   const massSunPer = massEarthPer * M_EARTH / M_SUN;
+  const baseSpeedAU = Math.hypot(baseVx, baseVy);
+  const baseDir = Math.atan2(baseVy, baseVx);
   const cloudId = ++cloudCounter;
   for (let i = 0; i < N; i++) {
     // Uniform in Kreis: r = R * sqrt(rand), theta = rand * 2π.
@@ -2610,15 +2597,15 @@ function doInjectCloud() {
     const th = Math.random() * 2 * Math.PI;
     const dx = r * Math.cos(th);
     const dy = r * Math.sin(th);
-    // ±10 % Geschwindigkeits-Variation, damit die Wolke nicht starr fliegt.
-    let vxJit = baseVx * (0.9 + 0.2 * Math.random());
-    let vyJit = baseVy * (0.9 + 0.2 * Math.random());
-    // Spin: tangentiale Geschwindigkeit um den Wolken-Schwerpunkt.
-    // Tangentenrichtung = senkrecht zum Radius (gegen Uhrzeigersinn).
-    if (spinAU > 0 && r > 1e-9) {
-      vxJit += -spinAU * Math.sin(th);
-      vyJit +=  spinAU * Math.cos(th);
-    }
+    // Geschwindigkeit ±15 % und Richtung ±15° zufaellig variiert,
+    // damit die Wolke organisch wirkt und nicht starr in einer Linie
+    // fliegt. Bei Drift = 0 bleibt jeder Asteroid praktisch in Ruhe
+    // (sin/cos um 0 herum sind 0).
+    const speedFactor = 0.85 + 0.3 * Math.random();
+    const dirJitter = (Math.random() - 0.5) * (15 * Math.PI / 180);
+    const dir = baseDir + dirJitter;
+    const vxJit = baseSpeedAU * speedFactor * Math.cos(dir);
+    const vyJit = baseSpeedAU * speedFactor * Math.sin(dir);
     const name = `Asteroid ${cloudId}-${i+1}`;
     bodies.push({
       name, mass: massSunPer,
