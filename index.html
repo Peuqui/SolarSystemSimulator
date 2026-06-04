@@ -911,7 +911,12 @@ function initBodies() {
 // Koerper-Liste-UI (Checkboxen + Masse/Geschw.-Felder) neu aufbauen.
 function rebuildBodyList() {
   [checkDiv, mobCheckDiv].forEach(c => { c.innerHTML = ''; });
+  // Asteroiden NICHT einzeln auflisten — bei 100+ Wolken-Bodies sonst
+  // sehr lange Liste, viele DOM-Updates, scroll-unfreundlich. Sie
+  // werden ueber die Wolken-Buttons (Wolke loeschen / Fluechtende
+  // loeschen) gemeinsam verwaltet.
   for (const b of bodies) {
+    if (b.isAsteroid) continue;
     addPlanetCheckbox(b, checkDiv);
     addPlanetCheckbox(b, mobCheckDiv);
   }
@@ -1055,9 +1060,15 @@ function computeAccelerations() {
     bodies[i].ax = 0; bodies[i].ay = 0;
   }
   for (let i = 0; i < bodies.length; i++) {
-    if (!bodies[i].visible) continue;   // ausgeschaltete Koerper: keine Gravitation
+    if (!bodies[i].visible) continue;
+    const aIsAst = bodies[i].isAsteroid;
     for (let j = i + 1; j < bodies.length; j++) {
       if (!bodies[j].visible) continue;
+      // Asteroid-Asteroid-Wechselwirkung vernachlaessigen: ihre Massen
+      // sind typischerweise ~1e-6 M☉, ihre Beschleunigung aufeinander
+      // ist 6+ Groessenordnungen unter der vom Stern. Spart bei 500
+      // Asteroiden ~125 000 von ~130 000 Paaren pro Frame.
+      if (aIsAst && bodies[j].isAsteroid) continue;
       const dx = bodies[j].x - bodies[i].x;
       const dy = bodies[j].y - bodies[i].y;
       const r2 = dx*dx + dy*dy + softening;
@@ -1677,8 +1688,13 @@ function adaptiveSubDt() {
   let dt = MAX_SUB_DT_YEARS;
   for (let i = 0; i < bodies.length; i++) {
     if (!bodies[i].visible) continue;
+    const aIsAst = bodies[i].isAsteroid;
     for (let j = i+1; j < bodies.length; j++) {
       if (!bodies[j].visible) continue;
+      // Asteroid-Asteroid-Paare ueberspringen — sie wirken sich
+      // weder gravitativ noch ueber Kollisionen aufeinander aus
+      // (siehe computeAccelerations/handleCollisions).
+      if (aIsAst && bodies[j].isAsteroid) continue;
       const a = bodies[i], b = bodies[j];
       const dx = b.x-a.x, dy = b.y-a.y;
       const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
@@ -1817,8 +1833,12 @@ function shatter(a, b) {
 function handleCollisions() {
   for (let i = 0; i < bodies.length; i++) {
     if (!bodies[i].visible) continue;
+    const aIsAst = bodies[i].isAsteroid;
     for (let j = i+1; j < bodies.length; j++) {
       if (!bodies[j].visible) continue;
+      // Asteroid-Asteroid-Kollisionen ueberspringen — sie sind extrem
+      // unwahrscheinlich (geringe Querschnitte) und gravitativ irrelevant.
+      if (aIsAst && bodies[j].isAsteroid) continue;
       const a = bodies[i], b = bodies[j];
       const dx = b.x - a.x, dy = b.y - a.y;
       const touch = a.realR + b.realR;
