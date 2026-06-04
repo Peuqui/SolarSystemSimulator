@@ -1847,19 +1847,20 @@ function simLoop() {
   }
   // Fluchtkurs auswerten — barycenter() braucht die unbound-Flags.
   updateBoundState();
-  // Lerp die Kamera + Zoom zum aktuellen Ziel (Faktor 0,05 = ~1 s).
+  // Lerp sequenziell: ERST Zoom auf neue Skala bringen, DANN die Kamera
+  // weich zum Schwerpunkt fahren. Parallel laufende Lerps wirken
+  // hektisch, da die visuell wahrnehmbare Stop-Schwelle fuer Zoom und
+  // Pan unterschiedlich erreicht wird.
   const SMOOTH = 0.05;
-  if (lockBarycenter) {
-    cam.cx += (tx - cam.cx) * SMOOTH;
-    cam.cy += (ty - cam.cy) * SMOOTH;
-  }
   if (zoomLerping) {
     cam.zoom += (targetZoom - cam.zoom) * SMOOTH;
-    // Snap, sobald die relative Differenz vernachlaessigbar ist.
     if (Math.abs(targetZoom - cam.zoom) / Math.max(cam.zoom, targetZoom) < 0.01) {
       cam.zoom = targetZoom;
       zoomLerping = false;
     }
+  } else if (lockBarycenter) {
+    cam.cx += (tx - cam.cx) * SMOOTH;
+    cam.cy += (ty - cam.cy) * SMOOTH;
   }
   draw();
   updateStats();
