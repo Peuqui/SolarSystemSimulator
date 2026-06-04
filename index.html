@@ -624,7 +624,7 @@ function pushBody(o) {
     x: o.x, y: o.y, vx: o.vx || 0, vy: o.vy || 0, ax: 0, ay: 0,
     color: o.color, radius: massToRadius(o.mass),
     realR: o.rkm ? o.rkm * 1000 / AU : realRadiusFromMass(o.mass),
-    visible: true, isStar: !!o.isStar, escapeScore: 0,
+    visible: true, isStar: !!o.isStar, isAsteroid: !!o.isAsteroid, escapeScore: 0,
   });
   trails[o.name] = [];
 }
