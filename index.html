@@ -3222,22 +3222,19 @@ canvas.addEventListener('touchcancel', function(e) {
   if (!helpToggle || !infoPanel) return;
   const isTouchDevice = matchMedia('(hover: none)').matches;
 
-  if (isTouchDevice) {
-    helpToggle.addEventListener('click', function(e) {
-      e.stopPropagation();
-      infoPanel.classList.toggle('show');
-    });
-    document.addEventListener('click', function(e) {
-      if (e.target !== helpToggle && !infoPanel.contains(e.target)) {
-        infoPanel.classList.remove('show');
-      }
-    });
-  } else {
-    helpToggle.addEventListener('mouseenter', () => infoPanel.classList.add('show'));
-    helpToggle.addEventListener('mouseleave', () => infoPanel.classList.remove('show'));
-    infoPanel.addEventListener('mouseenter', () => infoPanel.classList.add('show'));
-    infoPanel.addEventListener('mouseleave', () => infoPanel.classList.remove('show'));
-  }
+  // Klick-to-toggle fuer Desktop UND Touch — beim Hover schliesst sich
+  // das Panel zu schnell wieder (Luecke zwischen Toggle und Panel, kein
+  // Scrollen moeglich). Klicken oeffnet, erneuter Klick auf Toggle oder
+  // Klick ausserhalb schliesst.
+  helpToggle.addEventListener('click', function(e) {
+    e.stopPropagation();
+    infoPanel.classList.toggle('show');
+  });
+  document.addEventListener('click', function(e) {
+    if (e.target !== helpToggle && !infoPanel.contains(e.target)) {
+      infoPanel.classList.remove('show');
+    }
+  });
 })();
 
 // --- Init ---
