@@ -315,6 +315,17 @@ input[type=range] {
   <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:4px;" title="Entfernt alle Koerper mit ↗-Markierung">&#x2197; Fl&uuml;chtende entfernen</button>
   <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
+  <h2>&#x1FAA8; Asteroiden-Wolke</h2>
+  <label>Anzahl <span class="val" id="cloud-n-val">50</span></label>
+  <input type="range" autocomplete="off" id="cloud-n" min="5" max="500" step="5" value="50">
+  <label>Wolkenradius (AU) <span class="val" id="cloud-r-val">5,0</span></label>
+  <input type="range" autocomplete="off" id="cloud-r" min="0.5" max="100" step="0.5" value="5">
+  <label style="color:#aaa; font-size:11px;">Masse/Geschwindigkeit/Kurs aus den Rogue-Slidern, Position vom letzten Klick. Gesamtmasse wird auf N Asteroiden aufgeteilt.</label>
+  <div style="margin-top:4px;">
+    <button id="btn-inject-cloud">&#x1FAA8; Wolke injizieren</button>
+    <button id="btn-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
+  </div>
+
   <label style="margin-top:10px;">Sichtbare K&ouml;rper:</label>
   <div id="planet-checks"></div>
   <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
@@ -411,6 +422,16 @@ input[type=range] {
   </div>
   <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:4px;">&#x2197; Fl&uuml;chtende entfernen</button>
   <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
+
+  <h2>&#x1FAA8; Asteroiden-Wolke</h2>
+  <label>Anzahl <span class="val" id="mob-cloud-n-val">50</span></label>
+  <input type="range" autocomplete="off" id="mob-cloud-n" min="5" max="500" step="5" value="50">
+  <label>Wolkenradius (AU) <span class="val" id="mob-cloud-r-val">5,0</span></label>
+  <input type="range" autocomplete="off" id="mob-cloud-r" min="0.5" max="100" step="0.5" value="5">
+  <div style="margin-top:4px;">
+    <button id="mob-inject-cloud">&#x1FAA8; Wolke injizieren</button>
+    <button id="mob-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
+  </div>
 
   <label style="margin-top:10px;">Sichtbare K&ouml;rper:</label>
   <div id="mob-planet-checks"></div>
@@ -2041,6 +2062,25 @@ document.getElementById('mob-p-angle').addEventListener('input', function() {
   document.getElementById('p-angle-val').textContent = this.value + '\u00B0';
 });
 
+// Wolken-Slider (Anzahl + Radius) \u2014 Desktop+Mobile bidirektional sync.
+['cloud-n', 'mob-cloud-n'].forEach(id => {
+  document.getElementById(id).addEventListener('input', function() {
+    document.getElementById('cloud-n-val').textContent = this.value;
+    document.getElementById('mob-cloud-n-val').textContent = this.value;
+    document.getElementById('cloud-n').value = this.value;
+    document.getElementById('mob-cloud-n').value = this.value;
+  });
+});
+['cloud-r', 'mob-cloud-r'].forEach(id => {
+  document.getElementById(id).addEventListener('input', function() {
+    const v = fmtDE(parseFloat(this.value), 1);
+    document.getElementById('cloud-r-val').textContent = v;
+    document.getElementById('mob-cloud-r-val').textContent = v;
+    document.getElementById('cloud-r').value = this.value;
+    document.getElementById('mob-cloud-r').value = this.value;
+  });
+});
+
 let targetZoom = 0.35;
 let zoomLerping = false;
 let panLerpTarget = null;   // {x, y} im transformierten Kamera-Raum, oder null
@@ -2497,6 +2537,47 @@ function doInject() {
                           // injectPos (Welt-Koord bleibt gespeichert).
 }
 
+let cloudCounter = 0;
+
+function doInjectCloud() {
+  const massExp = parseFloat(document.getElementById('p-mass').value);
+  const totalMassEarth = Math.pow(10, massExp);
+  const speedKmS = Math.pow(10, parseFloat(document.getElementById('p-speed').value));
+  const angleDeg = parseFloat(document.getElementById('p-angle').value);
+  const angleRad = angleDeg * Math.PI / 180;
+  const speedAU = speedKmS * KM_S_TO_AU_YR;
+  const baseVx =  speedAU * Math.sin(angleRad);
+  const baseVy = -speedAU * Math.cos(angleRad);
+  const N = parseInt(document.getElementById('cloud-n').value, 10);
+  const R = parseFloat(document.getElementById('cloud-r').value);
+  const massEarthPer = totalMassEarth / N;
+  const massSunPer = massEarthPer * M_EARTH / M_SUN;
+  const cloudId = ++cloudCounter;
+  for (let i = 0; i < N; i++) {
+    // Uniform in Kreis: r = R * sqrt(rand), theta = rand * 2π.
+    const r = R * Math.sqrt(Math.random());
+    const th = Math.random() * 2 * Math.PI;
+    const dx = r * Math.cos(th);
+    const dy = r * Math.sin(th);
+    // ±10 % Geschwindigkeits-Variation, damit die Wolke nicht starr fliegt.
+    const vxJit = baseVx * (0.9 + 0.2 * Math.random());
+    const vyJit = baseVy * (0.9 + 0.2 * Math.random());
+    const name = `Asteroid ${cloudId}-${i+1}`;
+    bodies.push({
+      name, mass: massSunPer,
+      x: injectPos.wx + dx, y: injectPos.wy + dy,
+      vx: vxJit, vy: vyJit, ax: 0, ay: 0,
+      color: '#aa8866',
+      radius: massToRadius(massSunPer),
+      realR: realRadiusFromMass(massSunPer),
+      visible: true, isStar: false, isAsteroid: true, escapeScore: 0,
+    });
+    trails[name] = [];
+  }
+  computeAccelerations();
+  rebuildBodyList();
+}
+
 function doClearPerturbers() {
   perturbers.forEach(p => {
     const idx = bodies.indexOf(p);
@@ -2538,6 +2619,16 @@ function doClearEscaping() {
 }
 document.getElementById('btn-clear-escaping').addEventListener('click', doClearEscaping);
 document.getElementById('mob-clear-escaping').addEventListener('click', doClearEscaping);
+
+function doClearClouds() {
+  const victims = bodies.filter(b => b.isAsteroid);
+  for (const v of victims) removeBody(v);
+  rebuildBodyList();
+}
+document.getElementById('btn-inject-cloud').addEventListener('click', doInjectCloud);
+document.getElementById('mob-inject-cloud').addEventListener('click', doInjectCloud);
+document.getElementById('btn-clear-clouds').addEventListener('click', doClearClouds);
+document.getElementById('mob-clear-clouds').addEventListener('click', doClearClouds);
 document.getElementById('btn-apply').addEventListener('click', applyPendingChanges);
 document.getElementById('mob-btn-apply').addEventListener('click', applyPendingChanges);
 
