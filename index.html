@@ -2571,7 +2571,7 @@ function doInject() {
                           // injectPos (Welt-Koord bleibt gespeichert).
 }
 
-let cloudCounter = 0;
+let asteroidCounter = 0;   // globale fortlaufende Nummer fuer Asteroid-Namen
 
 function doInjectCloud() {
   const massExp = parseFloat(document.getElementById('p-mass').value);
@@ -2590,7 +2590,6 @@ function doInjectCloud() {
   const massSunPer = massEarthPer * M_EARTH / M_SUN;
   const baseSpeedAU = Math.hypot(baseVx, baseVy);
   const baseDir = Math.atan2(baseVy, baseVx);
-  const cloudId = ++cloudCounter;
   for (let i = 0; i < N; i++) {
     // Uniform in Kreis: r = R * sqrt(rand), theta = rand * 2π.
     const r = R * Math.sqrt(Math.random());
@@ -2606,7 +2605,7 @@ function doInjectCloud() {
     const dir = baseDir + dirJitter;
     const vxJit = baseSpeedAU * speedFactor * Math.cos(dir);
     const vyJit = baseSpeedAU * speedFactor * Math.sin(dir);
-    const name = `Asteroid ${cloudId}-${i+1}`;
+    const name = `A${++asteroidCounter}`;
     bodies.push({
       name, mass: massSunPer,
       x: injectPos.wx + dx, y: injectPos.wy + dy,
