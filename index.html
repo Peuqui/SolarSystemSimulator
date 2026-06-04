@@ -20,32 +20,32 @@ canvas { display: block; cursor: crosshair; width: 100%; height: 100%; }
   scrollbar-width: thin; scrollbar-color: #444 #111;
   -webkit-overflow-scrolling: touch;
 }
-#sidebar h2 { color: #7af; font-size: 15px; margin: 14px 0 6px; border-bottom: 1px solid #333; padding-bottom: 4px; }
+#sidebar h2 { color: #7af; font-size: 13px; margin: 7px 0 3px; border-bottom: 1px solid #333; padding-bottom: 2px; }
 #sidebar h2:first-child { margin-top: 0; }
-#sidebar label { display: block; font-size: 12px; margin-top: 8px; color: #999; }
+#sidebar label { display: block; font-size: 11px; margin-top: 3px; color: #999; }
 #sidebar input[type=range], #sidebar select {
-  width: 100%; font-size: 14px; background: #1a1a2e; color: #ddd; border: 1px solid #333; padding: 6px;
+  width: 100%; font-size: 13px; background: #1a1a2e; color: #ddd; border: 1px solid #333; padding: 3px;
   -webkit-appearance: none; appearance: none;
-  min-height: 32px; /* touch target */
+  min-height: 18px;
 }
 #sidebar input[type=range] {
-  height: 32px; padding: 0; cursor: pointer;
+  height: 18px; padding: 0; cursor: pointer;
   -webkit-appearance: none; appearance: none;
 }
 #sidebar input[type=range]::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
-  width: 24px; height: 24px; border-radius: 50%;
+  width: 14px; height: 14px; border-radius: 50%;
   background: #7af; cursor: pointer; border: 2px solid #335;
 }
 #sidebar input[type=range]::-moz-range-thumb {
-  width: 24px; height: 24px; border-radius: 50%;
+  width: 14px; height: 14px; border-radius: 50%;
   background: #7af; cursor: pointer; border: 2px solid #335;
 }
-#sidebar .val { color: #7af; font-size: 12px; float: right; }
+#sidebar .val { color: #7af; font-size: 11px; float: right; }
 button {
   background: #2a4a6a; color: #dde; border: 1px solid #4a6a8a;
-  padding: 10px 14px; font-size: 14px; cursor: pointer; border-radius: 5px;
-  margin: 3px 2px; min-height: 40px; min-width: 40px; /* touch target */
+  padding: 5px 8px; font-size: 12px; cursor: pointer; border-radius: 4px;
+  margin: 2px 1px; min-height: 22px; min-width: 22px;
   -webkit-tap-highlight-color: transparent;
 }
 button:hover { background: #3a6a9a; }
@@ -277,7 +277,9 @@ input[type=range] {
     <input type="checkbox" id="chk-trails" checked> Bahnspuren anzeigen
   </label>
   <label>Bahnspur-L&auml;nge <span class="val" id="trail-val">150</span></label>
-  <input type="range" autocomplete="off"id="trail-slider" min="50" max="3000" step="50" value="150">
+  <input type="range" autocomplete="off"id="trail-slider" min="0" max="3000" step="10" value="150">
+  <label>Asteroid-Bahnspur <span class="val" id="trail-ast-val">0</span></label>
+  <input type="range" autocomplete="off" id="trail-ast-slider" min="0" max="500" step="5" value="0">
   <label>
     <input type="checkbox" id="chk-vectors"> Kraftvektoren anzeigen
   </label>
@@ -407,7 +409,9 @@ input[type=range] {
   <input type="range" autocomplete="off"id="mob-zoom-slider" min="0.001" max="500" step="0.001" value="0.35">
   <label><input type="checkbox" id="mob-chk-trails" checked> Bahnspuren</label>
   <label>Bahnspur-L&auml;nge <span class="val" id="mob-trail-val">150</span></label>
-  <input type="range" autocomplete="off"id="mob-trail-slider" min="50" max="3000" step="50" value="150">
+  <input type="range" autocomplete="off"id="mob-trail-slider" min="0" max="3000" step="10" value="150">
+  <label>Asteroid-Bahnspur <span class="val" id="mob-trail-ast-val">0</span></label>
+  <input type="range" autocomplete="off" id="mob-trail-ast-slider" min="0" max="500" step="5" value="0">
   <label><input type="checkbox" id="mob-chk-vectors"> Kraftvektoren</label>
   <label><input type="checkbox" id="mob-chk-grid" checked> Gitternetz</label>
   <label title="Statisches Sternfeld als Bewegungsreferenz."><input type="checkbox" id="mob-chk-stars" checked> Sternenhintergrund</label>
@@ -610,7 +614,8 @@ window.addEventListener('resize', resize);
 // --- Simulation ---
 let bodies = [];
 let trails = {};
-let MAX_TRAIL = 150;   // per Slider konfigurierbare Bahnspur-Laenge
+let MAX_TRAIL = 150;       // per Slider konfigurierbare Bahnspur-Laenge
+let MAX_TRAIL_AST = 0;     // eigener Wert fuer Asteroiden — default aus
 
 // ============================================================
 //  SZENARIEN
@@ -1188,7 +1193,8 @@ function recordTrails() {
     }
     if (record) {
       tr.push({ x: b.x, y: b.y });
-      if (tr.length > MAX_TRAIL) tr.shift();
+      const lim = b.isAsteroid ? MAX_TRAIL_AST : MAX_TRAIL;
+      while (tr.length > lim) tr.shift();
       b._trailT = simTime;
       b._trailDx = dx; b._trailDy = dy;
     }
@@ -1609,10 +1615,10 @@ function draw() {
 
     ctx.beginPath();
     ctx.fillStyle = b.color;
-    // Asteroiden bekommen feste Render-Groesse (4 px), unabhaengig von
+    // Asteroiden bekommen feste Render-Groesse (2 px), unabhaengig von
     // ihrer physikalischen Masse — sonst sind realistisch leichte Guertel-
     // Asteroiden (~1e-11 M☉) nur 1,5 px und kaum sichtbar.
-    const drawR = b.isAsteroid ? 4 : Math.max(b.radius, 1.5);
+    const drawR = b.isAsteroid ? 2 : Math.max(b.radius, 1.5);
     ctx.arc(sx, sy, drawR, 0, Math.PI*2);
     ctx.fill();
 
@@ -2072,7 +2078,17 @@ document.getElementById('zoom-slider').addEventListener('input', function() {
 function setTrailLength(n) {
   MAX_TRAIL = n;
   for (const k in trails) {
+    const b = bodies.find(b => b.name === k);
+    if (b && b.isAsteroid) continue;   // Asteroiden haben eigenen Slider
     if (trails[k].length > n) trails[k].splice(0, trails[k].length - n);
+  }
+}
+function setTrailLengthAst(n) {
+  MAX_TRAIL_AST = n;
+  for (const b of bodies) {
+    if (!b.isAsteroid) continue;
+    const tr = trails[b.name];
+    if (tr && tr.length > n) tr.splice(0, tr.length - n);
   }
 }
 document.getElementById('trail-slider').addEventListener('input', function() {
@@ -2086,6 +2102,15 @@ document.getElementById('mob-trail-slider').addEventListener('input', function()
   document.getElementById('mob-trail-val').textContent = this.value;
   document.getElementById('trail-slider').value = this.value;
   document.getElementById('trail-val').textContent = this.value;
+});
+['trail-ast-slider', 'mob-trail-ast-slider'].forEach(id => {
+  document.getElementById(id).addEventListener('input', function() {
+    setTrailLengthAst(parseInt(this.value));
+    document.getElementById('trail-ast-val').textContent = this.value;
+    document.getElementById('mob-trail-ast-val').textContent = this.value;
+    document.getElementById('trail-ast-slider').value = this.value;
+    document.getElementById('mob-trail-ast-slider').value = this.value;
+  });
 });
 
 // --- Szenario-Auswahl ---
