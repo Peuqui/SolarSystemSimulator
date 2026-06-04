@@ -2071,6 +2071,12 @@ function fitZoomToSystem(smooth = false) {
   let minZoom = Infinity;
   for (const b of bodies) {
     if (!b.visible) continue;
+    // Auf Fluchtkurs (↗) heisst per Definition: Body verlaesst das System.
+    // Solche Outlier sollen das Auto-Fit nicht mehr dominieren — sonst
+    // schrumpft das Hauptsystem ins Mikroskopische und der ausgeworfene
+    // Body sitzt allein am Rand. User kann manuell rauszoomen, wenn er
+    // ihn sehen will.
+    if ((b.escapeScore || 0) >= 25) continue;
     const [tsx, tsy] = transform(b.x, b.y);
     const dx = (tsx - bsx) * 80;
     const dy = (tsy - bsy) * 80;
