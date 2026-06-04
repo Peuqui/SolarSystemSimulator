@@ -315,6 +315,7 @@ input[type=range] {
     <button id="btn-inject">&#x1FA90; Injizieren</button>
     <button id="btn-clear-pert" class="danger">Alle Rogues l&ouml;schen</button>
   </div>
+  <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:4px;" title="Entfernt alle Koerper mit ↗-Markierung">&#x2197; Fl&uuml;chtende entfernen</button>
   <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
   <h2>&#x1F4CA; Statistik</h2>
@@ -410,6 +411,7 @@ input[type=range] {
     <button id="mob-inject">&#x1FA90; Injizieren</button>
     <button id="mob-clear-pert" class="danger">L&ouml;schen</button>
   </div>
+  <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:4px;">&#x2197; Fl&uuml;chtende entfernen</button>
   <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
   <h2>&#x1F4CA; Statistik</h2>
@@ -2530,6 +2532,16 @@ document.getElementById('float-inject').addEventListener('click', doInject);
 document.getElementById('float-recenter').addEventListener('click', () => fitZoomToSystem(true));
 document.getElementById('btn-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('mob-clear-pert').addEventListener('click', doClearPerturbers);
+
+function doClearEscaping() {
+  // Alle Bodies mit ↗-Markierung (escapeScore >= 25) loeschen — egal ob
+  // System-Body oder Rogue. Nuetzlich nach chaotischen Vorbeifluegen.
+  const victims = bodies.filter(b => (b.escapeScore || 0) >= 25);
+  for (const v of victims) removeBody(v);
+  rebuildBodyList();
+}
+document.getElementById('btn-clear-escaping').addEventListener('click', doClearEscaping);
+document.getElementById('mob-clear-escaping').addEventListener('click', doClearEscaping);
 document.getElementById('btn-apply').addEventListener('click', applyPendingChanges);
 document.getElementById('mob-btn-apply').addEventListener('click', applyPendingChanges);
 
