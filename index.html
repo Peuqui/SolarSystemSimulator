@@ -1829,9 +1829,13 @@ function simLoop() {
     const distPx = Math.hypot(tx - cam.cx, ty - cam.cy) * cam.zoom * 80;
     if (distPx > 50 || zoomLerping) centerInTransit = true;
     else if (distPx < 5 && !zoomLerping) centerInTransit = false;
+  } else if (panLerpTarget) {
+    // Toggle log/linear bei deaktiviertem lockBarycenter — fahre auf das
+    // explizite Pan-Ziel zu.
+    const distPx = Math.hypot(panLerpTarget.x - cam.cx, panLerpTarget.y - cam.cy) * cam.zoom * 80;
+    if (distPx > 50 || zoomLerping) centerInTransit = true;
+    else if (distPx < 5 && !zoomLerping) centerInTransit = false;
   } else {
-    // Auch ohne Schwerpunkt-Lock: zoomLerping haelt die Sim an, bis das
-    // Ziel-Zoom erreicht ist (z. B. nach Log/Linear-Toggle).
     centerInTransit = zoomLerping;
   }
   const effectivelyPaused = paused || document.hidden || centerInTransit;
@@ -1861,6 +1865,15 @@ function simLoop() {
   } else if (lockBarycenter) {
     cam.cx += (tx - cam.cx) * SMOOTH;
     cam.cy += (ty - cam.cy) * SMOOTH;
+    panLerpTarget = null;
+  } else if (panLerpTarget) {
+    cam.cx += (panLerpTarget.x - cam.cx) * SMOOTH;
+    cam.cy += (panLerpTarget.y - cam.cy) * SMOOTH;
+    if (Math.hypot(panLerpTarget.x - cam.cx, panLerpTarget.y - cam.cy) * cam.zoom * 80 < 1) {
+      cam.cx = panLerpTarget.x;
+      cam.cy = panLerpTarget.y;
+      panLerpTarget = null;
+    }
   }
   draw();
   updateStats();
@@ -2016,6 +2029,7 @@ document.getElementById('mob-p-angle').addEventListener('input', function() {
 
 let targetZoom = 0.35;
 let zoomLerping = false;
+let panLerpTarget = null;   // {x, y} im transformierten Kamera-Raum, oder null
 
 // Setzt den Kamera-Zoom sofort (kein Lerp) und synchronisiert beide
 // Slider + Anzeigen. Fuer Reset, Szenario-Wechsel, Mausrad, Buttons.
@@ -2087,12 +2101,17 @@ function fitZoomToSystem(smooth = false) {
   }
   if (!isFinite(minZoom)) minZoom = useLogZoom ? 6.55 : 0.35;
   const target = Math.max(0.001, Math.min(500, minZoom));
-  if (smooth) applyZoomSmooth(target);
-  else {
+  if (smooth) {
+    applyZoomSmooth(target);
+    // Pan-Ziel setzen — wird im simLoop gelerpt, auch wenn
+    // lockBarycenter aus ist. So zentriert sich das System beim
+    // Toggle log/linear immer, egal welcher Toggle-Status.
+    panLerpTarget = { x: bsx, y: bsy };
+  } else {
     applyZoom(target);
-    // Bei Init/Reset: Kamera direkt auf den Schwerpunkt setzen, statt zu
-    // warten bis der Lerp das System ins Bild zieht.
+    // Bei Init/Reset: Kamera direkt auf den Schwerpunkt setzen.
     cam.cx = bsx; cam.cy = bsy;
+    panLerpTarget = null;
   }
 }
 
