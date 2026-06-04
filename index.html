@@ -121,6 +121,21 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 #float-inject:hover { background: #cc4444; }
 #float-inject:active { background: #dd5555; }
 
+/* Re-Center-Button — links neben dem Inject-Button. Zentriert das
+   Bild manuell auf das aktuelle System (Auto-Fit + smooth lerp). */
+#float-recenter {
+  position: absolute; bottom: 40px; right: 86px;
+  z-index: 16;
+  width: 48px; height: 48px; border-radius: 50%;
+  background: #335577; border: 2px solid #5588aa; color: #fff;
+  font-size: 20px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+  -webkit-tap-highlight-color: transparent;
+}
+#float-recenter:hover { background: #4477aa; }
+#float-recenter:active { background: #5588cc; }
+
 /* Mobile settings panel — faehrt von links ein (wie die Desktop-Sidebar),
    geoeffnet ueber den Schalter oben links. Nicht mehr von unten, damit es
    nicht mit den Steuer-Buttons unten links konkurriert. */
@@ -330,6 +345,7 @@ input[type=range] {
 </div>
 
 <!-- Floating-Inject-Button — auf allen Bildschirmgr&ouml;&szlig;en sichtbar -->
+<button id="float-recenter" title="Auf System zentrieren (Zoom + Pan)">&#x2316;</button>
 <button id="float-inject" title="Rogue injizieren">&#x1FA90;</button>
 
 <!-- Mobile Bottom Sheet -->
@@ -2459,10 +2475,6 @@ function doInject() {
   // rebuildBodyList baut die Liste komplett aus `bodies` neu auf.
   computeAccelerations();
   rebuildBodyList();
-  // Auto-Fit nach Inject: damit der neu gesetzte Rogue garantiert
-  // sichtbar ist, auch wenn er weit vom Hauptsystem entfernt platziert
-  // wurde. Smooth, damit der Uebergang nicht abrupt wirkt.
-  fitZoomToSystem(true);
   dragging = false;
   injectMarked = false;   // Marker verschwindet nach Inject — folgende
                           // Klicks injizieren weiterhin bei derselben
@@ -2497,6 +2509,7 @@ function doReset() {
 document.getElementById('btn-inject').addEventListener('click', doInject);
 document.getElementById('mob-inject').addEventListener('click', doInject);
 document.getElementById('float-inject').addEventListener('click', doInject);
+document.getElementById('float-recenter').addEventListener('click', () => fitZoomToSystem(true));
 document.getElementById('btn-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('mob-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('btn-apply').addEventListener('click', applyPendingChanges);
