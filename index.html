@@ -301,6 +301,9 @@ input[type=range] {
   <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung — die Kamera bleibt am Hauptsystem, auch wenn schwere Stoermassen einfliegen.">
     <input type="checkbox" id="chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren
   </label>
+  <label title="Physik auf separatem Thread (WebWorker) — fluessiger bei vielen Bodies. Bei Problemen ausschalten.">
+    <input type="checkbox" id="chk-worker" checked> Physik in WebWorker
+  </label>
 
   <h2>&#x1F30C; Inject</h2>
   <label>Masse <span class="val" id="p-mass-val">1,0 M⊕</span></label>
@@ -419,6 +422,7 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-logzoom" checked> Log-Zoom</label>
   <label><input type="checkbox" id="mob-chk-baryctr" checked> Schwerpunkt zentrieren</label>
   <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung."><input type="checkbox" id="mob-chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren</label>
+  <label title="Physik auf separatem Thread."><input type="checkbox" id="mob-chk-worker" checked> Physik in WebWorker</label>
 
   <h2>&#x1F30C; Inject</h2>
   <label>Masse <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
@@ -1855,6 +1859,161 @@ function advance(dtYears) {
 }
 
 // ============================================================
+//  Physik-WebWorker — entlastet Main-Thread bei vielen Bodies
+//  (Asteroidengürtel / Wolken). Worker macht advance() ohne
+//  Kollisionen; handleCollisions/recordTrails laufen einmal pro
+//  Frame im Main nach Worker-Return.
+// ============================================================
+var useWorker = true;
+let physWorker = null;
+let workerBusy = false;
+let workerResolver = null;
+
+function createPhysWorker() {
+  const src = `'use strict';
+    const G_AU = ${4 * Math.PI * Math.PI};
+    const MAX_SUB_DT_YEARS = ${0.5 / 365.25};
+    const YOSHIDA_W1 = 1 / (2 - Math.cbrt(2));
+    const YOSHIDA_W0 = -Math.cbrt(2) / (2 - Math.cbrt(2));
+    let X, Y, VX, VY, AX, AY, M, V, A;
+    let N = 0;
+    function computeAccel() {
+      for (let i = 0; i < N; i++) { AX[i] = 0; AY[i] = 0; }
+      for (let i = 0; i < N; i++) {
+        if (!V[i]) continue;
+        const ai = A[i];
+        const xi = X[i], yi = Y[i], mi = M[i];
+        for (let j = i + 1; j < N; j++) {
+          if (!V[j]) continue;
+          if (ai && A[j]) continue;
+          const dx = X[j] - xi;
+          const dy = Y[j] - yi;
+          const r2 = dx*dx + dy*dy + 1e-6;
+          const r = Math.sqrt(r2);
+          const f = G_AU / (r2 * r);
+          AX[i] += f * M[j] * dx;
+          AY[i] += f * M[j] * dy;
+          AX[j] -= f * mi * dx;
+          AY[j] -= f * mi * dy;
+        }
+      }
+    }
+    function verlet(dt) {
+      for (let i = 0; i < N; i++) {
+        if (!V[i]) continue;
+        X[i] += VX[i] * dt + 0.5 * AX[i] * dt * dt;
+        Y[i] += VY[i] * dt + 0.5 * AY[i] * dt * dt;
+      }
+      const oAx = new Float64Array(N), oAy = new Float64Array(N);
+      for (let i = 0; i < N; i++) { oAx[i] = AX[i]; oAy[i] = AY[i]; }
+      computeAccel();
+      for (let i = 0; i < N; i++) {
+        if (!V[i]) continue;
+        VX[i] += 0.5 * (oAx[i] + AX[i]) * dt;
+        VY[i] += 0.5 * (oAy[i] + AY[i]) * dt;
+      }
+    }
+    function step(dt) {
+      verlet(YOSHIDA_W1 * dt);
+      verlet(YOSHIDA_W0 * dt);
+      verlet(YOSHIDA_W1 * dt);
+    }
+    function adaptDt() {
+      let dt = MAX_SUB_DT_YEARS;
+      for (let i = 0; i < N; i++) {
+        if (!V[i]) continue;
+        const ai = A[i];
+        for (let j = i+1; j < N; j++) {
+          if (!V[j]) continue;
+          if (ai && A[j]) continue;
+          const dx = X[j]-X[i], dy = Y[j]-Y[i];
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
+          const dvx = VX[j]-VX[i], dvy = VY[j]-VY[i];
+          const vrel = Math.sqrt(dvx*dvx + dvy*dvy);
+          if (vrel > 1e-9) {
+            const tEnc = dist / vrel;
+            if (tEnc / 20 < dt) dt = tEnc / 20;
+          }
+        }
+      }
+      return Math.max(dt, MAX_SUB_DT_YEARS / 1000);
+    }
+    self.onmessage = function(e) {
+      const d = e.data;
+      X = d.x; Y = d.y; VX = d.vx; VY = d.vy; AX = d.ax; AY = d.ay;
+      M = d.mass; V = d.visible; A = d.isAst;
+      N = X.length;
+      let remaining = d.dt, guard = 0;
+      computeAccel();
+      while (remaining > 1e-12 && guard++ < 100000) {
+        const sub = Math.min(remaining, adaptDt());
+        step(sub);
+        remaining -= sub;
+      }
+      self.postMessage({ x: X, y: Y, vx: VX, vy: VY, ax: AX, ay: AY },
+        [X.buffer, Y.buffer, VX.buffer, VY.buffer, AX.buffer, AY.buffer]);
+    };
+  `;
+  const blob = new Blob([src], { type: 'application/javascript' });
+  const w = new Worker(URL.createObjectURL(blob));
+  w.onmessage = function(e) {
+    const d = e.data;
+    const n = Math.min(bodies.length, d.x.length);
+    for (let i = 0; i < n; i++) {
+      bodies[i].x = d.x[i]; bodies[i].y = d.y[i];
+      bodies[i].vx = d.vx[i]; bodies[i].vy = d.vy[i];
+      bodies[i].ax = d.ax[i]; bodies[i].ay = d.ay[i];
+    }
+    workerBusy = false;
+    if (workerResolver) { const r = workerResolver; workerResolver = null; r(); }
+  };
+  w.onerror = function(err) {
+    console.warn('Physik-Worker Fehler, falle zurueck auf Main-Thread:', err);
+    useWorker = false;
+    workerBusy = false;
+    if (workerResolver) { const r = workerResolver; workerResolver = null; r(); }
+  };
+  return w;
+}
+
+function advanceWorker(dtYears) {
+  return new Promise((resolve) => {
+    if (workerBusy) { resolve(); return; }
+    if (!physWorker) physWorker = createPhysWorker();
+    const N = bodies.length;
+    const x = new Float64Array(N), y = new Float64Array(N);
+    const vx = new Float64Array(N), vy = new Float64Array(N);
+    const ax = new Float64Array(N), ay = new Float64Array(N);
+    const mass = new Float64Array(N);
+    const visible = new Uint8Array(N);
+    const isAst = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      const b = bodies[i];
+      x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
+      ax[i] = b.ax; ay[i] = b.ay;
+      mass[i] = b.mass;
+      visible[i] = b.visible ? 1 : 0;
+      isAst[i] = b.isAsteroid ? 1 : 0;
+    }
+    workerBusy = true;
+    workerResolver = resolve;
+    physWorker.postMessage({ x, y, vx, vy, ax, ay, mass, visible, isAst, dt: dtYears },
+      [x.buffer, y.buffer, vx.buffer, vy.buffer, ax.buffer, ay.buffer, mass.buffer, visible.buffer, isAst.buffer]);
+  });
+}
+
+// async-Variante: macht Physik im Worker, danach Kollisionen + Trails im Main.
+async function advanceAsync(dtYears) {
+  if (!useWorker) { advance(dtYears); return; }
+  await advanceWorker(dtYears);
+  // Kollisionen 1x pro Frame (statt pro Sub-Step) — Trade-off,
+  // bei sehr engen Begegnungen ggf. missed collisions.
+  handleCollisions();
+  simTime += dtYears * 365.25;
+  recordTrails();
+}
+
+// ============================================================
 //  KOLLISIONEN
 //  Treffer, wenn der Abstand < Summe der echten Radien.
 //  v_impact < 1.5*v_escape -> Verschmelzung, sonst Zerbersten.
@@ -1960,7 +2119,7 @@ function handleCollisions() {
 
 let centerInTransit = false;   // Kamera faehrt gerade auf ein neues Ziel
 
-function simLoop() {
+async function simLoop() {
   // Browser drosseln rAF bei inaktivem Tab stark (oft 0–1 Hz). Eine
   // sinnvolle Simulation ist da nicht moeglich — also wird inaktiver
   // Tab wie eine Pause behandelt: weder Sim-Zeit noch Echtzeit-Zaehler
@@ -2019,7 +2178,7 @@ function simLoop() {
   if (!effectivelyPaused) {
     const dtDays = parseFloat(document.getElementById('dt-slider').value);
     const slowFactor = Math.pow(10, parseFloat(document.getElementById('slow-slider').value));
-    advance(dtDays / 365.25 / slowFactor);
+    await advanceAsync(dtDays / 365.25 / slowFactor);
   }
   // Fluchtkurs auswerten — barycenter() braucht die unbound-Flags.
   updateBoundState();
@@ -2404,6 +2563,7 @@ const chkSync = [
   ['chk-logzoom', 'mob-chk-logzoom', 'useLogZoom'],
   ['chk-baryctr', 'mob-chk-baryctr', 'lockBarycenter'],
   ['chk-bary-no-rogue', 'mob-chk-bary-no-rogue', 'excludeRoguesFromBary'],
+  ['chk-worker', 'mob-chk-worker', 'useWorker'],
 ];
 chkSync.forEach(([desk, mob, varName]) => {
   const toggle = (val, persist) => {
