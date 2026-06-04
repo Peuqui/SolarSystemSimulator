@@ -319,7 +319,9 @@ input[type=range] {
   <input type="range" autocomplete="off" id="cloud-n" min="5" max="500" step="5" value="50">
   <label title="Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.">Dichte (1/AU²) <span class="val" id="cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="cloud-density" min="-2" max="5" step="0.05" value="1">
-  <label style="color:#aaa; font-size:11px;">Eff. Radius: <span id="cloud-r-derived">~1,3 AU</span> · Speed+Richtung pro Asteroid ±15 %</label>
+  <label style="color:#aaa; font-size:11px;">Eff. Radius: <span id="cloud-r-derived">~1,3 AU</span></label>
+  <label title="Zufaellige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.">Streuung <span class="val" id="cloud-jit-val">5</span></label>
+  <input type="range" autocomplete="off" id="cloud-jit" min="0" max="50" step="0.5" value="5">
   <div>
     <button id="btn-inject-cloud">&#x1FAA8; Wolke injizieren</button>
     <button id="btn-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
@@ -341,11 +343,12 @@ input[type=range] {
 <div id="help-toggle" title="Steuerung anzeigen">&#x1F4A1;</div>
 <div id="info-panel">
   Mausrad: Zoom &nbsp;|&nbsp; Rechts-/Mittelklick: Verschieben<br>
-  Linksklick: Rogue-Position w&auml;hlen<br>
+  Linksklick auf Leerraum: Rogue-Position w&auml;hlen<br>
   Klick+Ziehen: Geschwindigkeitsvektor setzen<br>
+  <span style="color:#7af;">Linksklick auf einen K&ouml;rper:</span> Fokus setzen (Kamera folgt)<br>
   <span style="color:#7af;">Shift+Klick</span> auf den Inject-Button: Wolke statt Rogue<br>
   Touch: 2-Finger=Zoom/Pan, 1-Finger lang halten=Rogue<br>
-  <span>Taste:</span> P=Pause, R=Reset, Space=Schritt<br>
+  <span>Taste:</span> P=Pause, R=Reset, Space=Schritt, <span style="color:#7af;">Esc=Fokus aufheben</span><br>
   <span style="color:#7af;">Einheiten:</span> M&#x2295; = Erdmasse (5,97&#x2009;&middot;&#x2009;10<sup>24</sup>&nbsp;kg) &nbsp;|&nbsp;
   M&#x2299; = Sonnenmasse (1,99&#x2009;&middot;&#x2009;10<sup>30</sup>&nbsp;kg, &#x2248;&nbsp;333.000&nbsp;M&#x2295;)
 </div>
@@ -431,7 +434,9 @@ input[type=range] {
   <input type="range" autocomplete="off" id="mob-cloud-n" min="5" max="500" step="5" value="50">
   <label>Dichte (1/AU²) <span class="val" id="mob-cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-density" min="-2" max="5" step="0.05" value="1">
-  <label style="color:#aaa; font-size:11px;">Eff. Radius: <span id="mob-cloud-r-derived">~1,3 AU</span> · Speed+Richtung ±15 %</label>
+  <label style="color:#aaa; font-size:11px;">Eff. Radius: <span id="mob-cloud-r-derived">~1,3 AU</span></label>
+  <label>Streuung <span class="val" id="mob-cloud-jit-val">5</span></label>
+  <input type="range" autocomplete="off" id="mob-cloud-jit" min="0" max="50" step="0.5" value="5">
   <div style="margin-top:4px;">
     <button id="mob-inject-cloud">&#x1FAA8; Wolke injizieren</button>
     <button id="mob-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
@@ -1196,6 +1201,7 @@ var showTrails = true;
 var showVectors = false;
 var showGrid = true;
 var lockBarycenter = true;   // Kamera haelt den Massenschwerpunkt mittig
+let focusBody = null;        // Bei gesetztem Body: Kamera folgt ihm statt Schwerpunkt
 var excludeRoguesFromBary = true;  // Rogues nicht zum Schwerpunkt zaehlen
 var showStars = true;        // Hintergrund-Sternfeld als Bewegungsreferenz
 var showWorldGrid = false;   // Welt-fixiertes Rechteckgitter (statt nur die Ringe)
@@ -1584,6 +1590,24 @@ function draw() {
       ctx.arc(sx, sy, Math.max(b.radius, 1.5) + 5 + ph * 6, 0, Math.PI*2);
       ctx.stroke();
     }
+    // Fokus-Body-Markierung: gruener Ring mit Klammern, klar erkennbar
+    // auch bei kleinem b.radius (z. B. wenn weit weggezoomt).
+    if (b === focusBody) {
+      const ringR = Math.max(b.radius, 4) + 10;
+      ctx.strokeStyle = 'rgba(140,220,100,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sx, sy, ringR, 0, Math.PI*2);
+      ctx.stroke();
+      // Vier kleine Eckmarker (Diagonal-Striche) als zusaetzliches Signal
+      const d = ringR + 4;
+      ctx.beginPath();
+      ctx.moveTo(sx + d, sy);     ctx.lineTo(sx + d + 5, sy);
+      ctx.moveTo(sx - d, sy);     ctx.lineTo(sx - d - 5, sy);
+      ctx.moveTo(sx, sy + d);     ctx.lineTo(sx, sy + d + 5);
+      ctx.moveTo(sx, sy - d);     ctx.lineTo(sx, sy - d - 5);
+      ctx.stroke();
+    }
 
     // Asteroiden bekommen kein Label — bei 100+ Wolken-Bodies wuerden
     // sich die Labels nur ueberlagern. unbound-Asteroiden zeigen aber
@@ -1883,7 +1907,24 @@ function simLoop() {
   // ist (z. B. nach Inject einer schweren Rogue), pausieren wir die Sim,
   // damit der User die Verschiebung in Ruhe sehen kann.
   let tx = cam.cx, ty = cam.cy;
-  if (lockBarycenter) {
+  // Fokus-Body (per Klick) ueberschreibt Schwerpunkt-Zentrierung.
+  // Auto-cleanup wenn der Body inzwischen geloescht/verschluckt wurde.
+  if (focusBody && bodies.indexOf(focusBody) < 0) focusBody = null;
+  if (focusBody && focusBody.visible) {
+    if (useLogZoom) {
+      const r = Math.hypot(focusBody.x, focusBody.y);
+      const ang = Math.atan2(focusBody.y, focusBody.x);
+      const rLog = logTransform(r);
+      tx = rLog * Math.cos(ang);
+      ty = rLog * Math.sin(ang);
+    } else {
+      tx = focusBody.x; ty = focusBody.y;
+    }
+    // Sofort-Snap statt Lerp — wir wollen den fokussierten Body
+    // garantiert in der Mitte halten, auch bei sehr starkem Zoom.
+    cam.cx = tx; cam.cy = ty;
+    centerInTransit = zoomLerping;
+  } else if (lockBarycenter) {
     const [bx, by] = barycenter();
     if (useLogZoom) {
       const r = Math.hypot(bx, by), ang = Math.atan2(by, bx);
@@ -2121,6 +2162,14 @@ function updateCloudDerived() {
     document.getElementById('cloud-density').value = this.value;
     document.getElementById('mob-cloud-density').value = this.value;
     updateCloudDerived();
+  });
+});
+['cloud-jit', 'mob-cloud-jit'].forEach(id => {
+  document.getElementById(id).addEventListener('input', function() {
+    document.getElementById('cloud-jit-val').textContent = this.value;
+    document.getElementById('mob-cloud-jit-val').textContent = this.value;
+    document.getElementById('cloud-jit').value = this.value;
+    document.getElementById('mob-cloud-jit').value = this.value;
   });
 });
 
@@ -2597,6 +2646,10 @@ function doInjectCloud() {
   const R = Math.sqrt(N / (Math.PI * density));
   const massEarthPer = totalMassEarth / N;
   const massSunPer = massEarthPer * M_EARTH / M_SUN;
+  // Streuung in % (Speed) und Grad (Richtung) gemeinsam via Slider.
+  // 0 = perfekt parallele Wolke; 50 = breite Streuung.
+  const jit = parseFloat(document.getElementById('cloud-jit').value);
+  const jitDirRad = jit * Math.PI / 180;
   const baseSpeedAU = Math.hypot(baseVx, baseVy);
   const baseDir = Math.atan2(baseVy, baseVx);
   for (let i = 0; i < N; i++) {
@@ -2605,13 +2658,8 @@ function doInjectCloud() {
     const th = Math.random() * 2 * Math.PI;
     const dx = r * Math.cos(th);
     const dy = r * Math.sin(th);
-    // Geschwindigkeit ±15 % und Richtung ±15° zufaellig variiert,
-    // damit die Wolke organisch wirkt und nicht starr in einer Linie
-    // fliegt. Bei Drift = 0 bleibt jeder Asteroid praktisch in Ruhe
-    // (sin/cos um 0 herum sind 0).
-    const speedFactor = 0.85 + 0.3 * Math.random();
-    const dirJitter = (Math.random() - 0.5) * (15 * Math.PI / 180);
-    const dir = baseDir + dirJitter;
+    const speedFactor = 1 + (2*Math.random() - 1) * (jit / 100);
+    const dir = baseDir + (2*Math.random() - 1) * jitDirRad;
     const vxJit = baseSpeedAU * speedFactor * Math.cos(dir);
     const vyJit = baseSpeedAU * speedFactor * Math.sin(dir);
     const name = `A${++asteroidCounter}`;
@@ -2748,6 +2796,8 @@ document.addEventListener('keydown', function(e) {
     document.getElementById('btn-step').click();
   } else if (e.key === 'r' || e.key === 'R') {
     doReset();
+  } else if (e.key === 'Escape') {
+    focusBody = null;   // Fokus aufheben
   }
 });
 
@@ -2844,9 +2894,35 @@ canvas.addEventListener('mousemove', function(e) {
   }
 });
 
+// Hit-Test: liefert den Body unter Bildschirm-Position (sx,sy) oder null.
+// Toleranz-Radius 15 px, damit auch winzige Bodies (Asteroiden) klickbar
+// sind. Nimmt den nahestliegenden Treffer.
+function bodyAtScreen(sx, sy) {
+  let hit = null, bestDist = 15;
+  for (const b of bodies) {
+    if (!b.visible) continue;
+    const [bx, by] = worldToScreen(b.x, b.y);
+    const d = Math.hypot(sx - bx, sy - by);
+    if (d < bestDist) { bestDist = d; hit = b; }
+  }
+  return hit;
+}
+
 canvas.addEventListener('mouseup', function(e) {
   if (panStart) { panStart = null; canvas.style.cursor = 'crosshair'; return; }
-  if (dragging && e.button === 0) { dragging = false; }
+  if (dragging && e.button === 0) {
+    const dx = e.clientX - dragStart.x;
+    const dy = e.clientY - dragStart.y;
+    const dist = Math.hypot(dx, dy);
+    // Klick ohne nennenswerten Drag: pruefen ob ein Body getroffen wurde.
+    // Wenn ja: Fokus setzen statt Inject-Position. Inject-Marker
+    // zuruecknehmen, damit der nicht stehen bleibt.
+    if (dist < 5) {
+      const hit = bodyAtScreen(e.clientX, e.clientY);
+      if (hit) { focusBody = hit; injectMarked = false; }
+    }
+    dragging = false;
+  }
 });
 
 canvas.addEventListener('mouseleave', function() {
