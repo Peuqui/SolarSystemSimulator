@@ -1863,18 +1863,25 @@ function simLoop() {
   // Fluchtkurs zuerst auswerten — barycenter() braucht die unbound-Flags.
   updateBoundState();
   // Schwerpunkt zentrieren: Kamera auf das Baryzentrum des gebundenen
-  // Systems setzen.
+  // Systems setzen. Geglaettet via Lerp — bei plotzlichen Spruengen
+  // (z. B. schwere Rogue injiziert) fahrt die Kamera weich zum neuen
+  // Punkt, statt zu springen. Bei normaler Drift sub-AU/Frame faellt der
+  // Lag nicht auf (Lerp greift jeden Frame an).
   if (lockBarycenter) {
     const [bx, by] = barycenter();
+    let tx, ty;
     if (useLogZoom) {
       const r = Math.hypot(bx, by), ang = Math.atan2(by, bx);
       const rLog = logTransform(r);
-      cam.cx = rLog * Math.cos(ang);
-      cam.cy = rLog * Math.sin(ang);
+      tx = rLog * Math.cos(ang);
+      ty = rLog * Math.sin(ang);
     } else {
-      cam.cx = bx;
-      cam.cy = by;
+      tx = bx;
+      ty = by;
     }
+    const SMOOTH = 0.08;   // ~0,5 s fuer 95 % Annaeherung bei 60 fps
+    cam.cx += (tx - cam.cx) * SMOOTH;
+    cam.cy += (ty - cam.cy) * SMOOTH;
   }
   draw();
   updateStats();
