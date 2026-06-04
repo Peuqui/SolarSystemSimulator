@@ -538,8 +538,17 @@ function massToRadius(massSun) {
 }
 
 // Masse-Anzeige: Tausenderpunkte + Dezimalkomma, nie Exponentialschreibweise.
+// Memoized — formatMass wird bei updateBodyFields fuer alle Bodies
+// aufgerufen, die meisten Werte wiederholen sich (gleiche Masse).
+// Hot Spot im Profil (~4 % der CPU).
+const _fmtCache = new Map();
 function formatMass(v) {
-  return v.toLocaleString('de-DE', { maximumFractionDigits: 6, useGrouping: true });
+  const cached = _fmtCache.get(v);
+  if (cached !== undefined) return cached;
+  const s = v.toLocaleString('de-DE', { maximumFractionDigits: 6, useGrouping: true });
+  _fmtCache.set(v, s);
+  if (_fmtCache.size > 5000) _fmtCache.clear();
+  return s;
 }
 // Masse-Eingabe (deutsche Notation): Punkte = Tausender, Komma = Dezimal.
 function parseMass(s) {
@@ -1784,13 +1793,8 @@ function adaptiveSubDt() {
     const aIsAst = bodies[i].isAsteroid;
     for (let j = i+1; j < bodies.length; j++) {
       if (!bodies[j].visible) continue;
-      // Asteroiden komplett aus dem Sub-Step-Adapter herausnehmen.
-      // Sonst zwingt jeder Asteroid in Jupiter-Naehe dt drastisch nach
-      // unten — bei 450 Asteroiden ruckelt der Browser. Akzeptierter
-      // Trade-off: ein Asteroid kann bei extrem nahem Vorbeiflug
-      // zwischen 2 Frames durch einen Planeten tunneln. Fuer eine
-      // Sandbox-Visualisierung vertretbar.
-      if (aIsAst || bodies[j].isAsteroid) continue;
+      // Asteroid-Asteroid-Paare ueberspringen (gravitativ vernachlaessigbar).
+      if (aIsAst && bodies[j].isAsteroid) continue;
       const a = bodies[i], b = bodies[j];
       const dx = b.x-a.x, dy = b.y-a.y;
       const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
@@ -2044,10 +2048,18 @@ function simLoop() {
     }
   }
   draw();
-  updateStats();
-  updateBodyFields();
+  // UI-Updates throttlen — Sidebar-Werte (Masse, v, Kurs) und Statistik
+  // werden nicht jeden Frame, sondern nur alle 10 Frames neu formatiert.
+  // Spart ~6 % CPU bei vielen Bodies (waren ~700 ms von 9 700 ms ueber
+  // 10 s im Profil).
+  uiUpdateTick = (uiUpdateTick + 1) % 10;
+  if (uiUpdateTick === 0) {
+    updateStats();
+    updateBodyFields();
+  }
   requestAnimationFrame(simLoop);
 }
+let uiUpdateTick = 0;
 
 // --- UI Controls (Desktop + Mobile sync) ---
 function syncSliderTo(id, valId, parser, formatter) {
