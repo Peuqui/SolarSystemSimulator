@@ -2047,23 +2047,40 @@ function applyZoomSmooth(z) {
 function fitZoomToSystem(smooth = false) {
   if (!bodies.length) return;
   const [bcx, bcy] = barycenter();
-  let maxR = 0;
-  // Alle sichtbaren Bodies einbeziehen — auch Rogues, egal welcher
-  // Toggle. Wenn ein Rogue weit weg ist, schrumpft das Hauptsystem
-  // entsprechend; das ist gewollt, damit nichts aus dem Bild faellt.
+  // Hilfsfunktion: Welt-Koord auf "transformierten Raum" abbilden, in dem
+  // die Sicht linear skaliert (Log-Polar im Log-Modus, identisch im Linear).
+  const transform = (wx, wy) => {
+    if (!useLogZoom) return [wx, wy];
+    const r = Math.hypot(wx, wy);
+    if (r < 1e-12) return [0, 0];
+    const a = Math.atan2(wy, wx);
+    const rL = logTransform(r);
+    return [rL * Math.cos(a), rL * Math.sin(a)];
+  };
+  const [bsx, bsy] = transform(bcx, bcy);
+  // Pro Body den maximal moeglichen Zoom bestimmen, damit der Body
+  // innerhalb des sichtbaren Canvas bleibt (mit PADDING zum Rand). Die
+  // Halbachsen sind asymmetrisch wegen der Sidebar.
+  const sb = document.getElementById('sidebar');
+  const sw = sb && sb.getBoundingClientRect().width > 0 ? sb.getBoundingClientRect().width : 0;
+  const padding = 100;
+  const halfLeft   = viewCX - sw    - padding;
+  const halfRight  = W - viewCX     - padding;
+  const halfTop    = H/2            - padding;
+  const halfBottom = H/2            - padding;
+  let minZoom = Infinity;
   for (const b of bodies) {
     if (!b.visible) continue;
-    const dx = b.x - bcx, dy = b.y - bcy;
-    maxR = Math.max(maxR, Math.hypot(dx, dy));
+    const [tsx, tsy] = transform(b.x, b.y);
+    const dx = (tsx - bsx) * 80;
+    const dy = (tsy - bsy) * 80;
+    if (dx >  1e-9) minZoom = Math.min(minZoom, halfRight  /  dx);
+    if (dx < -1e-9) minZoom = Math.min(minZoom, halfLeft   / -dx);
+    if (dy >  1e-9) minZoom = Math.min(minZoom, halfBottom /  dy);
+    if (dy < -1e-9) minZoom = Math.min(minZoom, halfTop    / -dy);
   }
-  if (maxR <= 0) maxR = 1;
-  // Auslastung des Sichtbereichs: aeusserster Body bei ~49 % der
-  // kleineren Bildhalbachse, knapper Puffer.
-  const targetPx = Math.min(W, H) * 0.49;
-  const rMargin = maxR * 1.05;
-  const r = useLogZoom ? logTransform(rMargin) : rMargin;
-  const z = targetPx / (80 * r);
-  const target = Math.max(0.001, Math.min(500, z));
+  if (!isFinite(minZoom)) minZoom = useLogZoom ? 6.55 : 0.35;
+  const target = Math.max(0.001, Math.min(500, minZoom));
   if (smooth) applyZoomSmooth(target);
   else applyZoom(target);
 }
