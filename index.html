@@ -1281,16 +1281,9 @@ function updateBoundState() {
   for (const b of bodies) {
     if (!b.visible) { b.unbound = false; b.escapeScore = 0; continue; }
     const isRogue = perturbers.indexOf(b) >= 0;
-    // Bei Toggle "Rogues ignorieren" sind Rogues explizit nicht Teil des
-    // System-Bezugs — eine ↗-Markierung an einem Rogue waere irrefuehrend.
-    // Bei Toggle aus laeuft die normale Bahnenergie-Pruefung, dann regelt
-    // die massengewichtete Schwerpunkts-Logik automatisch: schwere Rogues
-    // sind nahe am Schwerpunkt -> bound; kleine gefangene Rogues, die
-    // rausgeschleudert werden -> hyperbolisch -> ↗.
-    if (useMain && isRogue) {
-      b.unbound = false; b.escapeScore = 0;
-      continue;
-    }
+    // Bahnenergie-Pruefung gegen den jeweils aktiven Schwerpunkt
+    // (Hauptsystem bei Toggle an, Gesamt bei Toggle aus) — auch fuer
+    // Rogues. Hyperbolische Bodies bekommen ↗, egal Body-Typ.
     // Ist der Body Teil des aktuellen Bezugs-Schwerpunkts? Wenn ja,
     // seinen Beitrag abziehen, damit der Schwerpunkt OHNE ihn berechnet
     // wird (vermeidet zirkulaere Selbstanziehung).
