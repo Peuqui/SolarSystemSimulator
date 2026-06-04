@@ -1618,10 +1618,10 @@ function draw() {
 
     ctx.beginPath();
     ctx.fillStyle = b.color;
-    // Asteroiden bekommen feste Render-Groesse (2 px), unabhaengig von
-    // ihrer physikalischen Masse — sonst sind realistisch leichte Guertel-
-    // Asteroiden (~1e-11 M☉) nur 1,5 px und kaum sichtbar.
-    const drawR = b.isAsteroid ? 2 : Math.max(b.radius, 1.5);
+    // Asteroiden bekommen feste Render-Groesse (1 px), unabhaengig von
+    // ihrer physikalischen Masse — feine Punkte, dichte Wolken bleiben
+    // erkennbar ohne alles zuzuklotzen.
+    const drawR = b.isAsteroid ? 1 : Math.max(b.radius, 1.5);
     ctx.arc(sx, sy, drawR, 0, Math.PI*2);
     ctx.fill();
 
