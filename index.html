@@ -1226,25 +1226,64 @@ function heaviestBody() {
 // den Rest  ->  KE + PE > 0  ->  Hyperbelbahn, entkommt.
 function updateBoundState() {
   // Fluchtkriterium pro Frame:
-  //  (1) spez. Bahnenergie eps = v_rel^2/2 - G*M_sonne/r > 0  (Hyperbel)
+  //  (1) spez. Bahnenergie eps = v_rel^2/2 - G*M/r > 0  (Hyperbel)
   //  (2) das Objekt entfernt sich gerade  (radiale Geschw. vrad > 0)
-  // Beides ist eine Momentaufnahme und flackert bei nahen Begegnungen.
-  // Deshalb eine Hysterese ueber escapeScore: der unbound-Status kippt
-  // erst nach ~25 Frames anhaltendem Kriterium und zurueck erst nach
-  // ~25 Frames ohne. Das stabilisiert auch das Baryzentrum, das sonst
-  // mit der flackernden Klassifikation hin- und herspringt.
-  const sun = bodies[0];
+  // Bezug: Massenmittelpunkt des Systems (nicht mehr hardcoded bodies[0]).
+  // Mit oder ohne Rogues — gesteuert durch denselben Toggle, der auch die
+  // Kamera-Zentrierung beeinflusst. So zieht eine schwere durchfliegende
+  // Rogue den Bezugspunkt mit, und Bodies, die der Rogue "anhaengen",
+  // werden korrekt als gebunden gewertet (Toggle aus).
+  // Selbst-Beitrag wird pro Body subtrahiert, damit ein schwerer Koerper
+  // nicht gegen sich selbst gemessen wird.
+  let mx=0, my=0, mvx=0, mvy=0, mt=0;
+  let mxA=0, myA=0, mvxA=0, mvyA=0, mtA=0;
   for (const b of bodies) {
-    if (!b.visible || b === sun) { b.unbound = false; b.escapeScore = 0; continue; }
-    const dvx = b.vx - sun.vx, dvy = b.vy - sun.vy;
-    const dx = b.x - sun.x, dy = b.y - sun.y;
+    if (!b.visible) continue;
+    const isRogue = perturbers.indexOf(b) >= 0;
+    const w = isRogue ? 1
+            : Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20));
+    if (w <= 0) continue;
+    const m = b.mass * w;
+    mxA += m*b.x; myA += m*b.y; mvxA += m*b.vx; mvyA += m*b.vy; mtA += m;
+    if (!isRogue) {
+      mx += m*b.x; my += m*b.y; mvx += m*b.vx; mvy += m*b.vy; mt += m;
+    }
+  }
+  const useMain = excludeRoguesFromBary && mt > 0;
+  const SMx  = useMain ? mx  : mxA;
+  const SMy  = useMain ? my  : myA;
+  const SMvx = useMain ? mvx : mvxA;
+  const SMvy = useMain ? mvy : mvyA;
+  const Mt   = useMain ? mt  : mtA;
+  if (Mt <= 0) {
+    for (const b of bodies) { b.unbound = false; b.escapeScore = 0; }
+    return;
+  }
+  for (const b of bodies) {
+    if (!b.visible) { b.unbound = false; b.escapeScore = 0; continue; }
+    // Ist der Body Teil des aktuellen Bezugs-Schwerpunkts? Wenn ja,
+    // seinen Beitrag abziehen, damit der Schwerpunkt OHNE ihn berechnet
+    // wird (vermeidet zirkulaere Selbstanziehung).
+    const isRogue = perturbers.indexOf(b) >= 0;
+    const inBary = useMain ? !isRogue : true;
+    const bw = inBary
+      ? Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20))
+      : 0;
+    const bm = b.mass * bw;
+    const mEff = Mt - bm;
+    if (mEff <= 0) { b.unbound = false; b.escapeScore = 0; continue; }
+    const cmx  = (SMx  - bm * b.x ) / mEff;
+    const cmy  = (SMy  - bm * b.y ) / mEff;
+    const cmvx = (SMvx - bm * b.vx) / mEff;
+    const cmvy = (SMvy - bm * b.vy) / mEff;
+    const dvx = b.vx - cmvx, dvy = b.vy - cmvy;
+    const dx  = b.x  - cmx,  dy  = b.y  - cmy;
     const r = Math.sqrt(dx*dx + dy*dy + 1e-12);
-    const eps = 0.5 * (dvx*dvx + dvy*dvy) - G_AU * sun.mass / r;
+    const eps = 0.5 * (dvx*dvx + dvy*dvy) - G_AU * mEff / r;
     // "Auf Fluchtkurs" = ungebunden UND bereits deutlich ausserhalb des
     // Systems. Die zweite Bedingung verhindert, dass ein gestoerter,
     // aber gebundener Planet (dessen eps beim Pendeln kurz positiv wird)
-    // flackernd markiert wird — was sonst auch das Baryzentrum springen
-    // laesst. Die Hysterese glaettet zusaetzlich den Schwellen-Uebergang.
+    // flackernd markiert wird. Die Hysterese glaettet den Uebergang.
     const escaping = eps > 0 && r > ESCAPE_MARK_AU;
     const sc = escaping
       ? Math.min(30, (b.escapeScore || 0) + 1)
