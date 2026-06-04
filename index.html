@@ -1827,11 +1827,12 @@ function simLoop() {
       tx = bx; ty = by;
     }
     const distPx = Math.hypot(tx - cam.cx, ty - cam.cy) * cam.zoom * 80;
-    if (distPx > 50) centerInTransit = true;       // Sprung erkannt
-    else if (distPx < 5) centerInTransit = false;  // angekommen
-    // dazwischen: Status bleibt (Hysterese)
+    if (distPx > 50 || zoomLerping) centerInTransit = true;
+    else if (distPx < 5 && !zoomLerping) centerInTransit = false;
   } else {
-    centerInTransit = false;
+    // Auch ohne Schwerpunkt-Lock: zoomLerping haelt die Sim an, bis das
+    // Ziel-Zoom erreicht ist (z. B. nach Log/Linear-Toggle).
+    centerInTransit = zoomLerping;
   }
   const effectivelyPaused = paused || document.hidden || centerInTransit;
   if (lastTickMs && !effectivelyPaused) {
@@ -1846,11 +1847,19 @@ function simLoop() {
   }
   // Fluchtkurs auswerten — barycenter() braucht die unbound-Flags.
   updateBoundState();
-  // Lerp die Kamera zum aktuellen Ziel (Faktor 0,05 = ~1 s fuer 95 %).
+  // Lerp die Kamera + Zoom zum aktuellen Ziel (Faktor 0,05 = ~1 s).
+  const SMOOTH = 0.05;
   if (lockBarycenter) {
-    const SMOOTH = 0.05;
     cam.cx += (tx - cam.cx) * SMOOTH;
     cam.cy += (ty - cam.cy) * SMOOTH;
+  }
+  if (zoomLerping) {
+    cam.zoom += (targetZoom - cam.zoom) * SMOOTH;
+    // Snap, sobald die relative Differenz vernachlaessigbar ist.
+    if (Math.abs(targetZoom - cam.zoom) / Math.max(cam.zoom, targetZoom) < 0.01) {
+      cam.zoom = targetZoom;
+      zoomLerping = false;
+    }
   }
   draw();
   updateStats();
@@ -2004,9 +2013,26 @@ document.getElementById('mob-p-angle').addEventListener('input', function() {
   document.getElementById('p-angle-val').textContent = this.value + '\u00B0';
 });
 
-// Setzt den Kamera-Zoom und synchronisiert beide Slider + Anzeigen.
+let targetZoom = 0.35;
+let zoomLerping = false;
+
+// Setzt den Kamera-Zoom sofort (kein Lerp) und synchronisiert beide
+// Slider + Anzeigen. Fuer Reset, Szenario-Wechsel, Mausrad, Buttons.
 function applyZoom(z) {
   cam.zoom = z;
+  targetZoom = z;
+  zoomLerping = false;
+  document.getElementById('zoom-slider').value = z;
+  document.getElementById('zoom-val').textContent = fmtDE(z, 2);
+  document.getElementById('mob-zoom-slider').value = z;
+  document.getElementById('mob-zoom-val').textContent = fmtDE(z, 2);
+}
+
+// Setzt nur das Zoom-Ziel — simLoop lerpt cam.zoom dorthin. Fuer
+// weiche Uebergange beim Log/Linear-Toggle.
+function applyZoomSmooth(z) {
+  targetZoom = z;
+  zoomLerping = true;
   document.getElementById('zoom-slider').value = z;
   document.getElementById('zoom-val').textContent = fmtDE(z, 2);
   document.getElementById('mob-zoom-slider').value = z;
@@ -2018,7 +2044,7 @@ function applyZoom(z) {
 // maximalen Abstand davon als Radius. Beim Toggle zwischen Log/Linear
 // wuerde sonst die Szenario-Default-Skala greifen, die aber bei
 // veraenderten Systemen (durch Rogues) nicht mehr passt.
-function fitZoomToSystem() {
+function fitZoomToSystem(smooth = false) {
   if (!bodies.length) return;
   const [bcx, bcy] = barycenter();
   let maxR = 0;
@@ -2031,14 +2057,15 @@ function fitZoomToSystem() {
     maxR = Math.max(maxR, Math.hypot(dx, dy));
   }
   if (maxR <= 0) maxR = 1;
-  // 30 % Puffer: maxR * 1.3 soll bei ~40 % der kleineren Bildschirm-Seite
-  // landen, damit am Rand noch Luft bleibt und nahe Bodies nicht knapp
-  // ausserhalb des Sichtbereichs liegen.
-  const targetPx = Math.min(W, H) * 0.40;
-  const rMargin = maxR * 1.3;
+  // 10 % Puffer reicht — sonst sind die Bodies zu eng in der Mitte. Der
+  // aeusserste Body landet bei knapp unter ~47 % der Bildhalbachse.
+  const targetPx = Math.min(W, H) * 0.47;
+  const rMargin = maxR * 1.1;
   const r = useLogZoom ? logTransform(rMargin) : rMargin;
   const z = targetPx / (80 * r);
-  applyZoom(Math.max(0.001, Math.min(500, z)));
+  const target = Math.max(0.001, Math.min(500, z));
+  if (smooth) applyZoomSmooth(target);
+  else applyZoom(target);
 }
 
 // Setzt den Zeitschritt (Tage/Frame) und synchronisiert beide Slider.
@@ -2099,7 +2126,7 @@ chkSync.forEach(([desk, mob, varName]) => {
     document.getElementById(desk).checked = val;
     document.getElementById(mob).checked = val;
     // Log-Zoom braucht einen anderen Kamera-Zoom — Szenario-Wert neu setzen.
-    if (varName === 'useLogZoom') fitZoomToSystem();
+    if (varName === 'useLogZoom') fitZoomToSystem(true);   // smooth
     if (persist) {
       try { localStorage.setItem('sim_' + varName, val ? '1' : '0'); } catch (e) {}
     }
