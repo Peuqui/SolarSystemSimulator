@@ -706,10 +706,10 @@ function buildSolarSystemWithBelts() {
   buildSolarSystem();
   // Asteroidengürtel: 2,1–3,3 AU, Gesamtmasse ~Mondmasse/30 (~0,001 M⊕),
   // moderate Excentricity.
-  addBelt('AB', 250, 2.1, 3.3, 0.15, 0.001, '#aa8866');
+  addBelt('AB', 250, 2.1, 3.3, 0.15, 0.001, '#d4b890');
   // Kuipergürtel: 30–50 AU, Gesamtmasse ~0,04 M⊕ (klassische Schaetzung),
   // etwas hoehere Excentricity als der Asteroidengürtel.
-  addBelt('KB', 200, 30, 50, 0.2, 0.04, '#88aabb');
+  addBelt('KB', 200, 30, 50, 0.2, 0.04, '#9fc6dc');
 }
 
 function buildEmpty() { /* leer — Koerper per Klick setzen (Bau-Modus) */ }
@@ -1609,7 +1609,11 @@ function draw() {
 
     ctx.beginPath();
     ctx.fillStyle = b.color;
-    ctx.arc(sx, sy, Math.max(b.radius, 1.5), 0, Math.PI*2);
+    // Asteroiden bekommen feste Render-Groesse (2 px), unabhaengig von
+    // ihrer physikalischen Masse — sonst sind realistisch leichte Guertel-
+    // Asteroiden (~1e-11 M☉) nur 1,5 px und kaum sichtbar.
+    const drawR = b.isAsteroid ? 2 : Math.max(b.radius, 1.5);
+    ctx.arc(sx, sy, drawR, 0, Math.PI*2);
     ctx.fill();
 
     if (b.isBlackHole) {
