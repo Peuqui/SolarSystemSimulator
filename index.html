@@ -1576,37 +1576,85 @@ function draw() {
   // genug; K=8 ist visuell kaum von 150 Einzel-Strokes zu unterscheiden.
   // Plus: worldToScreen pro Trail-Punkt nur 1x (statt 2x pro Segment).
   if (showTrails) {
-    const K = 8;
     ctx.lineWidth = 1.2;
+    const prevAlpha = ctx.globalAlpha;
+
+    // --- Asteroid-Trails: nach Farbe gruppiert + K=3 Alpha-Buckets pro
+    // Farbe fuer einen leichten Fade. Bei 5 Farben x 3 Buckets nur ~15
+    // Strokes/Frame fuer alle 1400 Asteroid-Trails (statt 1400+ Einzel-
+    // strokes), trotzdem mit weichem Verblass-Effekt.
+    const K_AST = 3;
+    const ALPHAS_AST = [0.08, 0.20, 0.40];   // hinten -> vorne
+    const astByColor = new Map();   // color -> K_AST Buckets mit [x1,y1,x2,y2,...]
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
-      if (!b.visible) continue;
+      if (!b.visible || !b.isAsteroid) continue;
       const trail = trails[b.name];
       const tn = trail ? trail.length : 0;
       if (tn < 2) continue;
-      // Vorab alle Screen-Koordinaten umrechnen (1x pro Punkt).
+      let buckets = astByColor.get(b.color);
+      if (!buckets) {
+        buckets = [];
+        for (let k = 0; k < K_AST; k++) buckets.push([]);
+        astByColor.set(b.color, buckets);
+      }
+      const p0 = worldToScreen(trail[0].x, trail[0].y);
+      let lastX = p0[0], lastY = p0[1];
+      for (let j = 1; j < tn; j++) {
+        const p = worldToScreen(trail[j].x, trail[j].y);
+        let bIdx = ((j / tn) * K_AST) | 0;
+        if (bIdx >= K_AST) bIdx = K_AST - 1;
+        const segs = buckets[bIdx];
+        segs.push(lastX, lastY, p[0], p[1]);
+        lastX = p[0]; lastY = p[1];
+      }
+    }
+    if (astByColor.size > 0) {
+      for (const [color, buckets] of astByColor) {
+        ctx.strokeStyle = color;
+        for (let k = 0; k < K_AST; k++) {
+          const segs = buckets[k];
+          if (segs.length === 0) continue;
+          ctx.globalAlpha = ALPHAS_AST[k];
+          ctx.beginPath();
+          for (let s = 0; s < segs.length; s += 4) {
+            ctx.moveTo(segs[s],   segs[s+1]);
+            ctx.lineTo(segs[s+2], segs[s+3]);
+          }
+          ctx.stroke();
+        }
+      }
+    }
+
+    // --- Hauptkoerper (Planeten/Sterne/Rogues): K=8 Alpha-Buckets pro
+    // Body fuer den weichen Fade-Effekt — sieht "richtig" aus, kostet bei
+    // 10 Bodies x 8 Buckets nur 80 Strokes.
+    const K = 8;
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i];
+      if (!b.visible || b.isAsteroid) continue;
+      const trail = trails[b.name];
+      const tn = trail ? trail.length : 0;
+      if (tn < 2) continue;
       const sxs = new Float32Array(tn);
       const sys = new Float32Array(tn);
       for (let j = 0; j < tn; j++) {
         const p = worldToScreen(trail[j].x, trail[j].y);
         sxs[j] = p[0]; sys[j] = p[1];
       }
-      // Segmente in K Alpha-Buckets verteilen.
       const buckets = [];
       for (let k = 0; k < K; k++) buckets.push([]);
       for (let j = 1; j < tn; j++) {
-        const t = j / tn;            // 0..1 entlang Trail
-        let bIdx = (t * K) | 0;
+        let bIdx = ((j / tn) * K) | 0;
         if (bIdx >= K) bIdx = K - 1;
         buckets[bIdx].push(j);
       }
-      // Pro Bucket einmal Farbe setzen, einmal stroke.
+      ctx.strokeStyle = b.color;
       for (let k = 0; k < K; k++) {
         const segs = buckets[k];
         if (segs.length === 0) continue;
         const alpha = ((k + 0.5) / K) * 0.55;
-        const hex = Math.round(alpha * 255).toString(16).padStart(2, '0');
-        ctx.strokeStyle = b.color + hex;
+        ctx.globalAlpha = alpha;
         ctx.beginPath();
         for (let s = 0; s < segs.length; s++) {
           const j = segs[s];
@@ -1616,6 +1664,7 @@ function draw() {
         ctx.stroke();
       }
     }
+    ctx.globalAlpha = prevAlpha;
   }
 
   // Force vectors
@@ -3393,22 +3442,35 @@ function formatRealTime(ms) {
 
 function updateStats() {
   const years = fmtDE(simTime / 365.25, 2);
-  // Nur aktive (sichtbare) Koerper zaehlen \u2014 ausgeschaltete sind aus
-  // der Simulation genommen.
-  const ke = bodies.reduce((s, b) => b.visible ? s + 0.5 * b.mass * (b.vx*b.vx + b.vy*b.vy) : s, 0);
-  let pe = 0;
+  // KE + PE: Asteroiden tragen physikalisch vernachlaessigbar bei (Guertel-
+  // Gesamtmasse < 0,001 Erdmassen gegen Sonne 332.000), kosten aber als
+  // N^2-Term im PE bei N=1400 Bodies rund 7 ms pro Aufruf. Daher nur
+  // Planeten/Sterne/Rogues \u2014 O(M^2) mit M ~ 10 statt O(N^2) mit N ~ 1400.
+  const planets = [];
+  let activeCount = 0;
   for (let i = 0; i < bodies.length; i++) {
-    if (!bodies[i].visible) continue;
-    for (let j = i+1; j < bodies.length; j++) {
-      if (!bodies[j].visible) continue;
-      const dx = bodies[j].x - bodies[i].x;
-      const dy = bodies[j].y - bodies[i].y;
+    const b = bodies[i];
+    if (!b.visible) continue;
+    activeCount++;
+    if (!b.isAsteroid) planets.push(b);
+  }
+  let ke = 0;
+  for (let i = 0; i < planets.length; i++) {
+    const b = planets[i];
+    ke += 0.5 * b.mass * (b.vx*b.vx + b.vy*b.vy);
+  }
+  let pe = 0;
+  for (let i = 0; i < planets.length; i++) {
+    const bi = planets[i];
+    for (let j = i+1; j < planets.length; j++) {
+      const bj = planets[j];
+      const dx = bj.x - bi.x;
+      const dy = bj.y - bi.y;
       const r = Math.sqrt(dx*dx + dy*dy + 1e-12);
-      pe -= G_AU * bodies[i].mass * bodies[j].mass / r;
+      pe -= G_AU * bi.mass * bj.mass / r;
     }
   }
   const totalE = ke + pe;
-  const activeCount = bodies.reduce((s, b) => b.visible ? s + 1 : s, 0);
   const html =
     `Zeit: <span>${years}</span> Jahre<br>` +
     `Echtzeit: <span>${formatRealTime(realElapsedMs)}</span><br>` +
