@@ -289,8 +289,8 @@ input[type=range] {
   <label title="Statisches Sternfeld als Bewegungsreferenz, wenn das System sich bewegt.">
     <input type="checkbox" id="chk-stars" checked> Sternenhintergrund
   </label>
-  <label title="Festes Rechteckgitter in Welt-Koordinaten (bewegt sich nicht mit der Kamera).">
-    <input type="checkbox" id="chk-worldgrid"> Welt-Rechteckgitter
+  <label title="Festes Achsenkreuz x=0/y=0 in Welt-Koordinaten mit Tick-Marks an Dekaden — bewegt sich nicht mit der Kamera.">
+    <input type="checkbox" id="chk-worldgrid"> Welt-Koordinatenkreuz
   </label>
   <label>
     <input type="checkbox" id="chk-logzoom" checked> Logarithmischer Zoom
@@ -421,7 +421,7 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-vectors"> Kraftvektoren</label>
   <label><input type="checkbox" id="mob-chk-grid" checked> Gitternetz</label>
   <label title="Statisches Sternfeld als Bewegungsreferenz."><input type="checkbox" id="mob-chk-stars" checked> Sternenhintergrund</label>
-  <label title="Festes Rechteckgitter in Welt-Koordinaten."><input type="checkbox" id="mob-chk-worldgrid"> Welt-Rechteckgitter</label>
+  <label title="Festes Achsenkreuz x=0/y=0 in Welt-Koordinaten."><input type="checkbox" id="mob-chk-worldgrid"> Welt-Koordinatenkreuz</label>
   <label><input type="checkbox" id="mob-chk-logzoom" checked> Log-Zoom</label>
   <label><input type="checkbox" id="mob-chk-baryctr" checked> Schwerpunkt zentrieren</label>
   <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung."><input type="checkbox" id="mob-chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren</label>
@@ -1569,22 +1569,50 @@ function draw() {
     ctx.fillText('Schwerpunkt', bcx + 9, bcy - 5);
   }
 
-  // Trails — alle Koerper (auch Sterne, die sich ja bewegen)
+  // Trails — alle Koerper (auch Sterne, die sich ja bewegen).
+  // Performance: statt pro Segment ein beginPath()+stroke() (1 Driver-Call
+  // pro Linie) werden Segmente in K Alpha-Buckets aggregiert. Pro Bucket
+  // ein einziger stroke() mit allen Segmenten. Der Fade-Effekt bleibt fein
+  // genug; K=8 ist visuell kaum von 150 Einzel-Strokes zu unterscheiden.
+  // Plus: worldToScreen pro Trail-Punkt nur 1x (statt 2x pro Segment).
   if (showTrails) {
+    const K = 8;
+    ctx.lineWidth = 1.2;
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
       if (!b.visible) continue;
       const trail = trails[b.name];
-      if (!trail || trail.length < 2) continue;
-      ctx.lineWidth = 1.2;
-      for (let j = 1; j < trail.length; j++) {
-        const alpha = (j / trail.length) * 0.55;
-        ctx.strokeStyle = b.color + Math.round(alpha * 255).toString(16).padStart(2, '0');
-        const [sx1, sy1] = worldToScreen(trail[j-1].x, trail[j-1].y);
-        const [sx2, sy2] = worldToScreen(trail[j].x, trail[j].y);
+      const tn = trail ? trail.length : 0;
+      if (tn < 2) continue;
+      // Vorab alle Screen-Koordinaten umrechnen (1x pro Punkt).
+      const sxs = new Float32Array(tn);
+      const sys = new Float32Array(tn);
+      for (let j = 0; j < tn; j++) {
+        const p = worldToScreen(trail[j].x, trail[j].y);
+        sxs[j] = p[0]; sys[j] = p[1];
+      }
+      // Segmente in K Alpha-Buckets verteilen.
+      const buckets = [];
+      for (let k = 0; k < K; k++) buckets.push([]);
+      for (let j = 1; j < tn; j++) {
+        const t = j / tn;            // 0..1 entlang Trail
+        let bIdx = (t * K) | 0;
+        if (bIdx >= K) bIdx = K - 1;
+        buckets[bIdx].push(j);
+      }
+      // Pro Bucket einmal Farbe setzen, einmal stroke.
+      for (let k = 0; k < K; k++) {
+        const segs = buckets[k];
+        if (segs.length === 0) continue;
+        const alpha = ((k + 0.5) / K) * 0.55;
+        const hex = Math.round(alpha * 255).toString(16).padStart(2, '0');
+        ctx.strokeStyle = b.color + hex;
         ctx.beginPath();
-        ctx.moveTo(sx1, sy1);
-        ctx.lineTo(sx2, sy2);
+        for (let s = 0; s < segs.length; s++) {
+          const j = segs[s];
+          ctx.moveTo(sxs[j-1], sys[j-1]);
+          ctx.lineTo(sxs[j],   sys[j]);
+        }
         ctx.stroke();
       }
     }
@@ -1605,11 +1633,60 @@ function draw() {
     }
   }
 
-  // Bodies
+  // Asteroiden-Batch: nach Farbe gruppiert mit fillRect zeichnen.
+  // Spart pro Asteroid ein beginPath()+arc()+fill() (drei Canvas-Calls)
+  // — bei ~1400 Asteroiden der dickste Render-Brocken.
+  const _astByColor = new Map();
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.visible || !b.isAsteroid) continue;
+    let arr = _astByColor.get(b.color);
+    if (!arr) { arr = []; _astByColor.set(b.color, arr); }
+    arr.push(b);
+  }
+  for (const [color, arr] of _astByColor) {
+    ctx.fillStyle = color;
+    for (let k = 0; k < arr.length; k++) {
+      const b = arr[k];
+      const [sx, sy] = worldToScreen(b.x, b.y);
+      ctx.fillRect(sx - 1, sy - 1, 2, 2);
+    }
+  }
+
+  // Bodies (Asteroiden werden uebersprungen — schon im Batch oben gezeichnet;
+  // ausgenommen unbound-/Fokus-Marker, die einzeln gerendert bleiben).
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible) continue;
+    if (b.isAsteroid && !b.unbound && b !== focusBody) continue;
     const [sx, sy] = worldToScreen(b.x, b.y);
+    if (b.isAsteroid) {
+      // Nur Marker, kein erneutes Zeichnen des Body-Punkts (ist schon da).
+      if (b.unbound) {
+        const ph = (Math.sin(performance.now() / 160) + 1) / 2;
+        ctx.beginPath();
+        ctx.strokeStyle = `rgba(255,90,90,${(0.25 + 0.7 * ph).toFixed(3)})`;
+        ctx.lineWidth = 2;
+        ctx.arc(sx, sy, 6 + ph * 6, 0, Math.PI*2);
+        ctx.stroke();
+      }
+      if (b === focusBody) {
+        const ringR = 14;
+        ctx.strokeStyle = 'rgba(140,220,100,0.9)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(sx, sy, ringR, 0, Math.PI*2);
+        ctx.stroke();
+        const d = ringR + 4;
+        ctx.beginPath();
+        ctx.moveTo(sx + d, sy); ctx.lineTo(sx + d + 5, sy);
+        ctx.moveTo(sx - d, sy); ctx.lineTo(sx - d - 5, sy);
+        ctx.moveTo(sx, sy + d); ctx.lineTo(sx, sy + d + 5);
+        ctx.moveTo(sx, sy - d); ctx.lineTo(sx, sy - d - 5);
+        ctx.stroke();
+      }
+      continue;
+    }
 
     if (b.isBlackHole) {
       // Akkretionsdisc-Glut: orange-violetter Halo deutet die Disc
@@ -1638,10 +1715,7 @@ function draw() {
 
     ctx.beginPath();
     ctx.fillStyle = b.color;
-    // Asteroiden bekommen feste Render-Groesse (1 px), unabhaengig von
-    // ihrer physikalischen Masse — feine Punkte, dichte Wolken bleiben
-    // erkennbar ohne alles zuzuklotzen.
-    const drawR = b.isAsteroid ? 1 : Math.max(b.radius, 1.5);
+    const drawR = Math.max(b.radius, 1.5);
     ctx.arc(sx, sy, drawR, 0, Math.PI*2);
     ctx.fill();
 
@@ -1683,14 +1757,11 @@ function draw() {
       ctx.stroke();
     }
 
-    // Asteroiden bekommen kein Label — bei 100+ Wolken-Bodies wuerden
-    // sich die Labels nur ueberlagern. unbound-Asteroiden zeigen aber
-    // weiterhin den pulsierenden Ring oben.
-    if (!b.isAsteroid) {
-      ctx.fillStyle = b.unbound ? '#ff6a6a' : b.color + 'dd';
-      ctx.font = '11px monospace';
-      ctx.fillText(b.unbound ? b.name + ' ⇗' : b.name, sx + b.radius + 5, sy + 4);
-    }
+    // Label (Asteroiden bekommen nie ein Label — sie wurden weiter oben
+    // im Pre-Pass behandelt und springen mit continue aus dieser Schleife).
+    ctx.fillStyle = b.unbound ? '#ff6a6a' : b.color + 'dd';
+    ctx.font = '11px monospace';
+    ctx.fillText(b.unbound ? b.name + ' ⇗' : b.name, sx + b.radius + 5, sy + 4);
   }
 
   // Perturber injection preview — zeigt die Stoermasse schon beim
@@ -1965,12 +2036,17 @@ function createPhysWorker() {
   const w = new Worker(URL.createObjectURL(blob));
   w.onmessage = function(e) {
     const d = e.data;
-    const n = Math.min(bodies.length, d.x.length);
+    const refs = workerInflightRefs || bodies;
+    const live = new Set(bodies);
+    const n = Math.min(refs.length, d.x.length);
     for (let i = 0; i < n; i++) {
-      bodies[i].x = d.x[i]; bodies[i].y = d.y[i];
-      bodies[i].vx = d.vx[i]; bodies[i].vy = d.vy[i];
-      bodies[i].ax = d.ax[i]; bodies[i].ay = d.ay[i];
+      const b = refs[i];
+      if (!live.has(b)) continue;
+      b.x = d.x[i]; b.y = d.y[i];
+      b.vx = d.vx[i]; b.vy = d.vy[i];
+      b.ax = d.ax[i]; b.ay = d.ay[i];
     }
+    workerInflightRefs = null;
     workerBusy = false;
     if (workerResolver) { const r = workerResolver; workerResolver = null; r(); }
   };
@@ -1982,6 +2058,12 @@ function createPhysWorker() {
   };
   return w;
 }
+
+// Snapshot der Body-Referenzen, deren Physik gerade im Worker laeuft.
+// Wird beim Readback verwendet, damit ein zwischenzeitliches Entfernen
+// (Fluechtende-Loeschen, Wolken-Loeschen) die Writeback-Schleife nicht
+// in einen TypeError laufen laesst.
+let workerInflightRefs = null;
 
 function advanceWorker(dtYears) {
   return new Promise((resolve) => {
@@ -2002,6 +2084,7 @@ function advanceWorker(dtYears) {
       visible[i] = b.visible ? 1 : 0;
       isAst[i] = b.isAsteroid ? 1 : 0;
     }
+    workerInflightRefs = bodies.slice();
     workerBusy = true;
     workerResolver = resolve;
     physWorker.postMessage({ x, y, vx, vy, ax, ay, mass, visible, isAst, dt: dtYears },
@@ -2171,12 +2254,17 @@ const YOSHIDA_W0_F = -Math.cbrt(2) / (2 - Math.cbrt(2));
 async function advanceGPU(dtYears) {
   const N = bodies.length;
   if (N === 0) return;
+  // Snapshot der Body-Referenzen — beim Readback wird per identischer
+  // Referenz zurueckgeschrieben, damit Removals waehrend des mapAsync
+  // (Fluechtende loeschen, Wolken loeschen) keinen TypeError ausloesen
+  // oder Physik dem falschen Body zuweisen.
+  const refs = bodies.slice();
   ensureGpuBuffers(N);
   // Pack body state
   const stateArr = new Float32Array(N * 4);
   const velArr   = new Float32Array(N * 2);
   for (let i = 0; i < N; i++) {
-    const b = bodies[i];
+    const b = refs[i];
     stateArr[i*4 + 0] = b.x;
     stateArr[i*4 + 1] = b.y;
     stateArr[i*4 + 2] = b.mass;
@@ -2227,11 +2315,14 @@ async function advanceGPU(dtYears) {
   const mapped = gpuBuf.read.getMappedRange();
   const stateOut = new Float32Array(mapped, 0, N * 4);
   const velOut   = new Float32Array(mapped, N * 16, N * 2);
+  const live = new Set(bodies);
   for (let i = 0; i < N; i++) {
-    bodies[i].x  = stateOut[i*4 + 0];
-    bodies[i].y  = stateOut[i*4 + 1];
-    bodies[i].vx = velOut[i*2 + 0];
-    bodies[i].vy = velOut[i*2 + 1];
+    const b = refs[i];
+    if (!live.has(b)) continue;
+    b.x  = stateOut[i*4 + 0];
+    b.y  = stateOut[i*4 + 1];
+    b.vx = velOut[i*2 + 0];
+    b.vy = velOut[i*2 + 1];
   }
   gpuBuf.read.unmap();
 }
@@ -2333,6 +2424,12 @@ function shatter(a, b) {
 // Spatial-Hash Grid fuer Planet x Asteroid Kollisions-Tests.
 // Zellgroesse = 2x max(realR) — bei Sonne ~5e-3 AU.
 const COLL_CELL_AU = 0.01;
+const INV_COLL_CELL = 1 / COLL_CELL_AU;
+// Numerischer Hash statt String — spart bei N=1400 Asteroiden pro Frame
+// die String-Allocation und macht Map-Lookups deutlich schneller. Offset
+// + Multiplikator halten den Schluessel im JS-Safe-Int-Bereich (< 2^53).
+const HASH_OFF = 1e6;
+const HASH_MUL = 2e6;
 const _astCellMap = new Map();
 
 // Resolve eine einzelne Kollision (geometrische Beruehrung).
@@ -2370,9 +2467,9 @@ function handleCollisions() {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible || !b.isAsteroid) continue;
-    const cx = Math.floor(b.x / COLL_CELL_AU);
-    const cy = Math.floor(b.y / COLL_CELL_AU);
-    const k = cx + ',' + cy;
+    const cx = Math.floor(b.x * INV_COLL_CELL);
+    const cy = Math.floor(b.y * INV_COLL_CELL);
+    const k = (cx + HASH_OFF) * HASH_MUL + (cy + HASH_OFF);
     let cell = _astCellMap.get(k);
     if (!cell) { cell = []; _astCellMap.set(k, cell); }
     cell.push(b);
@@ -2381,11 +2478,12 @@ function handleCollisions() {
   // ~9 Lookups, typisch 0..2 Asteroiden pro Zelle. M*9 statt M*N_ast.
   for (let pi = 0; pi < planets.length; pi++) {
     const p = planets[pi];
-    const cx = Math.floor(p.x / COLL_CELL_AU);
-    const cy = Math.floor(p.y / COLL_CELL_AU);
+    const cx = Math.floor(p.x * INV_COLL_CELL);
+    const cy = Math.floor(p.y * INV_COLL_CELL);
     for (let dx = -1; dx <= 1; dx++) {
+      const kx = (cx + dx + HASH_OFF) * HASH_MUL;
       for (let dy = -1; dy <= 1; dy++) {
-        const cell = _astCellMap.get((cx+dx) + ',' + (cy+dy));
+        const cell = _astCellMap.get(kx + (cy + dy + HASH_OFF));
         if (!cell) continue;
         for (let ai = 0; ai < cell.length; ai++) {
           if (_tryCollide(p, cell[ai])) return;
@@ -2456,7 +2554,13 @@ async function simLoop() {
   if (!effectivelyPaused) {
     const dtDays = parseFloat(document.getElementById('dt-slider').value);
     const slowFactor = Math.pow(10, parseFloat(document.getElementById('slow-slider').value));
-    await advanceAsync(dtDays / 365.25 / slowFactor);
+    try {
+      await advanceAsync(dtDays / 365.25 / slowFactor);
+    } catch (err) {
+      // Niemals den rAF-Loop kippen lassen — eine Race oder ein GPU-Hiccup
+      // darf die ganze Simulation nicht einfrieren. Loggen, weitermachen.
+      console.warn('advanceAsync warf — Frame uebersprungen:', err);
+    }
   }
   // Fluchtkurs auswerten — barycenter() braucht die unbound-Flags.
   updateBoundState();
