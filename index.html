@@ -727,10 +727,10 @@ function buildSolarSystemWithBelts() {
   buildSolarSystem();
   // Asteroidengürtel: 2,1–3,3 AU, Gesamtmasse ~Mondmasse/30 (~0,001 M⊕),
   // moderate Excentricity.
-  addBelt('AB', 250, 2.1, 3.3, 0.15, 0.001, '#d4b890');
+  addBelt('AB', 800, 2.1, 3.3, 0.15, 0.001, '#d4b890');
   // Kuipergürtel: 30–50 AU, Gesamtmasse ~0,04 M⊕ (klassische Schaetzung),
   // etwas hoehere Excentricity als der Asteroidengürtel.
-  addBelt('KB', 200, 30, 50, 0.2, 0.04, '#9fc6dc');
+  addBelt('KB', 600, 30, 50, 0.2, 0.04, '#9fc6dc');
 }
 
 function buildEmpty() { /* leer — Koerper per Klick setzen (Bau-Modus) */ }
@@ -1797,8 +1797,11 @@ function adaptiveSubDt() {
     const aIsAst = bodies[i].isAsteroid;
     for (let j = i+1; j < bodies.length; j++) {
       if (!bodies[j].visible) continue;
-      // Asteroid-Asteroid-Paare ueberspringen (gravitativ vernachlaessigbar).
-      if (aIsAst && bodies[j].isAsteroid) continue;
+      // Asteroiden komplett aus adaptiveSubDt — ihre Naehe zu Planeten
+      // wuerde sonst dt drastisch nach unten ziehen und den Browser
+      // ausbremsen. Trade-off: ein Asteroid kann bei extrem nahem
+      // Vorbeiflug zwischen 2 Frames durch einen Planeten tunneln.
+      if (aIsAst || bodies[j].isAsteroid) continue;
       const a = bodies[i], b = bodies[j];
       const dx = b.x-a.x, dy = b.y-a.y;
       const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
