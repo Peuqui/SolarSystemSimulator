@@ -436,6 +436,8 @@ input[type=range] {
   <label data-i18n="sec.cloud" style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
   <label><span data-i18n="lbl.cloud-count">Anzahl</span> <span class="val" id="cloud-n-val">50</span></label>
   <input type="range" autocomplete="off" id="cloud-n" min="5" max="500" step="5" value="50">
+  <label data-i18n-title="tt.cloud-mass"><span data-i18n="lbl.cloud-mass">Gesamtmasse (M⊕)</span> <span class="val" id="cloud-mass-val">0,001</span></label>
+  <input type="range" autocomplete="off" id="cloud-mass" min="-5" max="2" step="0.05" value="-3">
   <label data-i18n-title="tt.density"><span data-i18n="lbl.cloud-density-au2">Dichte (1/AU²)</span> <span class="val" id="cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="cloud-density" min="-2" max="5" step="0.05" value="1">
   <label style="color:#aaa; font-size:11px;"><span data-i18n="lbl.cloud-r">Eff. Radius:</span> <span id="cloud-r-derived">~1,3 AU</span></label>
@@ -576,6 +578,8 @@ input[type=range] {
   <label data-i18n="sec.cloud" style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
   <label><span data-i18n="lbl.cloud-count">Anzahl</span> <span class="val" id="mob-cloud-n-val">50</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-n" min="5" max="500" step="5" value="50">
+  <label data-i18n-title="tt.cloud-mass"><span data-i18n="lbl.cloud-mass">Gesamtmasse (M⊕)</span> <span class="val" id="mob-cloud-mass-val">0,001</span></label>
+  <input type="range" autocomplete="off" id="mob-cloud-mass" min="-5" max="2" step="0.05" value="-3">
   <label><span data-i18n="lbl.cloud-density-au2">Dichte (1/AU²)</span> <span class="val" id="mob-cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-density" min="-2" max="5" step="0.05" value="1">
   <label style="color:#aaa; font-size:11px;"><span data-i18n="lbl.cloud-r">Eff. Radius:</span> <span id="mob-cloud-r-derived">~1,3 AU</span></label>
@@ -708,6 +712,8 @@ const I18N = {
     'lbl.inject-angle': 'Kompass-Kurs (°)',
     'lbl.cloud-count': 'Anzahl',
     'lbl.cloud-density-au2': 'Dichte (1/AU²)',
+    'lbl.cloud-mass': 'Gesamtmasse (M⊕)',
+    'tt.cloud-mass': 'Gesamtmasse der gesamten Wolke in Erdmassen. Wird auf alle Asteroiden gleich verteilt. Default 0,001 M⊕ entspricht der Masse des realen Asteroidengürtels.',
     'lbl.cloud-r': 'Eff. Radius:',
     'hint.inject': 'Klick+Ziehen auf Canvas = Vektor. Shift+Klick auf den Inject-Button (rechts) = Wolke.',
     'btn.apply-changes': '✓ Änderungen übernehmen',
@@ -870,6 +876,8 @@ const I18N = {
     'lbl.inject-angle': 'Heading (°)',
     'lbl.cloud-count': 'Count',
     'lbl.cloud-density-au2': 'Density (1/AU²)',
+    'lbl.cloud-mass': 'Total mass (M⊕)',
+    'tt.cloud-mass': 'Total mass of the whole cloud in Earth masses, divided equally over all asteroids. Default 0.001 M⊕ matches the real asteroid belt.',
     'lbl.cloud-r': 'Eff. radius:',
     'hint.inject': 'Click+drag on canvas = vector. Shift+click on the inject button (right) = cloud.',
     'btn.apply-changes': '✓ Apply changes',
@@ -3212,6 +3220,49 @@ const _astCellMap = new Map();
 
 // Resolve eine einzelne Kollision (geometrische Beruehrung).
 // Returnt true wenn ein Merge/Shatter ausgeloest wurde (bodies-Array geaendert).
+// Asteroid wird vom groesseren Koerper einfach entfernt — Masse und
+// Impuls bleiben beim grossen Koerper UNVERAENDERT. Verhindert den
+// Mikro-Drift, der sich durch tausende winzige Asteroid-Einschlaege auf
+// einen Stern oder Planeten aufsummiert (sichtbares Wandern der Sonne
+// bei dichten Asteroid-Wolken).
+function _absorb(small, big) {
+  removeBody(small);
+}
+
+// Elastische 2D-Kollision: zwei Bodies tauschen Impuls entlang der
+// Verbindungslinie aus, Tangential-Komponente bleibt. Spezial-Pfad fuer
+// Asteroid x Asteroid — beide Bodies bleiben erhalten, keine Fragmente,
+// kein Massentransfer. Stoesst die ueberlappenden Positionen leicht
+// auseinander, damit der naechste Frame nicht sofort dieselbe Kollision
+// neu auslosed.
+function _bounce(a, b) {
+  let nx = b.x - a.x, ny = b.y - a.y;
+  let dist = Math.hypot(nx, ny);
+  if (dist < 1e-30) { nx = 1; ny = 0; dist = 1; }
+  const inv = 1 / dist;
+  nx *= inv; ny *= inv;
+  // Relativgeschwindigkeit entlang der Normalen (positiv = sich
+  // entfernend → kein Bounce noetig).
+  const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
+  const vRel = dvx * nx + dvy * ny;
+  if (vRel >= 0) return;
+  // Elastischer Impuls: J = 2 * vRel / (1/m_a + 1/m_b).
+  const J = 2 * vRel / (1 / a.mass + 1 / b.mass);
+  const Jx = J * nx, Jy = J * ny;
+  a.vx += Jx / a.mass;  a.vy += Jy / a.mass;
+  b.vx -= Jx / b.mass;  b.vy -= Jy / b.mass;
+  // Ueberlapp aufloesen, damit naechster Frame nicht sofort wieder
+  // einen Treffer registriert (Masse-gewichtetes Auseinanderschieben).
+  const touch = a.realR + b.realR;
+  const overlap = touch - dist;
+  if (overlap > 0) {
+    const wA = b.mass / (a.mass + b.mass);
+    const wB = a.mass / (a.mass + b.mass);
+    a.x -= nx * overlap * wA;  a.y -= ny * overlap * wA;
+    b.x += nx * overlap * wB;  b.y += ny * overlap * wB;
+  }
+}
+
 function _tryCollide(a, b, dtFrame) {
   const dx = b.x - a.x, dy = b.y - a.y;
   const touch = a.realR + b.realR;
@@ -3263,10 +3314,41 @@ function _tryCollide(a, b, dtFrame) {
   //   Stern beteiligt            → Stern schluckt
   //   Schwarzes Loch beteiligt   → SL frisst
   //   vImp < 1.5 * vEsc          → sticky merge
-  const asteroidImpact = aIsAst || bIsAst;
-  const starInvolved = !!a.isStar || !!b.isStar;
-  if (blackHoleInvolved || starInvolved || asteroidImpact || vImp < 1.5 * vEsc) merge(a, b);
-  else shatter(a, b);
+  const bothAsteroids = aIsAst && bIsAst;
+  const oneAsteroid   = (aIsAst && !bIsAst) || (bIsAst && !aIsAst);
+  const starInvolved  = !!a.isStar || !!b.isStar;
+  // Pfad-Auswahl:
+  //   Asteroid x Asteroid       → elastischer Bounce (beide bleiben)
+  //   Asteroid x Nicht-Asteroid → absorb (Asteroid wird entfernt, KEIN
+  //                                Massen-/Impulstransfer auf den grossen
+  //                                Koerper → kein Mikro-Drift)
+  //   Stern beteiligt           → merge (Stern bleibt erhalten)
+  //   Schwarzes Loch beteiligt  → merge (SL frisst)
+  //   vImp < 1.5 * vEsc         → merge (sticky)
+  //   sonst (Koerper x Koerper) → shatter (5 Fragmente)
+  let path;
+  if (bothAsteroids)                                  path = 'bounce';
+  else if (oneAsteroid)                               path = 'absorb';
+  else if (blackHoleInvolved || starInvolved
+        || vImp < 1.5 * vEsc)                         path = 'merge';
+  else                                                path = 'shatter';
+  // Diagnose-Log: jede Kollision in die Konsole, damit man nachvollziehen
+  // kann warum ein "wichtiger" Body verschwand. Format:
+  //   [collision N] aName(mass, ast?, star?) vs bName(...) -> bounce|absorb|merge|shatter
+  console.log('[collision ' + (totalCollisions + 1) + '] ' +
+    a.name + '(m=' + a.mass.toExponential(2) +
+    (aIsAst ? ',ast' : '') + (a.isStar ? ',star' : '') +
+    (a.isBlackHole ? ',BH' : '') + ')' +
+    ' vs ' +
+    b.name + '(m=' + b.mass.toExponential(2) +
+    (bIsAst ? ',ast' : '') + (b.isStar ? ',star' : '') +
+    (b.isBlackHole ? ',BH' : '') + ')' +
+    ' vImp=' + vImp.toFixed(2) + ' vEsc=' + vEsc.toFixed(2) +
+    ' -> ' + path);
+  if (path === 'bounce')      _bounce(a, b);
+  else if (path === 'absorb') _absorb(aIsAst ? a : b, aIsAst ? b : a);
+  else if (path === 'merge')  merge(a, b);
+  else                        shatter(a, b);
   collisionFlashes.push({
     x: flashX, y: flashY, scale: flashScale,
     t: performance.now(),
@@ -3727,6 +3809,34 @@ function updateCloudDerived() {
     document.getElementById('mob-cloud-jit').value = this.value;
   });
 });
+// Cloud-Gesamtmasse-Slider: log-Skala -5..2 (1e-5 .. 100 M⊕).
+// Default -3 = 0,001 M⊕ entspricht dem realen Asteroidengürtel.
+// Label dynamisch dezimal — keine Exponentialschreibweise, trailing zeros
+// nach dem Komma werden getrimmt (min. eine Nachkommastelle bleibt).
+function cloudMassLabel(sliderVal) {
+  const m = Math.pow(10, parseFloat(sliderVal));
+  if (m >= 100) return fmtDE(Math.round(m), 0);
+  let digits;
+  if (m >= 10)         digits = 1;
+  else if (m >= 0.1)   digits = 2;
+  else if (m >= 0.01)  digits = 3;
+  else if (m >= 0.001) digits = 4;
+  else                 digits = 5;
+  let s = fmtDE(m, digits);
+  if (s.indexOf(',') >= 0) {
+    s = s.replace(/0+$/, '').replace(/,$/, ',0');
+  }
+  return s;
+}
+['cloud-mass', 'mob-cloud-mass'].forEach(id => {
+  document.getElementById(id).addEventListener('input', function() {
+    const lbl = cloudMassLabel(this.value);
+    document.getElementById('cloud-mass-val').textContent = lbl;
+    document.getElementById('mob-cloud-mass-val').textContent = lbl;
+    document.getElementById('cloud-mass').value = this.value;
+    document.getElementById('mob-cloud-mass').value = this.value;
+  });
+});
 
 let targetZoom = 0.35;
 let zoomLerping = false;
@@ -4184,7 +4294,10 @@ function doInject() {
 let asteroidCounter = 0;   // globale fortlaufende Nummer fuer Asteroid-Namen
 
 function doInjectCloud() {
-  const massExp = parseFloat(document.getElementById('p-mass').value);
+  // Wolken-Gesamtmasse hat einen EIGENEN Slider, unabhaengig vom Rogue-
+  // Massen-Slider. Vorher war beides verkoppelt, was bei Default-1000-M⊕-
+  // Rogue eine Wolke mit ~3 Jupitermassen erzeugte (Sonne wanderte!).
+  const massExp = parseFloat(document.getElementById('cloud-mass').value);
   const totalMassEarth = Math.pow(10, massExp);
   const speedKmS = Math.pow(10, parseFloat(document.getElementById('p-speed').value));
   const angleDeg = parseFloat(document.getElementById('p-angle').value);
