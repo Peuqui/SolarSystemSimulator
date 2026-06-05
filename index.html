@@ -566,13 +566,22 @@ function parseMass(s) {
 // Zentrale Zahlenformatierung — Tausenderpunkte, Komma als Dezimal-
 // trennzeichen, feste Nachkommastellen. Fuer alle UI-sichtbaren Zahlen
 // verwenden (Statistik, Slider-Werte, Stoermassen-Info, Canvas-Texte).
+// Cache: toLocaleString ist relativ teuer; viele Aufrufe wiederholen
+// dieselben Werte pro Frame (Grid-Labels, gerundete Sidebar-Werte).
+const _fmtDECache = new Map();
 function fmtDE(v, digits) {
   if (!isFinite(v)) return String(v);
-  return v.toLocaleString('de-DE', {
+  const key = v + ':' + digits;
+  let s = _fmtDECache.get(key);
+  if (s !== undefined) return s;
+  s = v.toLocaleString('de-DE', {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
     useGrouping: true,
   });
+  _fmtDECache.set(key, s);
+  if (_fmtDECache.size > 10000) _fmtDECache.clear();
+  return s;
 }
 // Exponentialschreibweise mit Dezimalkomma (deutsche Notation).
 function fmtDExp(v, digits) {
@@ -1198,17 +1207,27 @@ function step(dt) {
 // Bahnspur-Punkte aufzeichnen — pro Substep aufgerufen. Aufgezeichnet wird
 // zeitgesteuert (trailIntervalDays) ODER bei Richtungsaenderung > ~4 Grad.
 // So bleiben enge Begegnungen rund statt eckig, ohne die Spur zu fluten.
+// Pool fuer {x,y} Trail-Punkte — spart bei 1400 Bodies pro Frame bis zu
+// 1400 Object-Allokationen + den GC-Druck. shift() recycelt jeden Punkt
+// in den Pool zurueck.
+const _trailPool = [];
+
+// Reuse-Buffer fuer Trail-Render-Schleifen — wachsen bei Bedarf, sparen
+// pro Planet pro Frame zwei Float32Array-Allokationen.
+let _trailSxsBuf = new Float32Array(256);
+let _trailSysBuf = new Float32Array(256);
+
 function recordTrails() {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
-    if (!b.visible || !trails[b.name]) continue;
-    // Asteroid-Trails komplett skippen, wenn ihre Laenge auf 0 steht
-    // (default). Spart bei 450 Bodies die meiste Trail-Arbeit.
+    if (!b.visible) continue;
     if (b.isAsteroid && MAX_TRAIL_AST <= 0) continue;
     const tr = trails[b.name];
-    const sp = Math.hypot(b.vx, b.vy);
-    const dx = sp > 1e-12 ? b.vx / sp : 1;
-    const dy = sp > 1e-12 ? b.vy / sp : 0;
+    if (!tr) continue;
+    const vx = b.vx, vy = b.vy;
+    const sp = Math.sqrt(vx*vx + vy*vy);
+    const dx = sp > 1e-12 ? vx / sp : 1;
+    const dy = sp > 1e-12 ? vy / sp : 0;
     let record = tr.length === 0;
     if (!record) {
       const elapsed = simTime - (b._trailT || 0);
@@ -1216,9 +1235,11 @@ function recordTrails() {
       record = elapsed >= trailIntervalDays || turned;
     }
     if (record) {
-      tr.push({ x: b.x, y: b.y });
+      const p = _trailPool.length > 0 ? _trailPool.pop() : { x: 0, y: 0 };
+      p.x = b.x; p.y = b.y;
+      tr.push(p);
       const lim = b.isAsteroid ? MAX_TRAIL_AST : MAX_TRAIL;
-      while (tr.length > lim) tr.shift();
+      while (tr.length > lim) _trailPool.push(tr.shift());
       b._trailT = simTime;
       b._trailDx = dx; b._trailDy = dy;
     }
@@ -1244,16 +1265,23 @@ function invLogTransform(rLog) {
   return -(Math.exp(-rLog * _LOG_33) - 1);
 }
 
+// Shared Output-Buffer: spart bei tausenden Calls/Frame die Array-
+// Allokation. ACHTUNG: Aufrufer muessen die Werte SOFORT auslesen
+// (destructure oder out[0]/out[1] vor dem naechsten worldToScreen-Call).
+// Niemals die Referenz speichern und spaeter lesen.
+const _w2sOut = [0, 0];
 function worldToScreen(wx, wy) {
   // Im Log-Modus brauchten wir frueher atan2 + cos + sin = 3 trig-Calls.
   // Identitaeten: cos(atan2(wy,wx)) = wx/r, sin(atan2(wy,wx)) = wy/r.
   // -> Statt 3 trig nur 1 sqrt + 1 Division.
+  // logTransform inline gespart den Function-Call (r ist hier immer >= 0,
+  // also auch der sign-Branch wegoptimiert).
   let sx, sy;
   if (useLogZoom) {
     const r2 = wx*wx + wy*wy;
     if (r2 > 1e-24) {
       const r = Math.sqrt(r2);
-      const scale = logTransform(r) / r;
+      const scale = Math.log(1 + r) * _INV_LOG_33 / r;
       sx = wx * scale;
       sy = wy * scale;
     } else {
@@ -1263,10 +1291,9 @@ function worldToScreen(wx, wy) {
     sx = wx; sy = wy;
   }
   const k = cam.zoom * 80;
-  return [
-    viewCX + (sx - cam.cx) * k,
-    H/2 + (sy - cam.cy) * k
-  ];
+  _w2sOut[0] = viewCX + (sx - cam.cx) * k;
+  _w2sOut[1] = H/2 + (sy - cam.cy) * k;
+  return _w2sOut;
 }
 
 function screenToWorld(sx, sy) {
@@ -1674,8 +1701,14 @@ function draw() {
       const trail = trails[b.name];
       const tn = trail ? trail.length : 0;
       if (tn < 2) continue;
-      const sxs = new Float32Array(tn);
-      const sys = new Float32Array(tn);
+      // Reuse globale Buffer — wachsen bei Bedarf, vermeidet 2 Float32Array-
+      // Allokationen pro Planet pro Frame.
+      if (_trailSxsBuf.length < tn) {
+        _trailSxsBuf = new Float32Array(tn * 2);
+        _trailSysBuf = new Float32Array(tn * 2);
+      }
+      const sxs = _trailSxsBuf;
+      const sys = _trailSysBuf;
       for (let j = 0; j < tn; j++) {
         const p = worldToScreen(trail[j].x, trail[j].y);
         sxs[j] = p[0]; sys[j] = p[1];
@@ -1731,11 +1764,14 @@ function draw() {
     if (!arr) { arr = []; _astByColor.set(b.color, arr); }
     arr.push(b);
   }
+  // Sichtfeld-Cull: Asteroiden ausserhalb Canvas erst gar nicht zeichnen.
+  // Bei stark gezoomten Ansichten oft 60..80 % der Asteroiden ausserhalb.
   for (const [color, arr] of _astByColor) {
     ctx.fillStyle = color;
     for (let k = 0; k < arr.length; k++) {
       const b = arr[k];
       const [sx, sy] = worldToScreen(b.x, b.y);
+      if (sx < -2 || sx > W + 2 || sy < -2 || sy > H + 2) continue;
       ctx.fillRect(sx - 1, sy - 1, 2, 2);
     }
   }
