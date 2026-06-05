@@ -232,125 +232,131 @@ input[type=range] {
 
 <!-- Desktop Sidebar -->
 <div id="sidebar">
+  <div style="display:flex; justify-content:flex-start; margin-bottom:8px;">
+    <button id="btn-lang" data-i18n="misc.lang" data-i18n-title="misc.lang-title"
+            style="background:#1a1a2e; color:#7af; border:1px solid #333; border-radius:4px;
+                   padding:4px 10px; font-size:12px; font-weight:bold; cursor:pointer;
+                   min-width:auto; min-height:auto;">EN</button>
+  </div>
   <details open style="margin-bottom:10px;">
-    <summary style="color:#7af; font-size:15px; font-weight:bold; cursor:pointer; padding-bottom:4px; border-bottom:1px solid #333;">&#x1F30C; Szenario</summary>
+    <summary style="color:#7af; font-size:15px; font-weight:bold; cursor:pointer; padding-bottom:4px; border-bottom:1px solid #333;" data-i18n="sec.scenario">&#x1F30C; Szenario</summary>
     <select id="scenario-select" style="width:100%; margin-top:8px; font-size:14px; background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:4px; padding:6px; min-height:34px;">
-      <option>Sonnensystem</option>
-      <option>Sonnensystem mit Gürteln</option>
-      <option>Trisolaris (3 Sonnen)</option>
-      <option>Lagrange (instabil)</option>
-      <option>Lagrange (stabil)</option>
-      <option>Trojaner (L4)</option>
-      <option>Figur 8 (Choreografie)</option>
-      <option>Butterfly I</option>
-      <option>Moth I</option>
-      <option>Goggles</option>
-      <option>Yarn</option>
-      <option>Leeres System</option>
-      <option>TRAPPIST-1</option>
-      <option>Alpha Centauri</option>
-      <option>Kepler-16</option>
-      <option>Kepler-47 (Doppelstern, 3 Planeten)</option>
+      <option value="Sonnensystem" data-i18n="sc.solarsystem">Sonnensystem</option>
+      <option value="Sonnensystem mit Gürteln" data-i18n="sc.solarsystem-belts">Sonnensystem mit Gürteln</option>
+      <option value="Trisolaris (3 Sonnen)" data-i18n="sc.trisolaris">Trisolaris (3 Sonnen)</option>
+      <option value="Lagrange (instabil)" data-i18n="sc.lagrange-unstable">Lagrange (instabil)</option>
+      <option value="Lagrange (stabil)" data-i18n="sc.lagrange-stable">Lagrange (stabil)</option>
+      <option value="Trojaner (L4)" data-i18n="sc.trojans">Trojaner (L4)</option>
+      <option value="Figur 8 (Choreografie)" data-i18n="sc.figure8">Figur 8 (Choreografie)</option>
+      <option value="Butterfly I" data-i18n="sc.butterfly">Butterfly I</option>
+      <option value="Moth I" data-i18n="sc.moth">Moth I</option>
+      <option value="Goggles" data-i18n="sc.goggles">Goggles</option>
+      <option value="Yarn" data-i18n="sc.yarn">Yarn</option>
+      <option value="Leeres System" data-i18n="sc.empty">Leeres System</option>
+      <option value="TRAPPIST-1" data-i18n="sc.trappist">TRAPPIST-1</option>
+      <option value="Alpha Centauri" data-i18n="sc.alphacen">Alpha Centauri</option>
+      <option value="Kepler-16" data-i18n="sc.kepler16">Kepler-16</option>
+      <option value="Kepler-47 (Doppelstern, 3 Planeten)" data-i18n="sc.kepler47">Kepler-47 (Doppelstern, 3 Planeten)</option>
     </select>
     <div style="display:flex; gap:4px; margin-top:6px;">
-      <button id="btn-save-cfg" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Speichern</button>
-      <button id="btn-export-cfg" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Export</button>
-      <button id="btn-import-cfg" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Import</button>
+      <button id="btn-save-cfg" data-i18n="btn.save" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Speichern</button>
+      <button id="btn-export-cfg" data-i18n="btn.export" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Export</button>
+      <button id="btn-import-cfg" data-i18n="btn.import" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Import</button>
     </div>
     <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
   </details>
-  <h2>&#x2699; Zeitsteuerung</h2>
-  <label>Zeitschritt (Tage/Schritt) <span class="val" id="dt-val">1</span></label>
+  <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
+  <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage/Schritt)</span> <span class="val" id="dt-val">1</span></label>
   <input type="range" autocomplete="off"id="dt-slider" min="0.1" max="50" step="0.1" value="1">
-  <label>Verlangsamung <span class="val" id="slow-val">1.0×</span></label>
+  <label><span data-i18n="lbl.slowdown">Verlangsamung</span> <span class="val" id="slow-val">1.0×</span></label>
   <input type="range" autocomplete="off"id="slow-slider" min="-1" max="2" step="0.05" value="0">
   <div style="margin-top:6px">
-    <button id="btn-pause">&#x23F8; Pause</button>
-    <button id="btn-step">&#x23ED; Schritt</button>
-    <button id="btn-reset">&#x21BB; Reset</button>
+    <button id="btn-pause" data-i18n="btn.pause">&#x23F8; Pause</button>
+    <button id="btn-step" data-i18n="btn.step">&#x23ED; Schritt</button>
+    <button id="btn-reset" data-i18n="btn.reset">&#x21BB; Reset</button>
   </div>
 
-  <h2>&#x1F52D; Anzeige</h2>
-  <label>Zoom <span class="val" id="zoom-val">0.35</span></label>
+  <h2 data-i18n="sec.view">&#x1F52D; Anzeige</h2>
+  <label><span data-i18n="lbl.zoom">Zoom</span> <span class="val" id="zoom-val">0.35</span></label>
   <input type="range" autocomplete="off"id="zoom-slider" min="0.001" max="500" step="0.001" value="0.35">
   <label>
-    <input type="checkbox" id="chk-trails" checked> Bahnspuren anzeigen
+    <input type="checkbox" id="chk-trails" checked> <span data-i18n="lbl.trail-show">Bahnspuren anzeigen</span>
   </label>
-  <label>Bahnspur-L&auml;nge <span class="val" id="trail-val">150</span></label>
+  <label><span data-i18n="lbl.trail-len-body">Bahnspur-Länge</span> <span class="val" id="trail-val">150</span></label>
   <input type="range" autocomplete="off"id="trail-slider" min="0" max="3000" step="10" value="150">
-  <label>Asteroid-Bahnspur <span class="val" id="trail-ast-val">0</span></label>
+  <label><span data-i18n="lbl.trail-len-asteroid">Asteroid-Bahnspur</span> <span class="val" id="trail-ast-val">0</span></label>
   <input type="range" autocomplete="off" id="trail-ast-slider" min="0" max="500" step="5" value="0">
   <label>
-    <input type="checkbox" id="chk-vectors"> Kraftvektoren anzeigen
+    <input type="checkbox" id="chk-vectors"> <span data-i18n="lbl.vectors-show">Kraftvektoren anzeigen</span>
   </label>
   <label>
-    <input type="checkbox" id="chk-grid" checked> Gitternetz
+    <input type="checkbox" id="chk-grid" checked> <span data-i18n="lbl.grid">Gitternetz</span>
   </label>
-  <label title="Statisches Sternfeld als Bewegungsreferenz, wenn das System sich bewegt.">
-    <input type="checkbox" id="chk-stars" checked> Sternenhintergrund
+  <label data-i18n-title="tt.stars">
+    <input type="checkbox" id="chk-stars" checked> <span data-i18n="lbl.stars">Sternenhintergrund</span>
   </label>
-  <label title="Festes Achsenkreuz x=0/y=0 in Welt-Koordinaten mit Tick-Marks an Dekaden — bewegt sich nicht mit der Kamera.">
-    <input type="checkbox" id="chk-worldgrid"> Welt-Koordinatenkreuz
-  </label>
-  <label>
-    <input type="checkbox" id="chk-logzoom" checked> Logarithmischer Zoom
+  <label data-i18n-title="tt.worldgrid">
+    <input type="checkbox" id="chk-worldgrid"> <span data-i18n="lbl.worldgrid">Welt-Koordinatenkreuz</span>
   </label>
   <label>
-    <input type="checkbox" id="chk-baryctr" checked> Schwerpunkt zentrieren
+    <input type="checkbox" id="chk-logzoom" checked> <span data-i18n="lbl.logzoom">Logarithmischer Zoom</span>
   </label>
-  <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung — die Kamera bleibt am Hauptsystem, auch wenn schwere Stoermassen einfliegen.">
-    <input type="checkbox" id="chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren
+  <label>
+    <input type="checkbox" id="chk-baryctr" checked> <span data-i18n="lbl.centerbary">Schwerpunkt zentrieren</span>
   </label>
-  <label title="Physik auf separatem Thread (WebWorker) — fluessiger bei vielen Bodies. Bei Problemen ausschalten.">
-    <input type="checkbox" id="chk-worker" checked> Physik in WebWorker
+  <label data-i18n-title="tt.bary-no-rogue">
+    <input type="checkbox" id="chk-bary-no-rogue" checked> <span data-i18n="lbl.exclude-rogues-bary">Rogues bei Schwerpunkt ignorieren</span>
   </label>
-  <label title="Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstuetzung voraus.">
-    <input type="checkbox" id="chk-gpu"> Physik via WebGPU
+  <label data-i18n-title="tt.worker">
+    <input type="checkbox" id="chk-worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span>
+  </label>
+  <label data-i18n-title="tt.gpu">
+    <input type="checkbox" id="chk-gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span>
   </label>
 
-  <h2>&#x1F30C; Inject</h2>
-  <label>Masse <span class="val" id="p-mass-val">1,0 M⊕</span></label>
+  <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
+  <label><span data-i18n="lbl.inject-mass">Masse</span> <span class="val" id="p-mass-val">1,0 M⊕</span></label>
   <input type="range" autocomplete="off"id="p-mass" min="-3" max="16" step="0.1" value="0">
-  <label>Geschwindigkeit (km/s) <span class="val" id="p-speed-val">30</span></label>
+  <label><span data-i18n="lbl.inject-speed">Geschwindigkeit (km/s)</span> <span class="val" id="p-speed-val">30</span></label>
   <input type="range" autocomplete="off"id="p-speed" min="-1" max="3.5" step="0.005" value="1.477">
-  <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="p-angle-val">270&deg;</span></label>
-  <input type="range" autocomplete="off"id="p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
-  <label style="color:#aaa; font-size:11px;">Klick+Ziehen auf Canvas = Vektor. Shift+Klick auf den Inject-Button (rechts) = Wolke.</label>
+  <label data-i18n-title="tt.angle"><span data-i18n="lbl.inject-angle">Kompass-Kurs (°)</span> <span class="val" id="p-angle-val">270&deg;</span></label>
+  <input type="range" autocomplete="off"id="p-angle" min="0" max="360" step="1" value="270" data-i18n-title="tt.angle">
+  <label data-i18n="hint.inject" style="color:#aaa; font-size:11px;">Klick+Ziehen auf Canvas = Vektor. Shift+Klick auf den Inject-Button (rechts) = Wolke.</label>
 
-  <label style="color:#7af; margin-top:6px; font-size:12px;">&#x1FA90; Rogue (Einzelkoerper)</label>
+  <label data-i18n="sec.rogue" style="color:#7af; margin-top:6px; font-size:12px;">&#x1FA90; Rogue (Einzelkörper)</label>
   <div>
-    <button id="btn-inject">&#x1FA90; Injizieren</button>
-    <button id="btn-clear-pert" class="danger">Alle Rogues l&ouml;schen</button>
+    <button id="btn-inject" data-i18n="btn.inject">&#x1FA90; Injizieren</button>
+    <button id="btn-clear-pert" class="danger" data-i18n="btn.clear-rogues">Alle Rogues löschen</button>
   </div>
 
-  <label style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
-  <label>Anzahl <span class="val" id="cloud-n-val">50</span></label>
+  <label data-i18n="sec.cloud" style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
+  <label><span data-i18n="lbl.cloud-count">Anzahl</span> <span class="val" id="cloud-n-val">50</span></label>
   <input type="range" autocomplete="off" id="cloud-n" min="5" max="500" step="5" value="50">
-  <label title="Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.">Dichte (1/AU²) <span class="val" id="cloud-density-val">10</span></label>
+  <label data-i18n-title="tt.density"><span data-i18n="lbl.cloud-density-au2">Dichte (1/AU²)</span> <span class="val" id="cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="cloud-density" min="-2" max="5" step="0.05" value="1">
-  <label style="color:#aaa; font-size:11px;">Eff. Radius: <span id="cloud-r-derived">~1,3 AU</span></label>
-  <label title="Zufaellige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.">Streuung <span class="val" id="cloud-jit-val">5</span></label>
+  <label style="color:#aaa; font-size:11px;"><span data-i18n="lbl.cloud-r">Eff. Radius:</span> <span id="cloud-r-derived">~1,3 AU</span></label>
+  <label data-i18n-title="tt.jitter"><span data-i18n="lbl.cloud-jit">Streuung</span> <span class="val" id="cloud-jit-val">5</span></label>
   <input type="range" autocomplete="off" id="cloud-jit" min="0" max="50" step="0.5" value="5">
   <div>
-    <button id="btn-inject-cloud">&#x1FAA8; Wolke injizieren</button>
-    <button id="btn-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
+    <button id="btn-inject-cloud" data-i18n="btn.inject-cloud">&#x1FAA8; Wolke injizieren</button>
+    <button id="btn-clear-clouds" class="danger" data-i18n="btn.clear-clouds">Alle Wolken löschen</button>
   </div>
 
-  <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:10px;" title="Entfernt alle Koerper mit ↗-Markierung">&#x2197; Fl&uuml;chtende entfernen</button>
+  <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:10px;" data-i18n="btn.clear-escaping" data-i18n-title="tt.clear-escaping">&#x2197; Flüchtende entfernen</button>
   <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
-  <label style="margin-top:10px;">Sichtbare K&ouml;rper:</label>
+  <label data-i18n="sec.bodies" style="margin-top:10px;">Sichtbare Körper:</label>
   <div id="planet-checks"></div>
-  <button id="btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
+  <button id="btn-apply" style="width:100%; margin-top:8px;" data-i18n="btn.apply-changes">&#x2713; Änderungen übernehmen</button>
 
-  <h2>&#x1F4CA; Statistik</h2>
+  <h2 data-i18n="sec.stats">&#x1F4CA; Statistik</h2>
   <div id="stats" style="font-size:11px;"></div>
 </div>
 
-<div id="toggle-sidebar" title="Sidebar ein/ausblenden">&#9664;</div>
+<div id="toggle-sidebar" data-i18n-title="tt.toggle-sidebar">&#9664;</div>
 
-<div id="help-toggle" title="Steuerung anzeigen">&#x1F4A1;</div>
-<div id="info-panel">
+<div id="help-toggle" data-i18n-title="tt.help">&#x1F4A1;</div>
+<div id="info-panel" data-i18n-html="help.body">
   Mausrad: Zoom &nbsp;|&nbsp; Rechts-/Mittelklick: Verschieben<br>
   Linksklick auf Leerraum: Rogue-Position w&auml;hlen<br>
   Klick+Ziehen: Geschwindigkeitsvektor setzen<br>
@@ -373,101 +379,107 @@ input[type=range] {
 </div>
 
 <!-- Floating-Inject-Button — auf allen Bildschirmgr&ouml;&szlig;en sichtbar -->
-<button id="float-recenter" title="Auf System zentrieren (Zoom + Pan)">&#x2316;</button>
-<button id="float-inject" title="Rogue injizieren">&#x1FA90;</button>
+<button id="float-recenter" data-i18n-title="tt.recenter" title="Auf System zentrieren (Zoom + Pan)">&#x2316;</button>
+<button id="float-inject" data-i18n-title="tt.inject-btn" title="Rogue injizieren">&#x1FA90;</button>
 
 <!-- Mobile Bottom Sheet -->
 <div id="mobile-sheet" class="hidden">
+  <div style="display:flex; justify-content:flex-start; margin-bottom:8px;">
+    <button id="mob-btn-lang" data-i18n="misc.lang" data-i18n-title="misc.lang-title"
+            style="background:#1a1a2e; color:#7af; border:1px solid #333; border-radius:4px;
+                   padding:4px 10px; font-size:12px; font-weight:bold; cursor:pointer;
+                   min-width:auto; min-height:auto;">EN</button>
+  </div>
   <details open style="margin-bottom:10px;">
-    <summary style="color:#7af; font-size:14px; font-weight:bold; cursor:pointer;">&#x1F30C; Szenario</summary>
+    <summary style="color:#7af; font-size:14px; font-weight:bold; cursor:pointer;" data-i18n="sec.scenario">&#x1F30C; Szenario</summary>
     <select id="mob-scenario-select" style="width:100%; margin-top:6px; font-size:14px; background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:4px; padding:6px; min-height:36px;">
-      <option>Sonnensystem</option>
-      <option>Sonnensystem mit Gürteln</option>
-      <option>Trisolaris (3 Sonnen)</option>
-      <option>Lagrange (instabil)</option>
-      <option>Lagrange (stabil)</option>
-      <option>Trojaner (L4)</option>
-      <option>Figur 8 (Choreografie)</option>
-      <option>Butterfly I</option>
-      <option>Moth I</option>
-      <option>Goggles</option>
-      <option>Yarn</option>
-      <option>Leeres System</option>
-      <option>TRAPPIST-1</option>
-      <option>Alpha Centauri</option>
-      <option>Kepler-16</option>
-      <option>Kepler-47 (Doppelstern, 3 Planeten)</option>
+      <option value="Sonnensystem" data-i18n="sc.solarsystem">Sonnensystem</option>
+      <option value="Sonnensystem mit Gürteln" data-i18n="sc.solarsystem-belts">Sonnensystem mit Gürteln</option>
+      <option value="Trisolaris (3 Sonnen)" data-i18n="sc.trisolaris">Trisolaris (3 Sonnen)</option>
+      <option value="Lagrange (instabil)" data-i18n="sc.lagrange-unstable">Lagrange (instabil)</option>
+      <option value="Lagrange (stabil)" data-i18n="sc.lagrange-stable">Lagrange (stabil)</option>
+      <option value="Trojaner (L4)" data-i18n="sc.trojans">Trojaner (L4)</option>
+      <option value="Figur 8 (Choreografie)" data-i18n="sc.figure8">Figur 8 (Choreografie)</option>
+      <option value="Butterfly I" data-i18n="sc.butterfly">Butterfly I</option>
+      <option value="Moth I" data-i18n="sc.moth">Moth I</option>
+      <option value="Goggles" data-i18n="sc.goggles">Goggles</option>
+      <option value="Yarn" data-i18n="sc.yarn">Yarn</option>
+      <option value="Leeres System" data-i18n="sc.empty">Leeres System</option>
+      <option value="TRAPPIST-1" data-i18n="sc.trappist">TRAPPIST-1</option>
+      <option value="Alpha Centauri" data-i18n="sc.alphacen">Alpha Centauri</option>
+      <option value="Kepler-16" data-i18n="sc.kepler16">Kepler-16</option>
+      <option value="Kepler-47 (Doppelstern, 3 Planeten)" data-i18n="sc.kepler47">Kepler-47 (Doppelstern, 3 Planeten)</option>
     </select>
     <div style="display:flex; gap:4px; margin-top:6px;">
-      <button id="mob-btn-save-cfg" style="flex:1; font-size:12px;">Speichern</button>
-      <button id="mob-btn-export-cfg" style="flex:1; font-size:12px;">Export</button>
-      <button id="mob-btn-import-cfg" style="flex:1; font-size:12px;">Import</button>
+      <button id="mob-btn-save-cfg" data-i18n="btn.save" style="flex:1; font-size:12px;">Speichern</button>
+      <button id="mob-btn-export-cfg" data-i18n="btn.export" style="flex:1; font-size:12px;">Export</button>
+      <button id="mob-btn-import-cfg" data-i18n="btn.import" style="flex:1; font-size:12px;">Import</button>
     </div>
   </details>
-  <h2>&#x2699; Zeitsteuerung</h2>
-  <label>Zeitschritt (Tage) <span class="val" id="mob-dt-val">1</span></label>
+  <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
+  <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage)</span> <span class="val" id="mob-dt-val">1</span></label>
   <input type="range" autocomplete="off"id="mob-dt-slider" min="0.1" max="50" step="0.1" value="1">
-  <label>Verlangsamung <span class="val" id="mob-slow-val">1.0×</span></label>
+  <label><span data-i18n="lbl.slowdown">Verlangsamung</span> <span class="val" id="mob-slow-val">1.0×</span></label>
   <input type="range" autocomplete="off"id="mob-slow-slider" min="-1" max="2" step="0.05" value="0">
 
-  <h2>&#x1F52D; Anzeige</h2>
-  <label>Zoom <span class="val" id="mob-zoom-val">0.35</span></label>
+  <h2 data-i18n="sec.view">&#x1F52D; Anzeige</h2>
+  <label><span data-i18n="lbl.zoom">Zoom</span> <span class="val" id="mob-zoom-val">0.35</span></label>
   <input type="range" autocomplete="off"id="mob-zoom-slider" min="0.001" max="500" step="0.001" value="0.35">
-  <label><input type="checkbox" id="mob-chk-trails" checked> Bahnspuren</label>
-  <label>Bahnspur-L&auml;nge <span class="val" id="mob-trail-val">150</span></label>
+  <label><input type="checkbox" id="mob-chk-trails" checked> <span data-i18n="lbl.trails">Bahnspuren</span></label>
+  <label><span data-i18n="lbl.trail-len-body">Bahnspur-Länge</span> <span class="val" id="mob-trail-val">150</span></label>
   <input type="range" autocomplete="off"id="mob-trail-slider" min="0" max="3000" step="10" value="150">
-  <label>Asteroid-Bahnspur <span class="val" id="mob-trail-ast-val">0</span></label>
+  <label><span data-i18n="lbl.trail-len-asteroid">Asteroid-Bahnspur</span> <span class="val" id="mob-trail-ast-val">0</span></label>
   <input type="range" autocomplete="off" id="mob-trail-ast-slider" min="0" max="500" step="5" value="0">
-  <label><input type="checkbox" id="mob-chk-vectors"> Kraftvektoren</label>
-  <label><input type="checkbox" id="mob-chk-grid" checked> Gitternetz</label>
-  <label title="Statisches Sternfeld als Bewegungsreferenz."><input type="checkbox" id="mob-chk-stars" checked> Sternenhintergrund</label>
-  <label title="Festes Achsenkreuz x=0/y=0 in Welt-Koordinaten."><input type="checkbox" id="mob-chk-worldgrid"> Welt-Koordinatenkreuz</label>
-  <label><input type="checkbox" id="mob-chk-logzoom" checked> Log-Zoom</label>
-  <label><input type="checkbox" id="mob-chk-baryctr" checked> Schwerpunkt zentrieren</label>
-  <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung."><input type="checkbox" id="mob-chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren</label>
-  <label title="Physik auf separatem Thread."><input type="checkbox" id="mob-chk-worker" checked> Physik in WebWorker</label>
-  <label title="WebGPU Compute Shader."><input type="checkbox" id="mob-chk-gpu"> Physik via WebGPU</label>
+  <label><input type="checkbox" id="mob-chk-vectors"> <span data-i18n="lbl.vectors">Kraftvektoren</span></label>
+  <label><input type="checkbox" id="mob-chk-grid" checked> <span data-i18n="lbl.grid">Gitternetz</span></label>
+  <label data-i18n-title="tt.stars"><input type="checkbox" id="mob-chk-stars" checked> <span data-i18n="lbl.stars">Sternenhintergrund</span></label>
+  <label data-i18n-title="tt.worldgrid"><input type="checkbox" id="mob-chk-worldgrid"> <span data-i18n="lbl.worldgrid">Welt-Koordinatenkreuz</span></label>
+  <label><input type="checkbox" id="mob-chk-logzoom" checked> <span data-i18n="lbl.logzoom">Log-Zoom</span></label>
+  <label><input type="checkbox" id="mob-chk-baryctr" checked> <span data-i18n="lbl.centerbary">Schwerpunkt zentrieren</span></label>
+  <label data-i18n-title="tt.bary-no-rogue"><input type="checkbox" id="mob-chk-bary-no-rogue" checked> <span data-i18n="lbl.exclude-rogues-bary">Rogues bei Schwerpunkt ignorieren</span></label>
+  <label data-i18n-title="tt.worker"><input type="checkbox" id="mob-chk-worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span></label>
+  <label data-i18n-title="tt.gpu"><input type="checkbox" id="mob-chk-gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
 
-  <h2>&#x1F30C; Inject</h2>
-  <label>Masse <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
+  <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
+  <label><span data-i18n="lbl.inject-mass">Masse</span> <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
   <input type="range" autocomplete="off"id="mob-p-mass" min="-3" max="16" step="0.1" value="0">
-  <label>Geschwindigkeit (km/s) <span class="val" id="mob-p-speed-val">30</span></label>
+  <label><span data-i18n="lbl.inject-speed">Geschwindigkeit (km/s)</span> <span class="val" id="mob-p-speed-val">30</span></label>
   <input type="range" autocomplete="off"id="mob-p-speed" min="-1" max="3.5" step="0.005" value="1.477">
-  <label title="Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W">Kompass-Kurs (&deg;) <span class="val" id="mob-p-angle-val">270&deg;</span></label>
-  <input type="range" autocomplete="off"id="mob-p-angle" min="0" max="360" step="1" value="270" title="0°=N, 90°=O, 180°=S, 270°=W">
-  <label style="color:#faa; font-size:11px;">Tipp: 1-Finger auf Canvas tippen &amp; ziehen = Position + Vektor</label>
+  <label data-i18n-title="tt.angle"><span data-i18n="lbl.inject-angle">Kompass-Kurs (°)</span> <span class="val" id="mob-p-angle-val">270&deg;</span></label>
+  <input type="range" autocomplete="off"id="mob-p-angle" min="0" max="360" step="1" value="270" data-i18n-title="tt.angle">
+  <label data-i18n="hint.inject" style="color:#faa; font-size:11px;">Tipp: 1-Finger auf Canvas tippen &amp; ziehen = Position + Vektor</label>
 
-  <label style="color:#7af; margin-top:6px; font-size:12px;">&#x1FA90; Rogue (Einzelkoerper)</label>
+  <label data-i18n="sec.rogue" style="color:#7af; margin-top:6px; font-size:12px;">&#x1FA90; Rogue (Einzelkörper)</label>
   <div style="margin-top:4px;">
-    <button id="mob-inject">&#x1FA90; Injizieren</button>
-    <button id="mob-clear-pert" class="danger">L&ouml;schen</button>
+    <button id="mob-inject" data-i18n="btn.inject">&#x1FA90; Injizieren</button>
+    <button id="mob-clear-pert" class="danger" data-i18n="btn.clear-rogues">Löschen</button>
   </div>
 
-  <label style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
-  <label>Anzahl <span class="val" id="mob-cloud-n-val">50</span></label>
+  <label data-i18n="sec.cloud" style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
+  <label><span data-i18n="lbl.cloud-count">Anzahl</span> <span class="val" id="mob-cloud-n-val">50</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-n" min="5" max="500" step="5" value="50">
-  <label>Dichte (1/AU²) <span class="val" id="mob-cloud-density-val">10</span></label>
+  <label><span data-i18n="lbl.cloud-density-au2">Dichte (1/AU²)</span> <span class="val" id="mob-cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-density" min="-2" max="5" step="0.05" value="1">
-  <label style="color:#aaa; font-size:11px;">Eff. Radius: <span id="mob-cloud-r-derived">~1,3 AU</span></label>
-  <label>Streuung <span class="val" id="mob-cloud-jit-val">5</span></label>
+  <label style="color:#aaa; font-size:11px;"><span data-i18n="lbl.cloud-r">Eff. Radius:</span> <span id="mob-cloud-r-derived">~1,3 AU</span></label>
+  <label><span data-i18n="lbl.cloud-jit">Streuung</span> <span class="val" id="mob-cloud-jit-val">5</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-jit" min="0" max="50" step="0.5" value="5">
   <div style="margin-top:4px;">
-    <button id="mob-inject-cloud">&#x1FAA8; Wolke injizieren</button>
-    <button id="mob-clear-clouds" class="danger">Alle Wolken l&ouml;schen</button>
+    <button id="mob-inject-cloud" data-i18n="btn.inject-cloud">&#x1FAA8; Wolke injizieren</button>
+    <button id="mob-clear-clouds" class="danger" data-i18n="btn.clear-clouds">Alle Wolken löschen</button>
   </div>
 
-  <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:10px;">&#x2197; Fl&uuml;chtende entfernen</button>
+  <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:10px;" data-i18n="btn.clear-escaping">&#x2197; Flüchtende entfernen</button>
   <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
-  <label style="margin-top:10px;">Sichtbare K&ouml;rper:</label>
+  <label data-i18n="sec.bodies" style="margin-top:10px;">Sichtbare Körper:</label>
   <div id="mob-planet-checks"></div>
-  <button id="mob-btn-apply" style="width:100%; margin-top:8px;">&#x2713; &Auml;nderungen &uuml;bernehmen</button>
+  <button id="mob-btn-apply" style="width:100%; margin-top:8px;" data-i18n="btn.apply-changes">&#x2713; Änderungen übernehmen</button>
 
   <h2>&#x1F4CA; Statistik</h2>
   <div id="mob-stats" style="font-size:11px;"></div>
 </div>
 
-<div id="mobile-menu-btn" title="Einstellungen">&#x2630;</div>
+<div id="mobile-menu-btn" data-i18n-title="tt.menu" title="Einstellungen">&#x2630;</div>
 
 <script>
 // ============================================================
@@ -475,6 +487,306 @@ input[type=range] {
 //  Newtonsche Gravitation + Velocity Verlet-Integration
 //  Mobil-optimiert mit Touch-Support
 // ============================================================
+
+// ============================================================
+//  I18N — Deutsch / Englisch
+// ============================================================
+const I18N = {
+  de: {
+    // Szenario
+    'sec.scenario': '🌌 Szenario',
+    'sec.time': '⚙ Zeitsteuerung',
+    'sec.view': '🔭 Anzeige',
+    'sec.inject': '🌌 Inject',
+    'sec.stats': '📊 Statistik',
+    'sec.bodies': 'Sichtbare Körper:',
+    'sec.rogue': '🪐 Rogue (Einzelkörper)',
+    'sec.cloud': '🪨 Asteroiden-Wolke',
+    // Scenarios
+    'sc.solarsystem': 'Sonnensystem',
+    'sc.solarsystem-belts': 'Sonnensystem mit Gürteln',
+    'sc.trisolaris': 'Trisolaris (3 Sonnen)',
+    'sc.lagrange-unstable': 'Lagrange (instabil)',
+    'sc.lagrange-stable': 'Lagrange (stabil)',
+    'sc.trojans': 'Trojaner (L4)',
+    'sc.figure8': 'Figur 8 (Choreografie)',
+    'sc.butterfly': 'Butterfly I',
+    'sc.moth': 'Moth I',
+    'sc.goggles': 'Goggles',
+    'sc.yarn': 'Yarn',
+    'sc.empty': 'Leeres System',
+    'sc.trappist': 'TRAPPIST-1',
+    'sc.alphacen': 'Alpha Centauri',
+    'sc.kepler16': 'Kepler-16',
+    'sc.kepler47': 'Kepler-47 (Doppelstern, 3 Planeten)',
+    // Buttons
+    'btn.save': 'Speichern',
+    'btn.export': 'Export',
+    'btn.import': 'Import',
+    'btn.apply': 'Übernehmen',
+    'btn.reset': 'Reset',
+    'btn.pause': '⏸ Pause',
+    'btn.start': '▶ Start',
+    'btn.step': '⏭ Schritt',
+    'btn.inject': 'Injizieren',
+    'btn.inject-cloud': 'Wolke injizieren',
+    'btn.clear-rogues': 'Alle Rogues löschen',
+    'btn.clear-clouds': 'Alle Wolken löschen',
+    'btn.clear-escaping': '↗ Flüchtende entfernen',
+    // Labels & toggles
+    'lbl.grid': 'Gitternetz',
+    'lbl.stars': 'Sternenhintergrund',
+    'lbl.worldgrid': 'Welt-Koordinatenkreuz',
+    'lbl.logzoom': 'Logarithmischer Zoom',
+    'lbl.centerbary': 'Schwerpunkt zentrieren',
+    'lbl.exclude-rogues-bary': 'Rogues bei Schwerpunkt ignorieren',
+    'lbl.trails': 'Bahnspuren',
+    'lbl.vectors': 'Kraftvektoren',
+    'lbl.worker': 'Physik im Worker',
+    'lbl.gpu': 'WebGPU',
+    'lbl.dt': 'Zeitschritt (Tage/Frame)',
+    'lbl.slow': 'Tempo (10^x)',
+    'lbl.trail-len': 'Bahnspur (Körper)',
+    'lbl.trail-len-ast': 'Bahnspur (Asteroiden)',
+    'lbl.trail-interval': 'Spur-Intervall (Tage)',
+    'lbl.mass': 'Masse (Erdmassen)',
+    'lbl.speed': 'Geschw. (km/s)',
+    'lbl.angle': 'Kurs (Grad)',
+    'lbl.cloud-n': 'Anzahl',
+    'lbl.cloud-density': 'Dichte (log)',
+    'lbl.cloud-jit': 'Streuung',
+    'lbl.zoom': 'Zoom',
+    'lbl.slowdown': 'Verlangsamung',
+    'lbl.dt-step': 'Zeitschritt (Tage/Schritt)',
+    'lbl.trail-show': 'Bahnspuren anzeigen',
+    'lbl.trail-len-body': 'Bahnspur-Länge',
+    'lbl.trail-len-asteroid': 'Asteroid-Bahnspur',
+    'lbl.vectors-show': 'Kraftvektoren anzeigen',
+    'lbl.worldworker': 'Physik in WebWorker',
+    'lbl.worldgpu': 'Physik via WebGPU',
+    'lbl.inject-mass': 'Masse',
+    'lbl.inject-speed': 'Geschwindigkeit (km/s)',
+    'lbl.inject-angle': 'Kompass-Kurs (°)',
+    'lbl.cloud-count': 'Anzahl',
+    'lbl.cloud-density-au2': 'Dichte (1/AU²)',
+    'lbl.cloud-r': 'Eff. Radius:',
+    'hint.inject': 'Klick+Ziehen auf Canvas = Vektor. Shift+Klick auf den Inject-Button (rechts) = Wolke.',
+    'btn.apply-changes': '✓ Änderungen übernehmen',
+    // Tooltips
+    'tt.stars': 'Statisches Sternfeld als Bewegungsreferenz, wenn das System sich bewegt.',
+    'tt.worldgrid': 'Festes Achsenkreuz x=0/y=0 in Welt-Koordinaten mit Tick-Marks an Dekaden — bewegt sich nicht mit der Kamera.',
+    'tt.bary-no-rogue': 'Wenn aktiv: Rogues zählen nicht zur Schwerpunkts-Berechnung — die Kamera bleibt am Hauptsystem, auch wenn schwere Störmassen einfliegen.',
+    'tt.worker': 'Physik auf separatem Thread (WebWorker) — flüssiger bei vielen Bodies. Bei Problemen ausschalten.',
+    'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
+    'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
+    'tt.density': 'Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.',
+    'tt.jitter': 'Zufällige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.',
+    'tt.clear-escaping': 'Entfernt alle Körper mit ↗-Markierung',
+    'tt.toggle-sidebar': 'Sidebar ein/ausblenden',
+    'tt.help': 'Steuerung anzeigen',
+    'tt.menu': 'Einstellungen',
+    'tt.inject-btn': 'Rogue injizieren',
+    'tt.recenter': 'Neu zentrieren',
+    'tt.lock': 'Fokus aufheben',
+    'tt.body-mass': 'Masse in Erdmassen',
+    'tt.body-vel': 'Geschwindigkeit in km/s',
+    'tt.body-dir': 'Kompass-Kurs in Grad (0=N, 90=O, 180=S, 270=W)',
+    'body.course': 'Kurs',
+    // Stats
+    'stats.time': 'Zeit',
+    'stats.years': 'Jahre',
+    'stats.realtime': 'Echtzeit',
+    'stats.bodies': 'Körper',
+    'stats.active': 'aktiv',
+    'stats.total': 'gesamt',
+    'stats.rogues': 'Rogues',
+    'stats.ke': 'Kinet. E',
+    'stats.pe': 'Pot. E',
+    'stats.te': 'Gesamt-E',
+    // Canvas labels
+    'cv.barycenter': 'Schwerpunkt',
+    'cv.au': 'AU',
+    // Misc
+    'misc.lang': 'EN',          // Anzeige im DE-Modus
+    'misc.lang-title': 'Sprache umschalten — Switch language',
+    'misc.menu': 'Menü',
+    'misc.help': 'Hilfe',
+    'misc.toggle-sidebar': 'Sidebar ein/ausblenden',
+    'page.title': 'Sonnensystem-Simulator — N-Körper-Gravitation',
+    'help.body':
+      'Mausrad: Zoom &nbsp;|&nbsp; Rechts-/Mittelklick: Verschieben<br>' +
+      'Linksklick auf Leerraum: Rogue-Position wählen<br>' +
+      'Klick+Ziehen: Geschwindigkeitsvektor setzen<br>' +
+      '<span style="color:#7af;">Linksklick auf einen Körper:</span> Fokus setzen (Kamera folgt)<br>' +
+      '<span style="color:#7af;">Shift+Klick</span> auf den Inject-Button: Wolke statt Rogue<br>' +
+      'Touch: 2-Finger=Zoom/Pan, 1-Finger lang halten=Rogue<br>' +
+      '<span>Taste:</span> P=Pause, R=Reset, Space=Schritt, <span style="color:#7af;">Esc=Fokus aufheben</span><br>' +
+      '<span style="color:#7af;">Einheiten:</span> M⊕ = Erdmasse (5,97 · 10<sup>24</sup>&nbsp;kg) &nbsp;|&nbsp; ' +
+      'M☉ = Sonnenmasse (1,99 · 10<sup>30</sup>&nbsp;kg, ≈ 333.000&nbsp;M⊕)',
+  },
+  en: {
+    'sec.scenario': '🌌 Scenario',
+    'sec.time': '⚙ Time Control',
+    'sec.view': '🔭 Display',
+    'sec.inject': '🌌 Inject',
+    'sec.stats': '📊 Statistics',
+    'sec.bodies': 'Visible bodies:',
+    'sec.rogue': '🪐 Rogue (single body)',
+    'sec.cloud': '🪨 Asteroid cloud',
+    'sc.solarsystem': 'Solar System',
+    'sc.solarsystem-belts': 'Solar System with Belts',
+    'sc.trisolaris': 'Trisolaris (3 suns)',
+    'sc.lagrange-unstable': 'Lagrange (unstable)',
+    'sc.lagrange-stable': 'Lagrange (stable)',
+    'sc.trojans': 'Trojans (L4)',
+    'sc.figure8': 'Figure 8 (choreography)',
+    'sc.butterfly': 'Butterfly I',
+    'sc.moth': 'Moth I',
+    'sc.goggles': 'Goggles',
+    'sc.yarn': 'Yarn',
+    'sc.empty': 'Empty system',
+    'sc.trappist': 'TRAPPIST-1',
+    'sc.alphacen': 'Alpha Centauri',
+    'sc.kepler16': 'Kepler-16',
+    'sc.kepler47': 'Kepler-47 (binary star, 3 planets)',
+    'btn.save': 'Save',
+    'btn.export': 'Export',
+    'btn.import': 'Import',
+    'btn.apply': 'Apply',
+    'btn.reset': 'Reset',
+    'btn.pause': '⏸ Pause',
+    'btn.start': '▶ Start',
+    'btn.step': '⏭ Step',
+    'btn.inject': 'Inject',
+    'btn.inject-cloud': 'Inject cloud',
+    'btn.clear-rogues': 'Clear all rogues',
+    'btn.clear-clouds': 'Clear all clouds',
+    'btn.clear-escaping': '↗ Remove escaping',
+    'lbl.grid': 'Grid',
+    'lbl.stars': 'Star background',
+    'lbl.worldgrid': 'World axis cross',
+    'lbl.logzoom': 'Logarithmic zoom',
+    'lbl.centerbary': 'Center on barycenter',
+    'lbl.exclude-rogues-bary': 'Ignore rogues for barycenter',
+    'lbl.trails': 'Trails',
+    'lbl.vectors': 'Force vectors',
+    'lbl.worker': 'Physics in worker',
+    'lbl.gpu': 'WebGPU',
+    'lbl.dt': 'Timestep (days/frame)',
+    'lbl.slow': 'Speed (10^x)',
+    'lbl.trail-len': 'Trail (bodies)',
+    'lbl.trail-len-ast': 'Trail (asteroids)',
+    'lbl.trail-interval': 'Trail interval (days)',
+    'lbl.mass': 'Mass (Earth masses)',
+    'lbl.speed': 'Speed (km/s)',
+    'lbl.angle': 'Heading (deg)',
+    'lbl.cloud-n': 'Count',
+    'lbl.cloud-density': 'Density (log)',
+    'lbl.cloud-jit': 'Scatter',
+    'lbl.zoom': 'Zoom',
+    'lbl.slowdown': 'Slowdown',
+    'lbl.dt-step': 'Timestep (days/step)',
+    'lbl.trail-show': 'Show trails',
+    'lbl.trail-len-body': 'Trail length',
+    'lbl.trail-len-asteroid': 'Asteroid trail',
+    'lbl.vectors-show': 'Show force vectors',
+    'lbl.worldworker': 'Physics in WebWorker',
+    'lbl.worldgpu': 'Physics via WebGPU',
+    'lbl.inject-mass': 'Mass',
+    'lbl.inject-speed': 'Speed (km/s)',
+    'lbl.inject-angle': 'Heading (°)',
+    'lbl.cloud-count': 'Count',
+    'lbl.cloud-density-au2': 'Density (1/AU²)',
+    'lbl.cloud-r': 'Eff. radius:',
+    'hint.inject': 'Click+drag on canvas = vector. Shift+click on the inject button (right) = cloud.',
+    'btn.apply-changes': '✓ Apply changes',
+    'tt.stars': 'Static star field as movement reference when the system itself is moving.',
+    'tt.worldgrid': 'Fixed x=0/y=0 axis cross in world coordinates with tick marks at decades — does not move with the camera.',
+    'tt.bary-no-rogue': 'If active: rogues are not counted for the barycenter — the camera stays with the main system, even when heavy perturbers fly through.',
+    'tt.worker': 'Physics on a separate thread (WebWorker) — smoother with many bodies. Disable if problems occur.',
+    'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
+    'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
+    'tt.density': 'Asteroids per AU² — the effective cloud size derives from count/density.',
+    'tt.jitter': 'Random scatter in velocity (±%) AND direction (±°). 0 = perfectly parallel.',
+    'tt.clear-escaping': 'Removes all bodies with ↗ marker',
+    'tt.toggle-sidebar': 'Show/hide sidebar',
+    'tt.help': 'Show controls',
+    'tt.menu': 'Settings',
+    'tt.inject-btn': 'Inject rogue',
+    'tt.recenter': 'Recenter',
+    'tt.lock': 'Release focus',
+    'tt.body-mass': 'Mass in Earth masses',
+    'tt.body-vel': 'Speed in km/s',
+    'tt.body-dir': 'Compass heading in degrees (0=N, 90=E, 180=S, 270=W)',
+    'body.course': 'Heading',
+    'stats.time': 'Time',
+    'stats.years': 'years',
+    'stats.realtime': 'Real time',
+    'stats.bodies': 'Bodies',
+    'stats.active': 'active',
+    'stats.total': 'total',
+    'stats.rogues': 'rogues',
+    'stats.ke': 'Kin. E',
+    'stats.pe': 'Pot. E',
+    'stats.te': 'Total E',
+    'cv.barycenter': 'Barycenter',
+    'cv.au': 'AU',
+    'misc.lang': 'DE',          // Anzeige im EN-Modus
+    'misc.lang-title': 'Sprache umschalten — Switch language',
+    'misc.menu': 'Menu',
+    'misc.help': 'Help',
+    'misc.toggle-sidebar': 'Show/hide sidebar',
+    'page.title': 'Solar System Simulator — N-body gravitation',
+    'help.body':
+      'Mouse wheel: zoom &nbsp;|&nbsp; Right/middle click: pan<br>' +
+      'Left click on empty space: choose rogue position<br>' +
+      'Click+drag: set velocity vector<br>' +
+      '<span style="color:#7af;">Left click on a body:</span> set focus (camera follows)<br>' +
+      '<span style="color:#7af;">Shift+click</span> on the inject button: cloud instead of rogue<br>' +
+      'Touch: 2-finger=zoom/pan, 1-finger long press=rogue<br>' +
+      '<span>Keys:</span> P=pause, R=reset, Space=step, <span style="color:#7af;">Esc=release focus</span><br>' +
+      '<span style="color:#7af;">Units:</span> M⊕ = Earth mass (5.97 · 10<sup>24</sup>&nbsp;kg) &nbsp;|&nbsp; ' +
+      'M☉ = solar mass (1.99 · 10<sup>30</sup>&nbsp;kg, ≈ 333,000&nbsp;M⊕)',
+  }
+};
+
+let currentLang = (() => {
+  try { return localStorage.getItem('sim-lang') || 'de'; } catch (e) { return 'de'; }
+})();
+
+function t(key) {
+  return (I18N[currentLang] && I18N[currentLang][key]) || I18N.de[key] || key;
+}
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = t(el.dataset.i18nTitle);
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    el.innerHTML = t(el.dataset.i18nHtml);
+  });
+  // Scenario-Select Options haben einen eigenen data-i18n-Key pro Option.
+  document.querySelectorAll('option[data-i18n]').forEach(opt => {
+    opt.textContent = t(opt.dataset.i18n);
+  });
+  // Page-Title aktualisieren.
+  document.title = t('page.title');
+  // Pause-Button bekommt einen dynamischen data-i18n-Key (s. setPaused).
+  // Stats und Body-Felder ggf. neu rendern.
+  if (typeof updateStats === 'function') updateStats();
+  if (typeof rebuildBodyList === 'function') rebuildBodyList();
+}
+
+function setLang(lang) {
+  if (lang !== 'de' && lang !== 'en') lang = 'de';
+  currentLang = lang;
+  try { localStorage.setItem('sim-lang', lang); } catch (e) {}
+  document.documentElement.lang = lang;
+  applyI18n();
+}
 
 const G_SI = 6.674e-11;
 const AU = 1.495978707e11;
@@ -1122,6 +1434,27 @@ function importConfig(file) {
   reader.readAsText(file);
 }
 
+// Mapping deutscher Szenario-Name -> i18n-Schluessel. Custom-User-Configs
+// (★-prefixed) bleiben sprachneutral, daher kein Eintrag noetig.
+const SCENARIO_I18N_KEY = {
+  'Sonnensystem': 'sc.solarsystem',
+  'Sonnensystem mit Gürteln': 'sc.solarsystem-belts',
+  'Trisolaris (3 Sonnen)': 'sc.trisolaris',
+  'Lagrange (instabil)': 'sc.lagrange-unstable',
+  'Lagrange (stabil)': 'sc.lagrange-stable',
+  'Trojaner (L4)': 'sc.trojans',
+  'Figur 8 (Choreografie)': 'sc.figure8',
+  'Butterfly I': 'sc.butterfly',
+  'Moth I': 'sc.moth',
+  'Goggles': 'sc.goggles',
+  'Yarn': 'sc.yarn',
+  'Leeres System': 'sc.empty',
+  'TRAPPIST-1': 'sc.trappist',
+  'Alpha Centauri': 'sc.alphacen',
+  'Kepler-16': 'sc.kepler16',
+  'Kepler-47 (Doppelstern, 3 Planeten)': 'sc.kepler47',
+};
+
 // Szenario-Auswahl neu befuellen: Presets + gespeicherte Konfigurationen.
 function refreshScenarioOptions() {
   const saved = savedConfigNames();
@@ -1131,11 +1464,21 @@ function refreshScenarioOptions() {
     sel.innerHTML = '';
     for (const name of Object.keys(SCENARIOS)) {
       const o = document.createElement('option');
-      o.textContent = name; sel.appendChild(o);
+      o.value = name;   // stabiler Lookup-Key bleibt deutsch
+      const key = SCENARIO_I18N_KEY[name];
+      if (key) {
+        o.setAttribute('data-i18n', key);
+        o.textContent = t(key);
+      } else {
+        o.textContent = name;
+      }
+      sel.appendChild(o);
     }
     for (const name of saved) {
       const o = document.createElement('option');
-      o.textContent = '★ ' + name; sel.appendChild(o);
+      o.value = '★ ' + name;
+      o.textContent = '★ ' + name;
+      sel.appendChild(o);
     }
     if (cur) sel.value = cur;
   }
@@ -1647,7 +1990,7 @@ function draw() {
     ctx.stroke();
     ctx.fillStyle = '#7af';
     ctx.font = '10px monospace';
-    ctx.fillText('Schwerpunkt', bcx + 9, bcy - 5);
+    ctx.fillText(t('cv.barycenter'), bcx + 9, bcy - 5);
   }
 
   // Trails — alle Koerper (auch Sterne, die sich ja bewegen).
@@ -3114,7 +3457,11 @@ chkSync.forEach(([desk, mob, varName]) => {
 function setPaused(p) {
   paused = p;
   const btn = document.getElementById('btn-pause');
-  btn.textContent = paused ? '\u25B6 Start' : '\u23F8 Pause';
+  // i18n: data-i18n-Key wechselt zwischen Pause/Start je nach State.
+  // applyI18n setzt den passenden Text fuer die aktuelle Sprache.
+  const key = paused ? 'btn.start' : 'btn.pause';
+  btn.setAttribute('data-i18n', key);
+  btn.textContent = t(key);
   btn.classList.toggle('active', paused);
   document.getElementById('mob-pause').textContent = paused ? '\u25B6' : '\u23F8';
 }
@@ -3184,16 +3531,16 @@ function addPlanetCheckbox(p, container) {
     `<div style="display:flex; align-items:center; gap:3px; margin-top:3px; padding-left:4px;">` +
       `<span style="color:#888; flex:none;">m</span>` +
       `<input type="text" inputmode="decimal" class="mass-in" data-name="${p.name}" ` +
-      `value="${formatMass(massEarth0)}" title="Masse in Erdmassen" style="${fst}">` +
+      `value="${formatMass(massEarth0)}" title="${t('tt.body-mass')}" style="${fst}">` +
       `<span style="color:#888; flex:none;">v</span>` +
       `<input type="text" inputmode="decimal" class="vel-in" data-name="${p.name}" ` +
-      `value="–" title="Geschwindigkeit in km/s" style="${fst}">` +
+      `value="–" title="${t('tt.body-vel')}" style="${fst}">` +
       `<span style="color:#888; flex:none;">km/s</span>` +
     `</div>` +
     `<div style="display:flex; align-items:center; gap:3px; margin-top:3px; padding-left:4px;">` +
-      `<span style="color:#888; flex:none;">Kurs</span>` +
+      `<span style="color:#888; flex:none;">${t('body.course')}</span>` +
       `<input type="text" inputmode="decimal" class="dir-in" data-name="${p.name}" ` +
-      `value="–" title="Kompass-Kurs in Grad (0=N, 90=O, 180=S, 270=W)" style="${fst}">` +
+      `value="–" title="${t('tt.body-dir')}" style="${fst}">` +
       `<span style="color:#888; flex:none;">&deg;</span>` +
     `</div>`;
 
@@ -3569,12 +3916,12 @@ function updateStats() {
   }
   const totalE = ke + pe;
   const html =
-    `Zeit: <span>${years}</span> Jahre<br>` +
-    `Echtzeit: <span>${formatRealTime(realElapsedMs)}</span><br>` +
-    `K\u00F6rper: <span>${activeCount}</span> aktiv / ${bodies.length} gesamt (${perturbers.length} Rogues)<br>` +
-    `Kinet. E: <span>${fmtDExp(ke, 2)}</span><br>` +
-    `Pot. E: <span>${fmtDExp(pe, 2)}</span><br>` +
-    `Gesamt-E: <span>${fmtDExp(totalE, 2)}</span>`;
+    `${t('stats.time')}: <span>${years}</span> ${t('stats.years')}<br>` +
+    `${t('stats.realtime')}: <span>${formatRealTime(realElapsedMs)}</span><br>` +
+    `${t('stats.bodies')}: <span>${activeCount}</span> ${t('stats.active')} / ${bodies.length} ${t('stats.total')} (${perturbers.length} ${t('stats.rogues')})<br>` +
+    `${t('stats.ke')}: <span>${fmtDExp(ke, 2)}</span><br>` +
+    `${t('stats.pe')}: <span>${fmtDExp(pe, 2)}</span><br>` +
+    `${t('stats.te')}: <span>${fmtDExp(totalE, 2)}</span>`;
   document.getElementById('stats').innerHTML = html;
   document.getElementById('mob-stats').innerHTML = html;
 }
@@ -4001,6 +4348,16 @@ try {
   }
 } catch (e) {}
 onScenarioChange(startScenario);
+
+// Sprach-Toggle: zeigt jeweils die ANDERE Sprache als Label (i18n liefert
+// 'misc.lang' = "EN" im DE-Modus, "DE" im EN-Modus). Klick wechselt.
+['btn-lang', 'mob-btn-lang'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('click', () => setLang(currentLang === 'de' ? 'en' : 'de'));
+});
+// Initial-Apply nach DOM-Aufbau und nach Scenario-Load.
+setLang(currentLang);
+
 simLoop();
 
 // --- GitHub-Stars im Footer (nutzt GitHub-API ohne Token, ungetrackt) ---
