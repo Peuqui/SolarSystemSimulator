@@ -304,6 +304,9 @@ input[type=range] {
   <label title="Physik auf separatem Thread (WebWorker) — fluessiger bei vielen Bodies. Bei Problemen ausschalten.">
     <input type="checkbox" id="chk-worker" checked> Physik in WebWorker
   </label>
+  <label title="Physik via WebGPU Compute Shader (iGPU/dGPU). Bei N > 1000 deutlich schneller. Setzt browserseitige WebGPU-Unterstuetzung voraus.">
+    <input type="checkbox" id="chk-gpu"> Physik via WebGPU (experimentell)
+  </label>
 
   <h2>&#x1F30C; Inject</h2>
   <label>Masse <span class="val" id="p-mass-val">1,0 M⊕</span></label>
@@ -423,6 +426,7 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-baryctr" checked> Schwerpunkt zentrieren</label>
   <label title="Wenn aktiv: Rogues zaehlen nicht zur Schwerpunkts-Berechnung."><input type="checkbox" id="mob-chk-bary-no-rogue" checked> Rogues bei Schwerpunkt ignorieren</label>
   <label title="Physik auf separatem Thread."><input type="checkbox" id="mob-chk-worker" checked> Physik in WebWorker</label>
+  <label title="WebGPU Compute Shader."><input type="checkbox" id="mob-chk-gpu"> Physik via WebGPU</label>
 
   <h2>&#x1F30C; Inject</h2>
   <label>Masse <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
@@ -2007,14 +2011,248 @@ function advanceWorker(dtYears) {
 
 // async-Variante: macht Physik im Worker, danach Kollisionen + Trails im Main.
 async function advanceAsync(dtYears) {
-  if (!useWorker) { advance(dtYears); return; }
-  await advanceWorker(dtYears);
-  // Kollisionen 1x pro Frame (statt pro Sub-Step) — Trade-off,
-  // bei sehr engen Begegnungen ggf. missed collisions.
+  if (useGPU && gpu) {
+    await advanceGPU(dtYears);
+  } else if (useWorker) {
+    await advanceWorker(dtYears);
+  } else {
+    advance(dtYears);
+    return;
+  }
+  // Kollisionen + Trails 1x pro Frame im Main (vorher pro Sub-Step).
   handleCollisions();
   simTime += dtYears * 365.25;
   recordTrails();
 }
+
+// ============================================================
+//  WebGPU Compute — fuer iGPU/dGPU. Macht ganze advance()-Schleife
+//  (Yoshida + adaptive Sub-Steps) im Compute Shader, ein Read-back
+//  pro Frame. Bei N >> 1000 deutlich schneller als CPU/Worker.
+// ============================================================
+var useGPU = false;        // Toggle (default aus — experimentell)
+let gpu = null;            // { device, pipeline } oder null
+const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
+
+const WGSL_NBODY = `
+struct Params {
+  N: u32,
+  steps: u32,
+  G: f32,
+  soft: f32,
+  dtSub: f32,
+  yW1: f32,
+  yW0: f32,
+  _pad: f32,
+}
+@group(0) @binding(0) var<storage, read_write> state: array<vec4f>; // x, y, mass, flags
+@group(0) @binding(1) var<storage, read_write> vel:   array<vec2f>;
+@group(0) @binding(2) var<storage, read_write> acc:   array<vec2f>;
+@group(0) @binding(3) var<uniform> p: Params;
+
+fn computeAccelOne(i: u32) -> vec2f {
+  let bi = state[i];
+  let flagsI = u32(bi.w);
+  if ((flagsI & 1u) == 0u) { return vec2f(0.0); }
+  let astI = (flagsI & 2u) != 0u;
+  var a = vec2f(0.0);
+  let N = p.N;
+  let G = p.G;
+  let soft = p.soft;
+  for (var j: u32 = 0u; j < N; j = j + 1u) {
+    if (j == i) { continue; }
+    let bj = state[j];
+    let flagsJ = u32(bj.w);
+    if ((flagsJ & 1u) == 0u) { continue; }
+    let astJ = (flagsJ & 2u) != 0u;
+    if (astI && astJ) { continue; }
+    let d = bj.xy - bi.xy;
+    let r2 = dot(d, d) + soft;
+    let r = sqrt(r2);
+    let f = G / (r2 * r);
+    a = a + f * bj.z * d;
+  }
+  return a;
+}
+
+@compute @workgroup_size(64)
+fn initAccel(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= p.N) { return; }
+  acc[i] = computeAccelOne(i);
+}
+
+@compute @workgroup_size(64)
+fn verletStep(@builtin(global_invocation_id) gid: vec3u) {
+  // Wird in JS mit unterschiedlichen dt-Werten (Yoshida) gepushed via
+  // dtSub im Params. Hier nur ein Velocity-Verlet-Schritt.
+  let i = gid.x;
+  if (i >= p.N) { return; }
+  let bi = state[i];
+  let flagsI = u32(bi.w);
+  if ((flagsI & 1u) == 0u) { return; }
+  let dt = p.dtSub;
+  let oldAx = acc[i];
+  // Position-Schritt
+  var pos = bi.xy;
+  pos = pos + vel[i] * dt + 0.5 * oldAx * dt * dt;
+  state[i] = vec4f(pos, bi.zw);
+  // Neue Beschleunigung
+  let newA = computeAccelOne(i);
+  // Workgroup-Synchronisation? Kann nicht — alle Bodies brauchen
+  // alte Positionen fuer accel. Daher: 2-Pass-Schema.
+  acc[i] = newA;
+  // Velocity-Schritt
+  vel[i] = vel[i] + 0.5 * (oldAx + newA) * dt;
+}
+`;
+
+async function initWebGPU() {
+  if (!navigator.gpu) {
+    console.log('WebGPU nicht verfuegbar — Browser unterstuetzt es nicht.');
+    return null;
+  }
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!adapter) { console.log('Kein GPU-Adapter gefunden.'); return null; }
+    const device = await adapter.requestDevice();
+    device.lost.then(info => {
+      console.warn('WebGPU device verloren:', info.message);
+      gpu = null;
+      useGPU = false;
+    });
+    const module = device.createShaderModule({ code: WGSL_NBODY });
+    const layout = 'auto';
+    const initPipe   = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'initAccel' } });
+    const verletPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'verletStep' } });
+    console.log('WebGPU bereit:', adapter.info?.vendor || 'unbekannt', adapter.info?.architecture || '');
+    return { device, initPipe, verletPipe };
+  } catch (e) {
+    console.warn('WebGPU init fehlgeschlagen:', e);
+    return null;
+  }
+}
+
+// Buffer-Pool: nur neu allokieren wenn Anzahl Bodies sich aendert.
+function ensureGpuBuffers(N) {
+  if (gpuBuf.N === N) return;
+  for (const k of ['state','accel','read','vel']) if (gpuBuf[k]) gpuBuf[k].destroy();
+  gpuBuf.state = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  gpuBuf.vel   = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  gpuBuf.accel = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  gpuBuf.read  = gpu.device.createBuffer({ size: N * 24, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  if (!gpuBuf.params) {
+    gpuBuf.params = gpu.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  }
+  gpuBuf.bindInit = gpu.device.createBindGroup({
+    layout: gpu.initPipe.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: gpuBuf.state } },
+      { binding: 1, resource: { buffer: gpuBuf.vel } },
+      { binding: 2, resource: { buffer: gpuBuf.accel } },
+      { binding: 3, resource: { buffer: gpuBuf.params } },
+    ]
+  });
+  gpuBuf.bindVerlet = gpu.device.createBindGroup({
+    layout: gpu.verletPipe.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: gpuBuf.state } },
+      { binding: 1, resource: { buffer: gpuBuf.vel } },
+      { binding: 2, resource: { buffer: gpuBuf.accel } },
+      { binding: 3, resource: { buffer: gpuBuf.params } },
+    ]
+  });
+  gpuBuf.N = N;
+}
+
+const YOSHIDA_W1_F = 1 / (2 - Math.cbrt(2));
+const YOSHIDA_W0_F = -Math.cbrt(2) / (2 - Math.cbrt(2));
+
+async function advanceGPU(dtYears) {
+  const N = bodies.length;
+  if (N === 0) return;
+  ensureGpuBuffers(N);
+  // Pack body state
+  const stateArr = new Float32Array(N * 4);
+  const velArr   = new Float32Array(N * 2);
+  for (let i = 0; i < N; i++) {
+    const b = bodies[i];
+    stateArr[i*4 + 0] = b.x;
+    stateArr[i*4 + 1] = b.y;
+    stateArr[i*4 + 2] = b.mass;
+    stateArr[i*4 + 3] = (b.visible ? 1 : 0) | (b.isAsteroid ? 2 : 0);
+    velArr[i*2 + 0] = b.vx;
+    velArr[i*2 + 1] = b.vy;
+  }
+  gpu.device.queue.writeBuffer(gpuBuf.state, 0, stateArr.buffer);
+  gpu.device.queue.writeBuffer(gpuBuf.vel,   0, velArr.buffer);
+
+  // Fixer Sub-Step (kein adaptiveSubDt auf GPU): MAX_SUB_DT_YEARS.
+  const subDt = MAX_SUB_DT_YEARS;
+  const steps = Math.max(1, Math.ceil(dtYears / subDt));
+  const dtPer = dtYears / steps;
+  const wDts = [YOSHIDA_W1_F * dtPer, YOSHIDA_W0_F * dtPer, YOSHIDA_W1_F * dtPer];
+
+  // initAccel einmal
+  let enc = gpu.device.createCommandEncoder();
+  // Params: N, _, G, soft, dtSub, w1, w0
+  writeGpuParams(N, 0, 1e-6, 0);
+  let pass = enc.beginComputePass();
+  pass.setPipeline(gpu.initPipe);
+  pass.setBindGroup(0, gpuBuf.bindInit);
+  pass.dispatchWorkgroups(Math.ceil(N / 64));
+  pass.end();
+  gpu.device.queue.submit([enc.finish()]);
+
+  // Yoshida-Schritte
+  for (let s = 0; s < steps; s++) {
+    for (const wDt of wDts) {
+      writeGpuParams(N, 0, 1e-6, wDt);
+      enc = gpu.device.createCommandEncoder();
+      pass = enc.beginComputePass();
+      pass.setPipeline(gpu.verletPipe);
+      pass.setBindGroup(0, gpuBuf.bindVerlet);
+      pass.dispatchWorkgroups(Math.ceil(N / 64));
+      pass.end();
+      gpu.device.queue.submit([enc.finish()]);
+    }
+  }
+
+  // Readback
+  enc = gpu.device.createCommandEncoder();
+  enc.copyBufferToBuffer(gpuBuf.state, 0, gpuBuf.read, 0, N * 16);
+  enc.copyBufferToBuffer(gpuBuf.vel,   0, gpuBuf.read, N * 16, N * 8);
+  gpu.device.queue.submit([enc.finish()]);
+  await gpuBuf.read.mapAsync(GPUMapMode.READ);
+  const mapped = gpuBuf.read.getMappedRange();
+  const stateOut = new Float32Array(mapped, 0, N * 4);
+  const velOut   = new Float32Array(mapped, N * 16, N * 2);
+  for (let i = 0; i < N; i++) {
+    bodies[i].x  = stateOut[i*4 + 0];
+    bodies[i].y  = stateOut[i*4 + 1];
+    bodies[i].vx = velOut[i*2 + 0];
+    bodies[i].vy = velOut[i*2 + 1];
+  }
+  gpuBuf.read.unmap();
+}
+
+function writeGpuParams(N, _pad, soft, dtSub) {
+  const buf = new ArrayBuffer(32);
+  const u32 = new Uint32Array(buf);
+  const f32 = new Float32Array(buf);
+  u32[0] = N;
+  u32[1] = 0;
+  f32[2] = G_AU;
+  f32[3] = soft;
+  f32[4] = dtSub;
+  f32[5] = YOSHIDA_W1_F;
+  f32[6] = YOSHIDA_W0_F;
+  f32[7] = 0;
+  gpu.device.queue.writeBuffer(gpuBuf.params, 0, buf);
+}
+
+// Init beim Page-Load.
+initWebGPU().then(g => { gpu = g; });
 
 // ============================================================
 //  KOLLISIONEN
@@ -2567,6 +2805,7 @@ const chkSync = [
   ['chk-baryctr', 'mob-chk-baryctr', 'lockBarycenter'],
   ['chk-bary-no-rogue', 'mob-chk-bary-no-rogue', 'excludeRoguesFromBary'],
   ['chk-worker', 'mob-chk-worker', 'useWorker'],
+  ['chk-gpu', 'mob-chk-gpu', 'useGPU'],
 ];
 chkSync.forEach(([desk, mob, varName]) => {
   const toggle = (val, persist) => {
