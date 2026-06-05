@@ -1435,14 +1435,23 @@ function updateBoundState() {
   // werden korrekt als gebunden gewertet (Toggle aus).
   // Selbst-Beitrag wird pro Body subtrahiert, damit ein schwerer Koerper
   // nicht gegen sich selbst gemessen wird.
+  // perturbers in Set fuer O(1) Lookup statt O(M) pro Body — bei N=1400
+  // Bodies und 2 Schleifen sonst O(N*M) Aufwand.
+  const pertSet = perturbers.length > 0 ? new Set(perturbers) : null;
   let mx=0, my=0, mvx=0, mvy=0, mt=0;
   let mxA=0, myA=0, mvxA=0, mvyA=0, mtA=0;
-  for (const b of bodies) {
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
     if (!b.visible) continue;
-    const isRogue = perturbers.indexOf(b) >= 0;
-    const w = isRogue ? 1
-            : Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20));
-    if (w <= 0) continue;
+    const isRogue = pertSet ? pertSet.has(b) : false;
+    let w;
+    if (isRogue) w = 1;
+    else {
+      const sc = b.escapeScore || 0;
+      if (sc <= 5) w = 1;
+      else if (sc >= 25) continue;
+      else w = (25 - sc) / 20;
+    }
     const m = b.mass * w;
     mxA += m*b.x; myA += m*b.y; mvxA += m*b.vx; mvyA += m*b.vy; mtA += m;
     if (!isRogue) {
@@ -1456,12 +1465,15 @@ function updateBoundState() {
   const SMvy = useMain ? mvy : mvyA;
   const Mt   = useMain ? mt  : mtA;
   if (Mt <= 0) {
-    for (const b of bodies) { b.unbound = false; b.escapeScore = 0; }
+    for (let i = 0; i < bodies.length; i++) {
+      bodies[i].unbound = false; bodies[i].escapeScore = 0;
+    }
     return;
   }
-  for (const b of bodies) {
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
     if (!b.visible) { b.unbound = false; b.escapeScore = 0; continue; }
-    const isRogue = perturbers.indexOf(b) >= 0;
+    const isRogue = pertSet ? pertSet.has(b) : false;
     // Bahnenergie-Pruefung gegen den jeweils aktiven Schwerpunkt
     // (Hauptsystem bei Toggle an, Gesamt bei Toggle aus) — auch fuer
     // Rogues. Hyperbolische Bodies bekommen ↗, egal Body-Typ.
@@ -1469,9 +1481,14 @@ function updateBoundState() {
     // seinen Beitrag abziehen, damit der Schwerpunkt OHNE ihn berechnet
     // wird (vermeidet zirkulaere Selbstanziehung).
     const inBary = useMain ? !isRogue : true;
-    const bw = inBary
-      ? Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20))
-      : 0;
+    let bw;
+    if (!inBary) bw = 0;
+    else {
+      const sc = b.escapeScore || 0;
+      if (sc <= 5) bw = 1;
+      else if (sc >= 25) bw = 0;
+      else bw = (25 - sc) / 20;
+    }
     const bm = b.mass * bw;
     const mEff = Mt - bm;
     if (mEff <= 0) { b.unbound = false; b.escapeScore = 0; continue; }
