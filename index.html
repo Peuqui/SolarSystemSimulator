@@ -652,6 +652,7 @@ function pushBody(o) {
     visible: true, isStar: !!o.isStar, isAsteroid: !!o.isAsteroid, escapeScore: 0,
   });
   trails[o.name] = [];
+  _baryDirty = true;
 }
 
 // Alle Koerper ins Schwerpunkt-Ruhesystem schieben: Gesamtimpuls = 0,
@@ -1228,28 +1229,43 @@ function recordTrails() {
 let cam = { cx: 0, cy: 0, zoom: 0.35 };
 var useLogZoom = true;
 
+const _LOG_33 = Math.log(33);
+const _INV_LOG_33 = 1 / _LOG_33;
+
 function logTransform(r) {
-  return Math.sign(r) * Math.log(1 + Math.abs(r)) / Math.log(1 + 32);
+  // Math.sign(r) * Math.log(1 + Math.abs(r)) / Math.log(33)
+  // — Konstante vorberechnet, Branch statt sign+abs spart 2 Calls.
+  if (r >= 0) return Math.log(1 + r) * _INV_LOG_33;
+  return -Math.log(1 - r) * _INV_LOG_33;
 }
 
 function invLogTransform(rLog) {
-  return Math.sign(rLog) * (Math.exp(Math.abs(rLog) * Math.log(1 + 32)) - 1);
+  if (rLog >= 0) return Math.exp(rLog * _LOG_33) - 1;
+  return -(Math.exp(-rLog * _LOG_33) - 1);
 }
 
 function worldToScreen(wx, wy) {
+  // Im Log-Modus brauchten wir frueher atan2 + cos + sin = 3 trig-Calls.
+  // Identitaeten: cos(atan2(wy,wx)) = wx/r, sin(atan2(wy,wx)) = wy/r.
+  // -> Statt 3 trig nur 1 sqrt + 1 Division.
   let sx, sy;
   if (useLogZoom) {
-    const r = Math.sqrt(wx*wx + wy*wy);
-    const angle = Math.atan2(wy, wx);
-    const rLog = logTransform(r);
-    sx = rLog * Math.cos(angle);
-    sy = rLog * Math.sin(angle);
+    const r2 = wx*wx + wy*wy;
+    if (r2 > 1e-24) {
+      const r = Math.sqrt(r2);
+      const scale = logTransform(r) / r;
+      sx = wx * scale;
+      sy = wy * scale;
+    } else {
+      sx = 0; sy = 0;
+    }
   } else {
     sx = wx; sy = wy;
   }
+  const k = cam.zoom * 80;
   return [
-    viewCX + (sx - cam.cx) * cam.zoom * 80,
-    H/2 + (sy - cam.cy) * cam.zoom * 80
+    viewCX + (sx - cam.cx) * k,
+    H/2 + (sy - cam.cy) * k
   ];
 }
 
@@ -1314,15 +1330,30 @@ const stars = [];
 // ausgeklammert — sonst springt die Kamera, sobald eine schwere Sonne
 // von aussen ins Bild kommt und das "Hauptsystem" rutscht weg. Fallback:
 // wenn es nur Rogues gibt (Leeres System + User-Inject), zaehlen sie.
+// Cache fuer barycenter() — pro Frame mehrfach aufgerufen (Kamera-
+// Tracking, Grid-Marker, Schwerpunkt-Marker, updateBoundState), aber
+// Positionen aendern sich pro Frame nur einmal. Wird nach advanceAsync
+// via _baryDirty = true invalidiert.
+let _baryDirty = true;
+let _baryCacheX = 0, _baryCacheY = 0;
+
 function barycenter() {
+  if (!_baryDirty) return [_baryCacheX, _baryCacheY];
   let mx = 0, my = 0, mt = 0;            // Hauptsystem mit escapeScore-Filter
   let mxR = 0, myR = 0, mtR = 0;         // Hauptsystem OHNE Filter (Fallback)
   let mxA = 0, myA = 0, mtA = 0;         // alle Bodies inkl. Rogues, voll
-  for (const b of bodies) {
+  // perturbers in Set fuer O(1) Lookup statt O(M) pro Body.
+  const pertSet = perturbers.length > 0 ? new Set(perturbers) : null;
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
     if (!b.visible) continue;
-    const isRogue = perturbers.indexOf(b) >= 0;
-    const w = isRogue ? 1
-            : Math.max(0, Math.min(1, (25 - (b.escapeScore || 0)) / 20));
+    const isRogue = pertSet ? pertSet.has(b) : false;
+    const sc = b.escapeScore || 0;
+    let w;
+    if (isRogue) w = 1;
+    else if (sc <= 5) w = 1;
+    else if (sc >= 25) w = 0;
+    else w = (25 - sc) / 20;
     const m = b.mass;
     mxA += m * b.x; myA += m * b.y; mtA += m;
     if (!isRogue) {
@@ -1341,10 +1372,16 @@ function barycenter() {
   //   3. Alle Bodies (z. B. Leeres-System-Szenario mit User-Rogues)
   // Bei "Rogues ignorieren" = aus: immer Stufe 3 (echter Massenmittelpunkt).
   if (excludeRoguesFromBary) {
-    if (mt > 0)  return [mx / mt, my / mt];
-    if (mtR > 0) return [mxR / mtR, myR / mtR];
+    if (mt > 0)       { _baryCacheX = mx / mt;   _baryCacheY = my / mt; }
+    else if (mtR > 0) { _baryCacheX = mxR / mtR; _baryCacheY = myR / mtR; }
+    else if (mtA > 0) { _baryCacheX = mxA / mtA; _baryCacheY = myA / mtA; }
+    else              { _baryCacheX = 0;         _baryCacheY = 0; }
+  } else {
+    if (mtA > 0) { _baryCacheX = mxA / mtA; _baryCacheY = myA / mtA; }
+    else         { _baryCacheX = 0;         _baryCacheY = 0; }
   }
-  return mtA > 0 ? [mxA / mtA, myA / mtA] : [0, 0];
+  _baryDirty = false;
+  return [_baryCacheX, _baryCacheY];
 }
 
 // Schwerster (sichtbarer) Koerper — Bezugspunkt fuer das Gitternetz.
@@ -1579,12 +1616,13 @@ function draw() {
     ctx.lineWidth = 1.2;
     const prevAlpha = ctx.globalAlpha;
 
-    // --- Asteroid-Trails: nach Farbe gruppiert + K=3 Alpha-Buckets pro
-    // Farbe fuer einen leichten Fade. Bei 5 Farben x 3 Buckets nur ~15
-    // Strokes/Frame fuer alle 1400 Asteroid-Trails (statt 1400+ Einzel-
-    // strokes), trotzdem mit weichem Verblass-Effekt.
-    const K_AST = 3;
-    const ALPHAS_AST = [0.08, 0.20, 0.40];   // hinten -> vorne
+    // --- Asteroid-Trails: nach Farbe gruppiert + K Alpha-Buckets pro
+    // Farbe fuer einen weichen Fade. Bei 5 Farben x 5 Buckets nur ~25
+    // Strokes/Frame fuer alle 1400 Asteroid-Trails. K=5 mit linearer
+    // Rampe vermeidet sichtbare Helligkeits-Stufen, die bei K=3 als
+    // "abgehackte" Bloecke entlang des Trails sichtbar waren.
+    const K_AST = 5;
+    const ALPHAS_AST = [0.06, 0.145, 0.23, 0.315, 0.40];   // hinten -> vorne
     const astByColor = new Map();   // color -> K_AST Buckets mit [x1,y1,x2,y2,...]
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
@@ -1983,6 +2021,7 @@ function advance(dtYears) {
     recordTrails();
     remaining -= subDt;
   }
+  _baryDirty = true;
 }
 
 // ============================================================
@@ -2155,6 +2194,7 @@ async function advanceAsync(dtYears) {
   handleCollisions();
   simTime += dtYears * 365.25;
   recordTrails();
+  _baryDirty = true;
 }
 
 // ============================================================
@@ -2409,6 +2449,7 @@ function removeBody(b) {
   const pi = perturbers.indexOf(b);
   if (pi >= 0) perturbers.splice(pi, 1);
   document.querySelectorAll(`[data-body="${b.name}"]`).forEach(el => el.remove());
+  _baryDirty = true;
 }
 
 function merge(a, b) {
@@ -3219,21 +3260,24 @@ function updateApplyButton() {
 // fuellen — ausser das Feld wird gerade editiert. Wichtig fuer die Masse:
 // bei Verschmelzung waechst sie, der angezeigte Wert muss mitwachsen.
 function updateBodyFields() {
+  // O(1)-Lookup statt bodies.find() pro Input — bei 1400 Bodies sonst
+  // O(N) pro Feld x 30 Felder = ~42.000 ops pro Aufruf.
+  const byName = new Map();
+  for (let i = 0; i < bodies.length; i++) byName.set(bodies[i].name, bodies[i]);
   document.querySelectorAll('.mass-in').forEach(inp => {
     if (inp === document.activeElement || inp.classList.contains('pending')) return;
-    const b = bodies.find(x => x.name === inp.dataset.name);
+    const b = byName.get(inp.dataset.name);
     if (b) inp.value = formatMass(b.mass * M_SUN / M_EARTH);
   });
   document.querySelectorAll('.vel-in').forEach(inp => {
-    // fokussierte und "ausstehende" Felder nicht ueberschreiben
     if (inp === document.activeElement || inp.classList.contains('pending')) return;
-    const b = bodies.find(x => x.name === inp.dataset.name);
+    const b = byName.get(inp.dataset.name);
     if (b) inp.value = formatMass(Math.round(Math.hypot(b.vx, b.vy) / KM_S_TO_AU_YR * 10) / 10);
   });
   // Kursfelder live mit dem aktuellen Kompass-Kurs (Grad, 0=N, 90=O).
   document.querySelectorAll('.dir-in').forEach(inp => {
     if (inp === document.activeElement || inp.classList.contains('pending')) return;
-    const b = bodies.find(x => x.name === inp.dataset.name);
+    const b = byName.get(inp.dataset.name);
     if (b) {
       let deg = Math.atan2(b.vx, -b.vy) * 180 / Math.PI;
       if (deg < 0) deg += 360;
