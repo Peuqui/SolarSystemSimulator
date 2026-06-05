@@ -2037,21 +2037,29 @@ const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null,
 const WGSL_NBODY = `
 struct Params {
   N: u32,
-  steps: u32,
+  _pad: u32,
   G: f32,
   soft: f32,
   dtSub: f32,
-  yW1: f32,
-  yW0: f32,
-  _pad: f32,
+  _pad2: f32,
+  _pad3: f32,
+  _pad4: f32,
 }
-@group(0) @binding(0) var<storage, read_write> state: array<vec4f>; // x, y, mass, flags
-@group(0) @binding(1) var<storage, read_write> vel:   array<vec2f>;
-@group(0) @binding(2) var<storage, read_write> acc:   array<vec2f>;
-@group(0) @binding(3) var<uniform> p: Params;
+@group(0) @binding(0) var<storage, read_write> state:    array<vec4f>; // x, y, mass, flags
+@group(0) @binding(1) var<storage, read_write> state2:   array<vec4f>; // Ping-Pong fuer 2-Pass
+@group(0) @binding(2) var<storage, read_write> vel:      array<vec2f>;
+@group(0) @binding(3) var<storage, read_write> acc:      array<vec2f>;
+@group(0) @binding(4) var<uniform> p: Params;
 
-fn computeAccelOne(i: u32) -> vec2f {
-  let bi = state[i];
+const TILE: u32 = 64u;
+var<workgroup> tile: array<vec4f, TILE>;
+
+// computeAccel mit Workgroup-Shared-Memory Tiling. Jeder Thread laedt
+// einen Body in shared memory; danach lesen alle 64 Threads diese 64
+// Bodies aus shared memory (viel schneller als global storage).
+fn accelTiled(i: u32, lid: u32, useState2: u32) -> vec2f {
+  var bi: vec4f;
+  if (useState2 == 1u) { bi = state2[i]; } else { bi = state[i]; }
   let flagsI = u32(bi.w);
   if ((flagsI & 1u) == 0u) { return vec2f(0.0); }
   let astI = (flagsI & 2u) != 0u;
@@ -2059,51 +2067,87 @@ fn computeAccelOne(i: u32) -> vec2f {
   let N = p.N;
   let G = p.G;
   let soft = p.soft;
-  for (var j: u32 = 0u; j < N; j = j + 1u) {
-    if (j == i) { continue; }
-    let bj = state[j];
-    let flagsJ = u32(bj.w);
-    if ((flagsJ & 1u) == 0u) { continue; }
-    let astJ = (flagsJ & 2u) != 0u;
-    if (astI && astJ) { continue; }
-    let d = bj.xy - bi.xy;
-    let r2 = dot(d, d) + soft;
-    let r = sqrt(r2);
-    let f = G / (r2 * r);
-    a = a + f * bj.z * d;
+  let numTiles = (N + TILE - 1u) / TILE;
+  for (var t: u32 = 0u; t < numTiles; t = t + 1u) {
+    let srcIdx = t * TILE + lid;
+    if (srcIdx < N) {
+      if (useState2 == 1u) { tile[lid] = state2[srcIdx]; }
+      else                 { tile[lid] = state[srcIdx]; }
+    } else {
+      tile[lid] = vec4f(0.0, 0.0, 0.0, 0.0);
+    }
+    workgroupBarrier();
+    let tileMax = min(TILE, N - t * TILE);
+    for (var k: u32 = 0u; k < tileMax; k = k + 1u) {
+      let j = t * TILE + k;
+      if (j == i) { continue; }
+      let bj = tile[k];
+      let flagsJ = u32(bj.w);
+      if ((flagsJ & 1u) == 0u) { continue; }
+      let astJ = (flagsJ & 2u) != 0u;
+      if (astI && astJ) { continue; }
+      let d = bj.xy - bi.xy;
+      let r2 = dot(d, d) + soft;
+      let r = sqrt(r2);
+      let f = G / (r2 * r);
+      a = a + f * bj.z * d;
+    }
+    workgroupBarrier();
   }
   return a;
 }
 
 @compute @workgroup_size(64)
-fn initAccel(@builtin(global_invocation_id) gid: vec3u) {
+fn initAccel(@builtin(global_invocation_id) gid: vec3u,
+             @builtin(local_invocation_id) lid: vec3u) {
   let i = gid.x;
-  if (i >= p.N) { return; }
-  acc[i] = computeAccelOne(i);
+  if (i >= p.N) {
+    // Mussen trotzdem am Workgroup-Barrier teilnehmen
+    workgroupBarrier();
+    return;
+  }
+  acc[i] = accelTiled(i, lid.x, 0u);
 }
 
+// Pass 1 fuer Velocity-Verlet: nur Position-Schritt (auf state2 schreiben,
+// state2 ist dann die "neue" Position fuer den naechsten Pass).
 @compute @workgroup_size(64)
-fn verletStep(@builtin(global_invocation_id) gid: vec3u) {
-  // Wird in JS mit unterschiedlichen dt-Werten (Yoshida) gepushed via
-  // dtSub im Params. Hier nur ein Velocity-Verlet-Schritt.
+fn verletPosition(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
   if (i >= p.N) { return; }
   let bi = state[i];
   let flagsI = u32(bi.w);
-  if ((flagsI & 1u) == 0u) { return; }
+  if ((flagsI & 1u) == 0u) {
+    state2[i] = bi;   // unsichtbare Bodies durchreichen
+    return;
+  }
   let dt = p.dtSub;
-  let oldAx = acc[i];
-  // Position-Schritt
-  var pos = bi.xy;
-  pos = pos + vel[i] * dt + 0.5 * oldAx * dt * dt;
-  state[i] = vec4f(pos, bi.zw);
-  // Neue Beschleunigung
-  let newA = computeAccelOne(i);
-  // Workgroup-Synchronisation? Kann nicht — alle Bodies brauchen
-  // alte Positionen fuer accel. Daher: 2-Pass-Schema.
+  let oldA = acc[i];
+  let newPos = bi.xy + vel[i] * dt + 0.5 * oldA * dt * dt;
+  state2[i] = vec4f(newPos, bi.zw);
+}
+
+// Pass 2: neue Accel aus state2 berechnen + Velocity-Schritt + state2 -> state kopieren.
+@compute @workgroup_size(64)
+fn verletAccelVel(@builtin(global_invocation_id) gid: vec3u,
+                  @builtin(local_invocation_id) lid: vec3u) {
+  let i = gid.x;
+  if (i >= p.N) {
+    workgroupBarrier();
+    return;
+  }
+  let bi = state2[i];
+  state[i] = bi;   // commit neue Position
+  let flagsI = u32(bi.w);
+  if ((flagsI & 1u) == 0u) {
+    workgroupBarrier();
+    return;
+  }
+  let dt = p.dtSub;
+  let oldA = acc[i];
+  let newA = accelTiled(i, lid.x, 1u);  // accel aus state2
   acc[i] = newA;
-  // Velocity-Schritt
-  vel[i] = vel[i] + 0.5 * (oldAx + newA) * dt;
+  vel[i] = vel[i] + 0.5 * (oldA + newA) * dt;
 }
 `;
 
@@ -2124,9 +2168,10 @@ async function initWebGPU() {
     const module = device.createShaderModule({ code: WGSL_NBODY });
     const layout = 'auto';
     const initPipe   = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'initAccel' } });
-    const verletPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'verletStep' } });
+    const posPipe    = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'verletPosition' } });
+    const accVelPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'verletAccelVel' } });
     console.log('WebGPU bereit:', adapter.info?.vendor || 'unbekannt', adapter.info?.architecture || '');
-    return { device, initPipe, verletPipe };
+    return { device, initPipe, posPipe, accVelPipe };
   } catch (e) {
     console.warn('WebGPU init fehlgeschlagen:', e);
     return null;
@@ -2136,32 +2181,33 @@ async function initWebGPU() {
 // Buffer-Pool: nur neu allokieren wenn Anzahl Bodies sich aendert.
 function ensureGpuBuffers(N) {
   if (gpuBuf.N === N) return;
-  for (const k of ['state','accel','read','vel']) if (gpuBuf[k]) gpuBuf[k].destroy();
-  gpuBuf.state = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
-  gpuBuf.vel   = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
-  gpuBuf.accel = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  gpuBuf.read  = gpu.device.createBuffer({ size: N * 24, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-  if (!gpuBuf.params) {
-    gpuBuf.params = gpu.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  for (const k of ['state','state2','accel','read','vel']) if (gpuBuf[k]) gpuBuf[k].destroy();
+  gpuBuf.state  = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  gpuBuf.state2 = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE });
+  gpuBuf.vel    = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  gpuBuf.accel  = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE });
+  gpuBuf.read   = gpu.device.createBuffer({ size: N * 24, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+  if (!gpuBuf.paramsW1) {
+    gpuBuf.paramsW1 = gpu.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    gpuBuf.paramsW0 = gpu.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   }
-  gpuBuf.bindInit = gpu.device.createBindGroup({
-    layout: gpu.initPipe.getBindGroupLayout(0),
+  // 2 Bind-Groups fuer die zwei Yoshida-dt-Varianten (W1 und W0).
+  // Init-Pipeline nutzt eine davon (params egal beim initAccel).
+  const makeBg = (pipe, paramsBuf) => gpu.device.createBindGroup({
+    layout: pipe.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: gpuBuf.state } },
-      { binding: 1, resource: { buffer: gpuBuf.vel } },
-      { binding: 2, resource: { buffer: gpuBuf.accel } },
-      { binding: 3, resource: { buffer: gpuBuf.params } },
+      { binding: 1, resource: { buffer: gpuBuf.state2 } },
+      { binding: 2, resource: { buffer: gpuBuf.vel } },
+      { binding: 3, resource: { buffer: gpuBuf.accel } },
+      { binding: 4, resource: { buffer: paramsBuf } },
     ]
   });
-  gpuBuf.bindVerlet = gpu.device.createBindGroup({
-    layout: gpu.verletPipe.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: gpuBuf.state } },
-      { binding: 1, resource: { buffer: gpuBuf.vel } },
-      { binding: 2, resource: { buffer: gpuBuf.accel } },
-      { binding: 3, resource: { buffer: gpuBuf.params } },
-    ]
-  });
+  gpuBuf.bindInit_W1   = makeBg(gpu.initPipe,   gpuBuf.paramsW1);
+  gpuBuf.bindPos_W1    = makeBg(gpu.posPipe,    gpuBuf.paramsW1);
+  gpuBuf.bindPos_W0    = makeBg(gpu.posPipe,    gpuBuf.paramsW0);
+  gpuBuf.bindAccVel_W1 = makeBg(gpu.accVelPipe, gpuBuf.paramsW1);
+  gpuBuf.bindAccVel_W0 = makeBg(gpu.accVelPipe, gpuBuf.paramsW0);
   gpuBuf.N = N;
 }
 
@@ -2191,38 +2237,37 @@ async function advanceGPU(dtYears) {
   const subDt = MAX_SUB_DT_YEARS;
   const steps = Math.max(1, Math.ceil(dtYears / subDt));
   const dtPer = dtYears / steps;
-  const wDts = [YOSHIDA_W1_F * dtPer, YOSHIDA_W0_F * dtPer, YOSHIDA_W1_F * dtPer];
+  writeGpuParams(gpuBuf.paramsW1, N, 1e-6, YOSHIDA_W1_F * dtPer);
+  writeGpuParams(gpuBuf.paramsW0, N, 1e-6, YOSHIDA_W0_F * dtPer);
 
-  // initAccel einmal
-  let enc = gpu.device.createCommandEncoder();
-  // Params: N, _, G, soft, dtSub, w1, w0
-  writeGpuParams(N, 0, 1e-6, 0);
-  let pass = enc.beginComputePass();
+  const wg = Math.ceil(N / 64);
+  const enc = gpu.device.createCommandEncoder();
+  const pass = enc.beginComputePass();
+
+  // 1) initAccel einmal
   pass.setPipeline(gpu.initPipe);
-  pass.setBindGroup(0, gpuBuf.bindInit);
-  pass.dispatchWorkgroups(Math.ceil(N / 64));
-  pass.end();
-  gpu.device.queue.submit([enc.finish()]);
+  pass.setBindGroup(0, gpuBuf.bindInit_W1);
+  pass.dispatchWorkgroups(wg);
 
-  // Yoshida-Schritte
+  // 2) Yoshida-Schritte (alles im selben Compute Pass!)
   for (let s = 0; s < steps; s++) {
-    for (const wDt of wDts) {
-      writeGpuParams(N, 0, 1e-6, wDt);
-      enc = gpu.device.createCommandEncoder();
-      pass = enc.beginComputePass();
-      pass.setPipeline(gpu.verletPipe);
-      pass.setBindGroup(0, gpuBuf.bindVerlet);
-      pass.dispatchWorkgroups(Math.ceil(N / 64));
-      pass.end();
-      gpu.device.queue.submit([enc.finish()]);
-    }
+    // W1
+    pass.setPipeline(gpu.posPipe);    pass.setBindGroup(0, gpuBuf.bindPos_W1);    pass.dispatchWorkgroups(wg);
+    pass.setPipeline(gpu.accVelPipe); pass.setBindGroup(0, gpuBuf.bindAccVel_W1); pass.dispatchWorkgroups(wg);
+    // W0
+    pass.setPipeline(gpu.posPipe);    pass.setBindGroup(0, gpuBuf.bindPos_W0);    pass.dispatchWorkgroups(wg);
+    pass.setPipeline(gpu.accVelPipe); pass.setBindGroup(0, gpuBuf.bindAccVel_W0); pass.dispatchWorkgroups(wg);
+    // W1
+    pass.setPipeline(gpu.posPipe);    pass.setBindGroup(0, gpuBuf.bindPos_W1);    pass.dispatchWorkgroups(wg);
+    pass.setPipeline(gpu.accVelPipe); pass.setBindGroup(0, gpuBuf.bindAccVel_W1); pass.dispatchWorkgroups(wg);
   }
+  pass.end();
 
-  // Readback
-  enc = gpu.device.createCommandEncoder();
+  // 3) Readback (im selben Command-Buffer)
   enc.copyBufferToBuffer(gpuBuf.state, 0, gpuBuf.read, 0, N * 16);
   enc.copyBufferToBuffer(gpuBuf.vel,   0, gpuBuf.read, N * 16, N * 8);
-  gpu.device.queue.submit([enc.finish()]);
+  gpu.device.queue.submit([enc.finish()]);    // EINE Submission pro Frame.
+
   await gpuBuf.read.mapAsync(GPUMapMode.READ);
   const mapped = gpuBuf.read.getMappedRange();
   const stateOut = new Float32Array(mapped, 0, N * 4);
@@ -2236,19 +2281,14 @@ async function advanceGPU(dtYears) {
   gpuBuf.read.unmap();
 }
 
-function writeGpuParams(N, _pad, soft, dtSub) {
-  const buf = new ArrayBuffer(32);
-  const u32 = new Uint32Array(buf);
-  const f32 = new Float32Array(buf);
-  u32[0] = N;
-  u32[1] = 0;
-  f32[2] = G_AU;
-  f32[3] = soft;
-  f32[4] = dtSub;
-  f32[5] = YOSHIDA_W1_F;
-  f32[6] = YOSHIDA_W0_F;
-  f32[7] = 0;
-  gpu.device.queue.writeBuffer(gpuBuf.params, 0, buf);
+function writeGpuParams(buf, N, soft, dtSub) {
+  const ab = new ArrayBuffer(32);
+  new Uint32Array(ab, 0, 2)[0] = N;
+  const f = new Float32Array(ab);
+  f[2] = G_AU;
+  f[3] = soft;
+  f[4] = dtSub;
+  gpu.device.queue.writeBuffer(buf, 0, ab);
 }
 
 // Init beim Page-Load.
