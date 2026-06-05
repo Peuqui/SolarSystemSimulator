@@ -2330,30 +2330,67 @@ function shatter(a, b) {
   }
 }
 
+// Spatial-Hash Grid fuer Planet x Asteroid Kollisions-Tests.
+// Zellgroesse = 2x max(realR) — bei Sonne ~5e-3 AU.
+const COLL_CELL_AU = 0.01;
+const _astCellMap = new Map();
+
+// Resolve eine einzelne Kollision (geometrische Beruehrung).
+// Returnt true wenn ein Merge/Shatter ausgeloest wurde (bodies-Array geaendert).
+function _tryCollide(a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const touch = a.realR + b.realR;
+  if (dx*dx + dy*dy >= touch*touch) return false;
+  const vImp = Math.hypot(b.vx-a.vx, b.vy-a.vy);
+  const vEsc = Math.sqrt(2 * G_AU * (a.mass + b.mass) / touch);
+  const blackHoleInvolved = a.isBlackHole || b.isBlackHole;
+  if (blackHoleInvolved || vImp < 1.5 * vEsc) merge(a, b);
+  else shatter(a, b);
+  computeAccelerations();
+  updatePerturberList();
+  return true;
+}
+
 function handleCollisions() {
+  // Drei Phasen — Asteroid-Asteroid wird vollstaendig uebersprungen
+  // (gravitativ + Kollisions-irrelevant, geringe Querschnitte).
+  const planets = [];
   for (let i = 0; i < bodies.length; i++) {
     if (!bodies[i].visible) continue;
-    const aIsAst = bodies[i].isAsteroid;
-    for (let j = i+1; j < bodies.length; j++) {
-      if (!bodies[j].visible) continue;
-      // Asteroid-Asteroid-Kollisionen ueberspringen — sie sind extrem
-      // unwahrscheinlich (geringe Querschnitte) und gravitativ irrelevant.
-      if (aIsAst && bodies[j].isAsteroid) continue;
-      const a = bodies[i], b = bodies[j];
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const touch = a.realR + b.realR;
-      if (dx*dx + dy*dy >= touch*touch) continue;
-      const vImp = Math.hypot(b.vx-a.vx, b.vy-a.vy);
-      const vEsc = Math.sqrt(2 * G_AU * (a.mass + b.mass) / touch);
-      // Schwarze Loecher koennen nicht zerbrechen — innerhalb des
-      // Ereignishorizonts gibt es keine Fragmentierung, alles wird
-      // verschluckt. Daher fuer SL immer merge.
-      const blackHoleInvolved = a.isBlackHole || b.isBlackHole;
-      if (blackHoleInvolved || vImp < 1.5 * vEsc) merge(a, b);
-      else shatter(a, b);
-      computeAccelerations();
-      updatePerturberList();
-      return;   // bodies-Array geaendert -> eine Kollision pro Aufruf
+    if (!bodies[i].isAsteroid) planets.push(bodies[i]);
+  }
+  // Phase 1: Planet x Planet — klassisches O(M^2), bei M ~ 10 trivial.
+  for (let i = 0; i < planets.length; i++) {
+    for (let j = i + 1; j < planets.length; j++) {
+      if (_tryCollide(planets[i], planets[j])) return;
+    }
+  }
+  // Phase 2: Asteroiden in Hash-Grid einsortieren (O(N_ast)).
+  _astCellMap.clear();
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.visible || !b.isAsteroid) continue;
+    const cx = Math.floor(b.x / COLL_CELL_AU);
+    const cy = Math.floor(b.y / COLL_CELL_AU);
+    const k = cx + ',' + cy;
+    let cell = _astCellMap.get(k);
+    if (!cell) { cell = []; _astCellMap.set(k, cell); }
+    cell.push(b);
+  }
+  // Phase 3: pro Planet die 3x3-Nachbarschaft im Asteroid-Grid abfragen.
+  // ~9 Lookups, typisch 0..2 Asteroiden pro Zelle. M*9 statt M*N_ast.
+  for (let pi = 0; pi < planets.length; pi++) {
+    const p = planets[pi];
+    const cx = Math.floor(p.x / COLL_CELL_AU);
+    const cy = Math.floor(p.y / COLL_CELL_AU);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const cell = _astCellMap.get((cx+dx) + ',' + (cy+dy));
+        if (!cell) continue;
+        for (let ai = 0; ai < cell.length; ai++) {
+          if (_tryCollide(p, cell[ai])) return;
+        }
+      }
     }
   }
 }
