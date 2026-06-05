@@ -29,6 +29,10 @@ statischen Webserver ausliefern.
   Schwerpunkt-Drift, Fluchtkurs-Erkennung
 - **Mobile vollständig unterstützt** — Long-Press, Pinch-Zoom,
   2-Finger-Pan, dedizierte mobile Toolbar und Bottom-Sheet
+- **Mehrsprachig Deutsch / Englisch** — Toggle oben links im Seitenmenü,
+  Sprachwahl bleibt im `localStorage` erhalten
+- **Optionale GPU-Beschleunigung** — Physik kann wahlweise im WebWorker
+  oder via WebGPU Compute Shader laufen, jeweils per Toggle umschaltbar
 
 ## Bedienung
 
@@ -71,6 +75,29 @@ Alternativ einfach `index.html` direkt im Browser öffnen (`file://` —
 die Simulation selbst läuft komplett offline; nur die optionalen
 Footer-Elemente (GoatCounter-Pageview-Zähler, GitHub-Stars-Badge)
 sind dann inaktiv).
+
+## Browser-Performance
+
+Mit großen Asteroidengürteln (~1400 Körper) gibt es deutliche
+Unterschiede zwischen den Browsern:
+
+**Desktop (Reihenfolge schnell → langsam):**
+
+| Browser | Empfehlung | Bemerkung |
+|---|---|---|
+| **Edge** | WebGPU **an** | Aktuelles Dawn-Backend + DirectX-12-Pfad — flüssigste Performance unter Windows |
+| **Chrome** | WebGPU **an** | Ähnlich zu Edge, je nach Treiber etwas langsamer; Worker als Fallback |
+| **Firefox** | WebGPU **aus** (Worker an) | `wgpu`-Backend noch unreif; Canvas-2D-Path-Operationen sind in Firefox 2–5× teurer pro Call — der WebGPU-Roundtrip kommt erschwerend dazu |
+
+**Android (Reihenfolge schnell → langsam):**
+
+| Browser | Empfehlung | Bemerkung |
+|---|---|---|
+| **Chrome** | WebGPU **an** | Deutlich performanter als Firefox auf Android |
+| **Firefox** | WebGPU **aus** (Worker an) | Auch mobil das schwächere `wgpu`-Backend |
+
+Bei wenigen Bodies (Standard-Szenarien ohne Gürtel) macht der Unterschied
+keine Rolle; alle Browser laufen flüssig auf 60 fps.
 
 ## Technik
 

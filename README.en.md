@@ -30,6 +30,10 @@ any static web server.
   momentum, barycenter drift, escape-trajectory detection
 - **Full mobile support** — long-press, pinch-to-zoom, two-finger pan,
   dedicated mobile toolbar and bottom sheet
+- **Multilingual German / English** — toggle in the top-left corner of
+  the side panel, language choice persists in `localStorage`
+- **Optional GPU acceleration** — physics can run either in a WebWorker
+  or via a WebGPU compute shader, each via its own toggle
 
 ## Controls
 
@@ -71,6 +75,29 @@ Alternatively just open `index.html` from disk (`file://`) — the
 simulation itself runs fully offline; only the optional footer widgets
 (GoatCounter pageview hit, GitHub stars badge) stay inactive without
 network access.
+
+## Browser performance
+
+With large asteroid belts (~1400 bodies) the browsers diverge
+noticeably:
+
+**Desktop (fast → slow):**
+
+| Browser | Recommendation | Notes |
+|---|---|---|
+| **Edge** | WebGPU **on** | Up-to-date Dawn backend + DirectX 12 path — smoothest performance on Windows |
+| **Chrome** | WebGPU **on** | Similar to Edge, sometimes a bit slower depending on the driver; Worker as fallback |
+| **Firefox** | WebGPU **off** (Worker on) | The `wgpu` backend is still immature; Canvas 2D path operations are 2–5× more expensive per call in Firefox — the WebGPU round-trip on top makes it worse |
+
+**Android (fast → slow):**
+
+| Browser | Recommendation | Notes |
+|---|---|---|
+| **Chrome** | WebGPU **on** | Significantly faster than Firefox on Android |
+| **Firefox** | WebGPU **off** (Worker on) | Same weaker `wgpu` backend on mobile |
+
+With few bodies (default scenarios without belts) the difference is
+negligible; all browsers run smoothly at 60 fps.
 
 ## Technical notes
 

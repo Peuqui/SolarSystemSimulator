@@ -179,7 +179,7 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 #mobile-menu-btn:active { background: #4a7aba; }
 
 /* Responsive: tablet and below */
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   #sidebar {
     width: 300px;
   }
@@ -187,7 +187,11 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   #toggle-sidebar.shifted { left: 8px; }
 }
 
-@media (max-width: 700px) {
+/* Mobile-Layout: Media-Query (Viewport-Breite) ODER body.is-mobile
+   (UA-Detection, in JS gesetzt). UA-Detection deckt Faelle ab, in denen
+   Chrome Mobile eine groessere Viewport-Breite meldet (z. B. Landscape,
+   "Mobile Site"-Modus) und die reine Media-Query daher nicht greift. */
+@media (max-width: 1024px) {
   #sidebar { display: none !important; }
   #toggle-sidebar { display: none !important; }
   #mobile-controls { display: block; }
@@ -195,6 +199,12 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   #mobile-menu-btn { display: flex; }
   #info-panel { font-size: 10px; bottom: 60px; right: 5px; padding: 6px 10px; max-width: 220px; }
 }
+body.is-mobile #sidebar { display: none !important; }
+body.is-mobile #toggle-sidebar { display: none !important; }
+body.is-mobile #mobile-controls { display: block; }
+body.is-mobile #mobile-sheet { display: block; }
+body.is-mobile #mobile-menu-btn { display: flex; }
+body.is-mobile #info-panel { font-size: 10px; bottom: 60px; right: 5px; padding: 6px 10px; max-width: 220px; }
 
 /* Range slider track styling */
 input[type=range] {
@@ -224,11 +234,36 @@ input[type=range] {
   #site-footer { font-size: 10px; bottom: 4px; right: 4px; padding: 3px 6px; }
   #site-footer a span { display: none; } /* nur Icon auf Mobile */
 }
+
+/* Slider-Lupe — beim Touch-Drag eines <input type="range"> wird der
+   aktuelle Wert in einer grossen Bubble oberhalb des Fingers angezeigt,
+   damit der Finger nicht den winzigen .val-Span ueberdeckt. */
+#slider-bubble {
+  position: fixed;
+  display: none;
+  background: #1a1a2e;
+  color: #7af;
+  border: 1px solid #4a7aba;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 20px;
+  font-weight: bold;
+  font-family: 'Segoe UI', monospace;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1000;
+  transform: translate(-50%, -100%);
+  margin-top: -70px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+#slider-bubble.show { display: block; }
 </style>
 </head>
 <body>
 
 <canvas id="canvas"></canvas>
+
+<div id="slider-bubble"></div>
 
 <!-- Desktop Sidebar -->
 <div id="sidebar">
@@ -264,6 +299,10 @@ input[type=range] {
       <button id="btn-import-cfg" data-i18n="btn.import" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Import</button>
     </div>
     <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
+    <label data-i18n-title="tt.belt" style="margin-top:6px;"><span data-i18n="lbl.belt-ab">Asteroidengürtel</span> <span class="val" id="belt-ab-val">800</span></label>
+    <input type="range" autocomplete="off" id="belt-ab-slider" min="0" max="3000" step="50" value="800">
+    <label data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="belt-kb-val">600</span></label>
+    <input type="range" autocomplete="off" id="belt-kb-slider" min="0" max="3000" step="50" value="600">
   </details>
   <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage/Schritt)</span> <span class="val" id="dt-val">1</span></label>
@@ -415,6 +454,10 @@ input[type=range] {
       <button id="mob-btn-export-cfg" data-i18n="btn.export" style="flex:1; font-size:12px;">Export</button>
       <button id="mob-btn-import-cfg" data-i18n="btn.import" style="flex:1; font-size:12px;">Import</button>
     </div>
+    <label data-i18n-title="tt.belt" style="margin-top:6px;"><span data-i18n="lbl.belt-ab">Asteroidengürtel</span> <span class="val" id="mob-belt-ab-val">800</span></label>
+    <input type="range" autocomplete="off" id="mob-belt-ab-slider" min="0" max="3000" step="50" value="800">
+    <label data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="mob-belt-kb-val">600</span></label>
+    <input type="range" autocomplete="off" id="mob-belt-kb-slider" min="0" max="3000" step="50" value="600">
   </details>
   <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage)</span> <span class="val" id="mob-dt-val">1</span></label>
@@ -487,6 +530,14 @@ input[type=range] {
 //  Newtonsche Gravitation + Velocity Verlet-Integration
 //  Mobil-optimiert mit Touch-Support
 // ============================================================
+
+// Mobile-Detection per UA — als Ergaenzung zur CSS-Media-Query. Chrome
+// Mobile meldet in manchen Konfigurationen eine zu grosse Viewport-Breite
+// (Landscape, "Desktop site"-Toggle, gewisse Layout-Modi); die UA-Klasse
+// erzwingt das Mobile-Layout dort trotzdem.
+if (/Mobi|Android|iPhone|iPad|iPod|Tablet/i.test(navigator.userAgent)) {
+  document.body.classList.add('is-mobile');
+}
 
 // ============================================================
 //  I18N — Deutsch / Englisch
@@ -592,6 +643,9 @@ const I18N = {
     'tt.body-vel': 'Geschwindigkeit in km/s',
     'tt.body-dir': 'Kompass-Kurs in Grad (0=N, 90=O, 180=S, 270=W)',
     'body.course': 'Kurs',
+    'lbl.belt-ab': 'Asteroidengürtel',
+    'lbl.belt-kb': 'Kuipergürtel',
+    'tt.belt': 'Anzahl der Gürtel-Asteroiden. Wirkt nach erneutem Laden des "Sonnensystem mit Gürteln"-Szenarios.',
     // Stats
     'stats.time': 'Zeit',
     'stats.years': 'Jahre',
@@ -719,6 +773,9 @@ const I18N = {
     'tt.body-vel': 'Speed in km/s',
     'tt.body-dir': 'Compass heading in degrees (0=N, 90=E, 180=S, 270=W)',
     'body.course': 'Heading',
+    'lbl.belt-ab': 'Asteroid belt',
+    'lbl.belt-kb': 'Kuiper belt',
+    'tt.belt': 'Number of belt asteroids. Takes effect when the "Solar System with Belts" scenario is reloaded.',
     'stats.time': 'Time',
     'stats.years': 'years',
     'stats.realtime': 'Real time',
@@ -1049,14 +1106,26 @@ function addBelt(prefix, count, aMin, aMax, eMax, totalMassEarth, color) {
   }
 }
 
+// Per-Slider konfigurierbare Anzahl der Guertel-Asteroiden — der User
+// kann zwischen "wenig fuer Performance" und "viel fuer Stimmung" waehlen,
+// ohne den Code aendern zu muessen. Beim Laden aus localStorage geclamped.
+let BELT_AB_COUNT = 800;
+let BELT_KB_COUNT = 600;
+try {
+  const a = parseInt(localStorage.getItem('sim_belt_ab') || '');
+  if (Number.isFinite(a) && a >= 0 && a <= 5000) BELT_AB_COUNT = a;
+  const k = parseInt(localStorage.getItem('sim_belt_kb') || '');
+  if (Number.isFinite(k) && k >= 0 && k <= 5000) BELT_KB_COUNT = k;
+} catch (e) {}
+
 function buildSolarSystemWithBelts() {
   buildSolarSystem();
   // Asteroidengürtel: 2,1–3,3 AU, Gesamtmasse ~Mondmasse/30 (~0,001 M⊕),
   // moderate Excentricity.
-  addBelt('AB', 800, 2.1, 3.3, 0.15, 0.001, '#d4b890');
+  if (BELT_AB_COUNT > 0) addBelt('AB', BELT_AB_COUNT, 2.1, 3.3, 0.15, 0.001, '#d4b890');
   // Kuipergürtel: 30–50 AU, Gesamtmasse ~0,04 M⊕ (klassische Schaetzung),
   // etwas hoehere Excentricity als der Asteroidengürtel.
-  addBelt('KB', 600, 30, 50, 0.2, 0.04, '#9fc6dc');
+  if (BELT_KB_COUNT > 0) addBelt('KB', BELT_KB_COUNT, 30, 50, 0.2, 0.04, '#9fc6dc');
 }
 
 function buildEmpty() { /* leer — Koerper per Klick setzen (Bau-Modus) */ }
@@ -2300,8 +2369,22 @@ function draw() {
     if (kmS > 0.05) {
       drawArrow(sx, sy, sx + pvx, sy + pvy, '#ff6644', 2.5);
       ctx.fillStyle = '#ff8866';
-      ctx.font = 'bold 12px monospace';
-      ctx.fillText('v=' + fmtDE(kmS, 1) + ' km/s', sx + pvx + 8, sy + pvy - 8);
+      const txt = 'v=' + fmtDE(kmS, 1) + ' km/s';
+      // Auf Mobile: Label unten LINKS vom Pinpoint anzeigen — der
+      // Rechtshaender-Daumen verdeckt typischerweise die rechte Seite,
+      // ein Label am Vektor-Ende waere haeufig unsichtbar. Auf Desktop
+      // bleibt es am Vektor-Ende (kein Fingerproblem mit der Maus).
+      if (document.body.classList.contains('is-mobile')) {
+        ctx.font = 'bold 16px monospace';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText(txt, sx - 22, sy + 22);
+        ctx.textAlign = 'start';
+        ctx.textBaseline = 'alphabetic';
+      } else {
+        ctx.font = 'bold 12px monospace';
+        ctx.fillText(txt, sx + pvx + 8, sy + pvy - 8);
+      }
     }
   }
 
@@ -3161,6 +3244,45 @@ document.getElementById('mob-trail-slider').addEventListener('input', function()
   });
 });
 
+// Guertel-Anzahl-Slider — Wert wird in localStorage gemerkt; ist gerade
+// das Gurtel-Szenario aktiv, wird es bei aenderung neu geladen, damit
+// die neue Anzahl sofort sichtbar ist.
+function setBeltCount(kind, n) {
+  if (kind === 'ab') {
+    BELT_AB_COUNT = n;
+    try { localStorage.setItem('sim_belt_ab', String(n)); } catch (e) {}
+  } else {
+    BELT_KB_COUNT = n;
+    try { localStorage.setItem('sim_belt_kb', String(n)); } catch (e) {}
+  }
+  document.getElementById('belt-' + kind + '-val').textContent = n;
+  document.getElementById('mob-belt-' + kind + '-val').textContent = n;
+  document.getElementById('belt-' + kind + '-slider').value = n;
+  document.getElementById('mob-belt-' + kind + '-slider').value = n;
+  if (currentScenario === 'Sonnensystem mit Gürteln') {
+    onScenarioChange(currentScenario);
+  }
+}
+['belt-ab-slider', 'mob-belt-ab-slider'].forEach(id => {
+  document.getElementById(id).addEventListener('change', function() {
+    setBeltCount('ab', parseInt(this.value));
+  });
+  // Live-Update der angezeigten Zahl waehrend des Ziehens (ohne Reload).
+  document.getElementById(id).addEventListener('input', function() {
+    document.getElementById('belt-ab-val').textContent = this.value;
+    document.getElementById('mob-belt-ab-val').textContent = this.value;
+  });
+});
+['belt-kb-slider', 'mob-belt-kb-slider'].forEach(id => {
+  document.getElementById(id).addEventListener('change', function() {
+    setBeltCount('kb', parseInt(this.value));
+  });
+  document.getElementById(id).addEventListener('input', function() {
+    document.getElementById('belt-kb-val').textContent = this.value;
+    document.getElementById('mob-belt-kb-val').textContent = this.value;
+  });
+});
+
 // --- Szenario-Auswahl ---
 function onScenarioChange(name) {
   cam.cx = 0; cam.cy = 0;
@@ -3732,24 +3854,11 @@ function doInject() {
   // rebuildBodyList baut die Liste komplett aus `bodies` neu auf.
   computeAccelerations();
   rebuildBodyList();
-  // Auto-Fit + Pause nur ausloesen, wenn die Rogue wirklich relevant ist:
-  //   B: ≥ 1 % der Hauptsystem-Masse  (gravitativ relevant)
-  //   C: ≥ 0,5 M☉                     (stellare Klasse)
-  //   a: ausserhalb aktuelles Sichtfeld (User wuerde sie sonst nicht sehen)
-  // Sonst still injizieren, kein Lerp, keine Pause.
-  let mainMass = 0;
-  for (const b of bodies) {
-    if (!b.visible || b === pert) continue;
-    if (perturbers.indexOf(b) >= 0) continue;
-    if ((b.escapeScore || 0) >= 25) continue;
-    mainMass += b.mass;
-  }
-  const massRelevant = (mainMass > 0 && pert.mass >= 0.01 * mainMass) || pert.mass >= 0.5;
-  const [psx, psy] = worldToScreen(pert.x, pert.y);
-  const sb = document.getElementById('sidebar');
-  const sw = sb && sb.getBoundingClientRect().width > 0 ? sb.getBoundingClientRect().width : 0;
-  const offscreen = psx < sw + 50 || psx > W - 50 || psy < 50 || psy > H - 50;
-  if (massRelevant || offscreen) fitZoomToSystem(true);
+  // Kein Auto-Zoom — User entscheidet selbst, wann zentriert wird
+  // (Recenter-Button 🞋). Frueher zog Inject schwerer Rogues und solche
+  // ausserhalb des Sichtfelds automatisch raus; das war fuer Use-Cases
+  // gedacht, in denen man den Einflug eines stellaren Stoerers sehen
+  // wollte, hat aber bei normalen Injects gestoert.
   dragging = false;
   injectMarked = false;   // Marker verschwindet nach Inject — folgende
                           // Klicks injizieren weiterhin bei derselben
@@ -3838,7 +3947,12 @@ document.getElementById('float-inject').addEventListener('click', function(e) {
   if (e.shiftKey) doInjectCloud();
   else doInject();
 });
-document.getElementById('float-recenter').addEventListener('click', () => fitZoomToSystem(true));
+document.getElementById('float-recenter').addEventListener('click', () => {
+  // Recenter hebt einen aktiven Fokus immer mit auf — sonst zoomt
+  // fitZoomToSystem nur auf den fokussierten Body, nicht aufs System.
+  focusBody = null;
+  fitZoomToSystem(true);
+});
 document.getElementById('btn-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('mob-clear-pert').addEventListener('click', doClearPerturbers);
 
@@ -4035,10 +4149,11 @@ canvas.addEventListener('mousemove', function(e) {
 });
 
 // Hit-Test: liefert den Body unter Bildschirm-Position (sx,sy) oder null.
-// Toleranz-Radius 15 px, damit auch winzige Bodies (Asteroiden) klickbar
-// sind. Nimmt den nahestliegenden Treffer.
-function bodyAtScreen(sx, sy) {
-  let hit = null, bestDist = 15;
+// Toleranz-Radius optional (Default 15 px fuer Maus). Bei Touch wird ein
+// groesserer Radius uebergeben, weil die Fingerflaeche viel breiter ist
+// als ein Mauszeiger.
+function bodyAtScreen(sx, sy, tolerance) {
+  let hit = null, bestDist = tolerance || 15;
   for (const b of bodies) {
     if (!b.visible) continue;
     const [bx, by] = worldToScreen(b.x, b.y);
@@ -4280,9 +4395,22 @@ canvas.addEventListener('touchend', function(e) {
   e.preventDefault();
   lastTouchTs = Date.now();
 
-  // Loslassen waehrend der Long-Press-Wartezeit: Inject nicht armieren.
+  // Loslassen waehrend der Long-Press-Wartezeit: kein Inject (das wuerde
+  // 500 ms Halten brauchen), stattdessen als kurzer Tap interpretieren.
+  // - Tap auf Body -> Fokus setzen
+  // - Tap ins Leere -> Fokus aufheben (auch wenn keiner aktiv war: no-op)
+  // Hit-Test mit grosszuegigerem Radius (35 px) und Y-Offset (-20 px), da
+  // der Finger den eigentlichen Treffpunkt visuell verdeckt — User
+  // tippt typischerweise UNTER den anvisierten Body.
   if (touchState === 'wait-longpress') {
     cancelLongPress();
+    const t = e.changedTouches[0];
+    if (t) {
+      const hit = bodyAtScreen(t.clientX, t.clientY - 20, 35);
+      focusBody = hit;
+      injectMarked = false;
+      if (hit && navigator.vibrate) navigator.vibrate(10);
+    }
     touchState = 'idle';
     return;
   }
@@ -4307,6 +4435,52 @@ canvas.addEventListener('touchend', function(e) {
     dragging = false;
   }
 }, { passive: false });
+
+// --- Slider-Lupe: bei Touch-Drag auf <input type="range"> wird der
+// aktuelle Wert in einer Bubble oberhalb des Fingers angezeigt, damit
+// der Finger den winzigen .val-Span nicht verdeckt.
+(function() {
+  const bubble = document.getElementById('slider-bubble');
+  if (!bubble) return;
+
+  function getDisplayValue(input) {
+    // .val-Span im umgebenden <label> hat den formatierten Wert (z. B.
+    // "1,0 M⊕" statt input.value="0"). Fallback: input.value.
+    const lbl = input.previousElementSibling;
+    if (lbl && lbl.tagName === 'LABEL') {
+      const v = lbl.querySelector('.val');
+      if (v) return v.textContent;
+    }
+    return input.value;
+  }
+  function show(input, x, y) {
+    bubble.textContent = getDisplayValue(input);
+    bubble.style.left = x + 'px';
+    bubble.style.top = y + 'px';
+    bubble.classList.add('show');
+  }
+  function hide() { bubble.classList.remove('show'); }
+
+  document.addEventListener('touchstart', function(e) {
+    const t = e.target;
+    if (t && t.tagName === 'INPUT' && t.type === 'range') {
+      const tp = e.touches[0];
+      show(t, tp.clientX, tp.clientY);
+    }
+  }, { passive: true });
+  document.addEventListener('touchmove', function(e) {
+    const t = e.target;
+    if (t && t.tagName === 'INPUT' && t.type === 'range') {
+      const tp = e.touches[0];
+      show(t, tp.clientX, tp.clientY);
+    }
+  }, { passive: true });
+  document.addEventListener('touchend', function(e) {
+    const t = e.target;
+    if (t && t.tagName === 'INPUT' && t.type === 'range') hide();
+  }, { passive: true });
+  document.addEventListener('touchcancel', hide, { passive: true });
+})();
 
 canvas.addEventListener('touchcancel', function(e) {
   cancelLongPress();
@@ -4339,6 +4513,19 @@ canvas.addEventListener('touchcancel', function(e) {
 // --- Init ---
 refreshScenarioOptions();   // gespeicherte Konfigurationen ins Menue
 initInjectControls();       // Browser-Form-Restore neutralisieren
+// Belt-Slider auf persistierte Werte setzen (Default 800 / 600).
+['belt-ab-slider', 'mob-belt-ab-slider'].forEach(id => {
+  const el = document.getElementById(id); if (el) el.value = BELT_AB_COUNT;
+});
+['belt-kb-slider', 'mob-belt-kb-slider'].forEach(id => {
+  const el = document.getElementById(id); if (el) el.value = BELT_KB_COUNT;
+});
+['belt-ab-val', 'mob-belt-ab-val'].forEach(id => {
+  const el = document.getElementById(id); if (el) el.textContent = BELT_AB_COUNT;
+});
+['belt-kb-val', 'mob-belt-kb-val'].forEach(id => {
+  const el = document.getElementById(id); if (el) el.textContent = BELT_KB_COUNT;
+});
 let startScenario = 'Sonnensystem';
 try {
   const s = localStorage.getItem('sim_scenario');
