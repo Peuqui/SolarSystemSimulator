@@ -12,11 +12,12 @@ statischen Webserver ausliefern.
 
 ## Features
 
-- **15 vordefinierte Szenarien**: Sonnensystem, TRAPPIST-1, Alpha Centauri,
-  Kepler-16, Kepler-47 (Doppelstern + 3 Planeten), Trisolaris (3 Sonnen),
-  Lagrange-Konstellationen (stabil/instabil), Trojaner (L4), Figur-8-
-  Choreografie, Butterfly I, Moth I, Goggles, Yarn, „Leeres System" zum
-  freien Bauen
+- **16 vordefinierte Szenarien**: Sonnensystem, Sonnensystem mit
+  Asteroidengürteln (Asteroiden- und Kuipergürtel, Anzahl per Slider
+  konfigurierbar), TRAPPIST-1, Alpha Centauri, Kepler-16, Kepler-47
+  (Doppelstern + 3 Planeten), Trisolaris (3 Sonnen), Lagrange-
+  Konstellationen (stabil/instabil), Trojaner (L4), Figur-8-Choreografie,
+  Butterfly I, Moth I, Goggles, Yarn, „Leeres System" zum freien Bauen
 - **Störmassen interaktiv injizieren** — Position, Masse (10⁻³ bis 10⁶
   Erdmassen, inkl. Sternen ab ~80 M⊕), Geschwindigkeit und Richtung
 - **Echtzeit-N-Body-Integration** mit konfigurierbarem Zeitschritt und

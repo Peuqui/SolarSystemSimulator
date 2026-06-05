@@ -9,6 +9,15 @@
 <title>Sonnensystem-Simulator — N-Körper-Gravitation</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+/* Verhindert das System-Kontextmenu (Kopieren/Teilen/Auswählen) bei
+   Long-Press auf Buttons und Canvas — wir nutzen Long-Press selbst als
+   eigene Geste (z. B. Wolke statt Rogue, Inject-Position armieren). */
+button, canvas, #toggle-sidebar, #help-toggle, #mobile-menu-btn,
+#float-inject, #float-recenter, #mobile-controls, #mobile-actions {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 body { background: #000; color: #ccc; font-family: 'Segoe UI', monospace; overflow: hidden; width: 100%; height: 100vh; touch-action: none; }
 canvas { display: block; cursor: crosshair; width: 100%; height: 100%; }
 
@@ -57,6 +66,19 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 /* Eingabefeld mit noch nicht uebernommener Aenderung */
 .pending { border-color: #ddaa44 !important; background: #2e2818 !important; }
 
+#collision-badge {
+  position: absolute; top: 12px; right: 48px; z-index: 18;
+  background: rgba(120,30,30,0.85); color: #ffbb88;
+  border: 1px solid #aa4444;
+  padding: 4px 10px; border-radius: 4px;
+  font-size: 12px; font-weight: bold;
+  font-family: 'Segoe UI', monospace;
+  display: none;
+  pointer-events: none;
+  -webkit-user-select: none; user-select: none;
+}
+#collision-badge.show { display: inline-block; }
+
 #help-toggle {
   position: absolute; top: 8px; right: 8px; z-index: 20;
   width: 32px; height: 32px; display: flex; align-items: center;
@@ -68,14 +90,27 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 #help-toggle:hover { background: #333; border-color: #555; }
 #info-panel {
   position: absolute; top: 48px; right: 8px;
-  background: rgba(10,12,20,0.95); border: 1px solid #2a2a3a;
-  padding: 10px 14px; font-size: 12px; z-index: 19; color: #aaa;
-  max-width: 280px; border-radius: 4px;
-  height: auto; max-height: 220px; overflow-y: auto;
-  display: none; line-height: 1.5;
+  background: rgba(10,12,20,0.96); border: 1px solid #2a2a3a;
+  padding: 14px 18px; font-size: 13px; z-index: 19; color: #ccc;
+  max-width: 460px; width: calc(100vw - 24px); border-radius: 6px;
+  max-height: 75vh; overflow-y: auto;
+  display: none; line-height: 1.55;
+  touch-action: pan-y;   /* vertikales Scrollen im Panel auf Mobile */
 }
 #info-panel.show { display: block; }
 #info-panel span { color: #7af; }
+#info-panel h3 {
+  color: #ffd866; font-size: 13px; font-weight: 600;
+  margin: 10px 0 4px; border-bottom: 1px solid #333; padding-bottom: 3px;
+}
+#info-panel h3:first-child { margin-top: 0; }
+#info-panel .ico {
+  display: inline-block; min-width: 1.4em; text-align: center;
+  color: #ffd866; font-weight: bold;
+}
+#info-panel table { border-collapse: collapse; margin: 2px 0; }
+#info-panel td { padding: 2px 8px 2px 0; vertical-align: top; }
+#info-panel td:first-child { color: #ffd866; white-space: nowrap; }
 
 #perturber-info {
   position: absolute; top: 10px; right: 10px;
@@ -96,14 +131,39 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 /* Mobile overlay buttons */
 #mobile-controls {
   display: none;
-  position: absolute; bottom: 10px; left: 10px;
+  position: absolute; bottom: 46px; left: 10px;
   z-index: 15;
+  max-width: 260px;
+  flex-wrap: wrap;
 }
 #mobile-controls button {
-  width: 48px; height: 48px; border-radius: 50%;
-  font-size: 20px; margin: 3px; display: inline-flex;
+  width: 44px; height: 44px; border-radius: 50%;
+  font-size: 18px; margin: 3px; display: inline-flex;
   align-items: center; justify-content: center;
 }
+#mobile-controls button#mob-recenter {
+  background: #335577; border: 1px solid #5588aa; color: #fff;
+}
+#mobile-controls button#mob-recenter:active { background: #4477aa; }
+
+/* Rechte Aktions-Reihe (Mobile): horizontal, links neben dem Inject-FAB.
+   Buttons "schwerer Eingriff" (Bodies entfernen) — rot, separat von der
+   linken Steuerungsleiste, alles in einer unteren Zeile. */
+#mobile-actions {
+  display: none;
+  position: absolute; bottom: 46px; right: 88px;
+  z-index: 15;
+  flex-direction: row;
+  gap: 6px;
+}
+#mobile-actions button {
+  width: 44px; height: 44px; border-radius: 50%;
+  font-size: 18px; display: flex; align-items: center; justify-content: center;
+  background: #5a2222; color: #f88; border: 1px solid #a44;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#mobile-actions button:active { background: #7a3333; }
 
 /* Floating-Inject-Button — unten mittig, auf Desktop UND Mobile sichtbar.
    Prominent platziert weil "Rogue injizieren" die Hauptinteraktion
@@ -194,17 +254,19 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 @media (max-width: 1024px) {
   #sidebar { display: none !important; }
   #toggle-sidebar { display: none !important; }
-  #mobile-controls { display: block; }
+  #mobile-controls { display: flex; }
+  #mobile-actions { display: flex; }
+  #float-recenter { display: none !important; }
   #mobile-sheet { display: block; }
   #mobile-menu-btn { display: flex; }
-  #info-panel { font-size: 10px; bottom: 60px; right: 5px; padding: 6px 10px; max-width: 220px; }
 }
 body.is-mobile #sidebar { display: none !important; }
 body.is-mobile #toggle-sidebar { display: none !important; }
-body.is-mobile #mobile-controls { display: block; }
+body.is-mobile #mobile-controls { display: flex; }
+body.is-mobile #mobile-actions { display: flex; }
+body.is-mobile #float-recenter { display: none !important; }
 body.is-mobile #mobile-sheet { display: block; }
 body.is-mobile #mobile-menu-btn { display: flex; }
-body.is-mobile #info-panel { font-size: 10px; bottom: 60px; right: 5px; padding: 6px 10px; max-width: 220px; }
 
 /* Range slider track styling */
 input[type=range] {
@@ -300,9 +362,9 @@ input[type=range] {
     </div>
     <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
     <label data-i18n-title="tt.belt" style="margin-top:6px;"><span data-i18n="lbl.belt-ab">Asteroidengürtel</span> <span class="val" id="belt-ab-val">800</span></label>
-    <input type="range" autocomplete="off" id="belt-ab-slider" min="0" max="3000" step="50" value="800">
+    <input type="range" autocomplete="off" id="belt-ab-slider" min="0" max="4.7" step="0.02" value="2.9">
     <label data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="belt-kb-val">600</span></label>
-    <input type="range" autocomplete="off" id="belt-kb-slider" min="0" max="3000" step="50" value="600">
+    <input type="range" autocomplete="off" id="belt-kb-slider" min="0" max="4.7" step="0.02" value="2.78">
   </details>
   <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage/Schritt)</span> <span class="val" id="dt-val">1</span></label>
@@ -352,10 +414,13 @@ input[type=range] {
   <label data-i18n-title="tt.gpu">
     <input type="checkbox" id="chk-gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span>
   </label>
+  <label data-i18n-title="tt.ast-ast">
+    <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
+  </label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
   <label><span data-i18n="lbl.inject-mass">Masse</span> <span class="val" id="p-mass-val">1,0 M⊕</span></label>
-  <input type="range" autocomplete="off"id="p-mass" min="-3" max="16" step="0.1" value="0">
+  <input type="range" autocomplete="off"id="p-mass" min="-3" max="16" step="0.1" value="3">
   <label><span data-i18n="lbl.inject-speed">Geschwindigkeit (km/s)</span> <span class="val" id="p-speed-val">30</span></label>
   <input type="range" autocomplete="off"id="p-speed" min="-1" max="3.5" step="0.005" value="1.477">
   <label data-i18n-title="tt.angle"><span data-i18n="lbl.inject-angle">Kompass-Kurs (°)</span> <span class="val" id="p-angle-val">270&deg;</span></label>
@@ -394,6 +459,8 @@ input[type=range] {
 
 <div id="toggle-sidebar" data-i18n-title="tt.toggle-sidebar">&#9664;</div>
 
+<div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span></div>
+
 <div id="help-toggle" data-i18n-title="tt.help">&#x1F4A1;</div>
 <div id="info-panel" data-i18n-html="help.body">
   Mausrad: Zoom &nbsp;|&nbsp; Rechts-/Mittelklick: Verschieben<br>
@@ -415,6 +482,13 @@ input[type=range] {
   <button id="mob-zoom-in" title="Zoom +" style="font-size:24px;">+</button>
   <button id="mob-zoom-out" title="Zoom &minus;" style="font-size:24px;">&minus;</button>
   <button id="mob-reset" title="Reset">&#x21BB;</button>
+  <button id="mob-recenter" data-i18n-title="tt.recenter" title="Auf System zentrieren">&#x2316;</button>
+</div>
+
+<div id="mobile-actions">
+  <button id="mob-fab-clear-escaping" class="danger" data-i18n-title="tt.clear-escaping" title="Flüchtende entfernen">&#x2197;</button>
+  <button id="mob-fab-clear-pert" class="danger" data-i18n-title="tt.fab-clear-pert" title="Alle Rogues löschen">&#x1FA90;</button>
+  <button id="mob-fab-clear-clouds" class="danger" data-i18n-title="tt.fab-clear-clouds" title="Alle Wolken löschen">&#x1FAA8;</button>
 </div>
 
 <!-- Floating-Inject-Button — auf allen Bildschirmgr&ouml;&szlig;en sichtbar -->
@@ -455,9 +529,9 @@ input[type=range] {
       <button id="mob-btn-import-cfg" data-i18n="btn.import" style="flex:1; font-size:12px;">Import</button>
     </div>
     <label data-i18n-title="tt.belt" style="margin-top:6px;"><span data-i18n="lbl.belt-ab">Asteroidengürtel</span> <span class="val" id="mob-belt-ab-val">800</span></label>
-    <input type="range" autocomplete="off" id="mob-belt-ab-slider" min="0" max="3000" step="50" value="800">
+    <input type="range" autocomplete="off" id="mob-belt-ab-slider" min="0" max="4.7" step="0.02" value="2.9">
     <label data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="mob-belt-kb-val">600</span></label>
-    <input type="range" autocomplete="off" id="mob-belt-kb-slider" min="0" max="3000" step="50" value="600">
+    <input type="range" autocomplete="off" id="mob-belt-kb-slider" min="0" max="4.7" step="0.02" value="2.78">
   </details>
   <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage)</span> <span class="val" id="mob-dt-val">1</span></label>
@@ -482,10 +556,11 @@ input[type=range] {
   <label data-i18n-title="tt.bary-no-rogue"><input type="checkbox" id="mob-chk-bary-no-rogue" checked> <span data-i18n="lbl.exclude-rogues-bary">Rogues bei Schwerpunkt ignorieren</span></label>
   <label data-i18n-title="tt.worker"><input type="checkbox" id="mob-chk-worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span></label>
   <label data-i18n-title="tt.gpu"><input type="checkbox" id="mob-chk-gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
+  <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
   <label><span data-i18n="lbl.inject-mass">Masse</span> <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
-  <input type="range" autocomplete="off"id="mob-p-mass" min="-3" max="16" step="0.1" value="0">
+  <input type="range" autocomplete="off"id="mob-p-mass" min="-3" max="16" step="0.1" value="3">
   <label><span data-i18n="lbl.inject-speed">Geschwindigkeit (km/s)</span> <span class="val" id="mob-p-speed-val">30</span></label>
   <input type="range" autocomplete="off"id="mob-p-speed" min="-1" max="3.5" step="0.005" value="1.477">
   <label data-i18n-title="tt.angle"><span data-i18n="lbl.inject-angle">Kompass-Kurs (°)</span> <span class="val" id="mob-p-angle-val">270&deg;</span></label>
@@ -538,6 +613,19 @@ input[type=range] {
 if (/Mobi|Android|iPhone|iPad|iPod|Tablet/i.test(navigator.userAgent)) {
   document.body.classList.add('is-mobile');
 }
+
+// Long-Press auf Buttons / Canvas darf NICHT das System-Kontextmenu
+// ("Kopieren | Teilen | Auswaehlen | Im Web suchen ...") ausloesen — wir
+// verwenden Long-Press selbst als Geste. Android Chrome respektiert
+// -webkit-touch-callout nicht, daher zusaetzlich contextmenu blocken.
+document.addEventListener('contextmenu', function(e) {
+  const t = e.target;
+  if (!t) return;
+  if (t.tagName === 'BUTTON' || t.tagName === 'CANVAS' ||
+      t.closest('#mobile-controls, #mobile-actions, #help-toggle, #toggle-sidebar, #mobile-menu-btn, #float-inject, #float-recenter')) {
+    e.preventDefault();
+  }
+});
 
 // ============================================================
 //  I18N — Deutsch / Englisch
@@ -636,8 +724,14 @@ const I18N = {
     'tt.toggle-sidebar': 'Sidebar ein/ausblenden',
     'tt.help': 'Steuerung anzeigen',
     'tt.menu': 'Einstellungen',
-    'tt.inject-btn': 'Rogue injizieren',
+    'tt.inject-btn': 'Tippen = Rogue injizieren, lange halten = Wolke injizieren',
     'tt.recenter': 'Neu zentrieren',
+    'tt.fab-clear-pert': 'Alle Rogues löschen',
+    'tt.fab-clear-clouds': 'Alle Wolken löschen',
+    'tt.collisions': 'Zähler echter Kollisions-Ereignisse (Berührung Planet × Planet oder Planet × Asteroid)',
+    'badge.collisions': 'Kollisionen',
+    'lbl.ast-ast': 'Asteroid × Asteroid Kollisionen',
+    'tt.ast-ast': 'Prüft auch Asteroid × Asteroid auf direkte Kollisionen. Bei vielen Bodies (>2000) merklich teurer pro Frame; default aus.',
     'tt.lock': 'Fokus aufheben',
     'tt.body-mass': 'Masse in Erdmassen',
     'tt.body-vel': 'Geschwindigkeit in km/s',
@@ -668,15 +762,40 @@ const I18N = {
     'misc.toggle-sidebar': 'Sidebar ein/ausblenden',
     'page.title': 'Sonnensystem-Simulator — N-Körper-Gravitation',
     'help.body':
-      'Mausrad: Zoom &nbsp;|&nbsp; Rechts-/Mittelklick: Verschieben<br>' +
-      'Linksklick auf Leerraum: Rogue-Position wählen<br>' +
-      'Klick+Ziehen: Geschwindigkeitsvektor setzen<br>' +
-      '<span style="color:#7af;">Linksklick auf einen Körper:</span> Fokus setzen (Kamera folgt)<br>' +
-      '<span style="color:#7af;">Shift+Klick</span> auf den Inject-Button: Wolke statt Rogue<br>' +
-      'Touch: 2-Finger=Zoom/Pan, 1-Finger lang halten=Rogue<br>' +
-      '<span>Taste:</span> P=Pause, R=Reset, Space=Schritt, <span style="color:#7af;">Esc=Fokus aufheben</span><br>' +
-      '<span style="color:#7af;">Einheiten:</span> M⊕ = Erdmasse (5,97 · 10<sup>24</sup>&nbsp;kg) &nbsp;|&nbsp; ' +
-      'M☉ = Sonnenmasse (1,99 · 10<sup>30</sup>&nbsp;kg, ≈ 333.000&nbsp;M⊕)',
+      '<h3>Desktop — Maus &amp; Tastatur</h3>' +
+      '<table>' +
+        '<tr><td>Mausrad</td><td>Zoom</td></tr>' +
+        '<tr><td>Rechts-/Mittelklick + ziehen</td><td>Bild verschieben</td></tr>' +
+        '<tr><td>Linksklick + ziehen</td><td>Rogue-Position + Geschwindigkeitsvektor</td></tr>' +
+        '<tr><td>Linksklick auf Körper</td><td>Fokus setzen (Kamera folgt)</td></tr>' +
+        '<tr><td>Shift + Klick auf 🞋</td><td>Wolke statt Rogue</td></tr>' +
+        '<tr><td>P / R / Leertaste</td><td>Pause / Reset / Einzelschritt</td></tr>' +
+        '<tr><td>Esc</td><td>Fokus aufheben</td></tr>' +
+      '</table>' +
+      '<h3>Mobile — Gesten</h3>' +
+      '<table>' +
+        '<tr><td>1 Finger antippen auf Körper</td><td>Fokus setzen / aufheben</td></tr>' +
+        '<tr><td>1 Finger lang halten</td><td>Rogue-Position armieren</td></tr>' +
+        '<tr><td>lang halten + ziehen</td><td>Geschwindigkeitsvektor</td></tr>' +
+        '<tr><td>2 Finger Pinch</td><td>Zoom</td></tr>' +
+        '<tr><td>2 Finger ziehen</td><td>Bild verschieben</td></tr>' +
+      '</table>' +
+      '<h3>Mobile — Buttons unten</h3>' +
+      '<table>' +
+        '<tr><td><span class="ico">⏸</span></td><td>Pause / Weiter</td></tr>' +
+        '<tr><td><span class="ico">+</span> <span class="ico">−</span></td><td>Zoom rein / raus</td></tr>' +
+        '<tr><td><span class="ico">↻</span></td><td>Szenario zurücksetzen</td></tr>' +
+        '<tr><td><span class="ico">⌖</span></td><td>Auf System zentrieren (Fokus aufheben)</td></tr>' +
+        '<tr><td><span class="ico">↗</span></td><td>Flüchtende Körper entfernen</td></tr>' +
+        '<tr><td><span class="ico">🪐</span></td><td>Alle Rogues löschen</td></tr>' +
+        '<tr><td><span class="ico">🪨</span></td><td>Alle Asteroiden-Wolken löschen</td></tr>' +
+        '<tr><td><span class="ico">🞋</span> tippen</td><td>Rogue injizieren</td></tr>' +
+        '<tr><td><span class="ico">🞋</span> lange halten</td><td>Asteroiden-Wolke injizieren</td></tr>' +
+      '</table>' +
+      '<h3>Einheiten</h3>' +
+      'M⊕ = Erdmasse (5,97 · 10<sup>24</sup>&nbsp;kg)<br>' +
+      'M☉ = Sonnenmasse (1,99 · 10<sup>30</sup>&nbsp;kg, ≈ 333.000&nbsp;M⊕)<br>' +
+      'AU = Astronomische Einheit (1,496 · 10<sup>11</sup>&nbsp;m, Erde–Sonne)',
   },
   en: {
     'sec.scenario': '🌌 Scenario',
@@ -766,8 +885,14 @@ const I18N = {
     'tt.toggle-sidebar': 'Show/hide sidebar',
     'tt.help': 'Show controls',
     'tt.menu': 'Settings',
-    'tt.inject-btn': 'Inject rogue',
+    'tt.inject-btn': 'Tap = inject rogue, long press = inject cloud',
     'tt.recenter': 'Recenter',
+    'tt.fab-clear-pert': 'Clear all rogues',
+    'tt.fab-clear-clouds': 'Clear all clouds',
+    'tt.collisions': 'Counter of real collision events (contact planet × planet or planet × asteroid)',
+    'badge.collisions': 'Collisions',
+    'lbl.ast-ast': 'Asteroid × asteroid collisions',
+    'tt.ast-ast': 'Also tests asteroid × asteroid for direct collisions. Noticeably more expensive per frame with many bodies (>2000); default off.',
     'tt.lock': 'Release focus',
     'tt.body-mass': 'Mass in Earth masses',
     'tt.body-vel': 'Speed in km/s',
@@ -795,15 +920,40 @@ const I18N = {
     'misc.toggle-sidebar': 'Show/hide sidebar',
     'page.title': 'Solar System Simulator — N-body gravitation',
     'help.body':
-      'Mouse wheel: zoom &nbsp;|&nbsp; Right/middle click: pan<br>' +
-      'Left click on empty space: choose rogue position<br>' +
-      'Click+drag: set velocity vector<br>' +
-      '<span style="color:#7af;">Left click on a body:</span> set focus (camera follows)<br>' +
-      '<span style="color:#7af;">Shift+click</span> on the inject button: cloud instead of rogue<br>' +
-      'Touch: 2-finger=zoom/pan, 1-finger long press=rogue<br>' +
-      '<span>Keys:</span> P=pause, R=reset, Space=step, <span style="color:#7af;">Esc=release focus</span><br>' +
-      '<span style="color:#7af;">Units:</span> M⊕ = Earth mass (5.97 · 10<sup>24</sup>&nbsp;kg) &nbsp;|&nbsp; ' +
-      'M☉ = solar mass (1.99 · 10<sup>30</sup>&nbsp;kg, ≈ 333,000&nbsp;M⊕)',
+      '<h3>Desktop — mouse &amp; keyboard</h3>' +
+      '<table>' +
+        '<tr><td>Mouse wheel</td><td>Zoom</td></tr>' +
+        '<tr><td>Right/middle click + drag</td><td>Pan view</td></tr>' +
+        '<tr><td>Left click + drag</td><td>Rogue position + velocity vector</td></tr>' +
+        '<tr><td>Left click on body</td><td>Set focus (camera follows)</td></tr>' +
+        '<tr><td>Shift + click on 🞋</td><td>Cloud instead of rogue</td></tr>' +
+        '<tr><td>P / R / Space</td><td>Pause / reset / single step</td></tr>' +
+        '<tr><td>Esc</td><td>Release focus</td></tr>' +
+      '</table>' +
+      '<h3>Mobile — gestures</h3>' +
+      '<table>' +
+        '<tr><td>1 finger tap on body</td><td>Set / release focus</td></tr>' +
+        '<tr><td>1 finger long press</td><td>Arm rogue position</td></tr>' +
+        '<tr><td>long press + drag</td><td>Velocity vector</td></tr>' +
+        '<tr><td>2 finger pinch</td><td>Zoom</td></tr>' +
+        '<tr><td>2 finger drag</td><td>Pan view</td></tr>' +
+      '</table>' +
+      '<h3>Mobile — bottom buttons</h3>' +
+      '<table>' +
+        '<tr><td><span class="ico">⏸</span></td><td>Pause / resume</td></tr>' +
+        '<tr><td><span class="ico">+</span> <span class="ico">−</span></td><td>Zoom in / out</td></tr>' +
+        '<tr><td><span class="ico">↻</span></td><td>Reset scenario</td></tr>' +
+        '<tr><td><span class="ico">⌖</span></td><td>Center on system (release focus)</td></tr>' +
+        '<tr><td><span class="ico">↗</span></td><td>Remove escaping bodies</td></tr>' +
+        '<tr><td><span class="ico">🪐</span></td><td>Clear all rogues</td></tr>' +
+        '<tr><td><span class="ico">🪨</span></td><td>Clear all asteroid clouds</td></tr>' +
+        '<tr><td><span class="ico">🞋</span> tap</td><td>Inject rogue</td></tr>' +
+        '<tr><td><span class="ico">🞋</span> long press</td><td>Inject asteroid cloud</td></tr>' +
+      '</table>' +
+      '<h3>Units</h3>' +
+      'M⊕ = Earth mass (5.97 · 10<sup>24</sup>&nbsp;kg)<br>' +
+      'M☉ = solar mass (1.99 · 10<sup>30</sup>&nbsp;kg, ≈ 333,000&nbsp;M⊕)<br>' +
+      'AU = astronomical unit (1.496 · 10<sup>11</sup>&nbsp;m, Earth–Sun)',
   }
 };
 
@@ -1113,9 +1263,9 @@ let BELT_AB_COUNT = 800;
 let BELT_KB_COUNT = 600;
 try {
   const a = parseInt(localStorage.getItem('sim_belt_ab') || '');
-  if (Number.isFinite(a) && a >= 0 && a <= 5000) BELT_AB_COUNT = a;
+  if (Number.isFinite(a) && a >= 0 && a <= 50000) BELT_AB_COUNT = a;
   const k = parseInt(localStorage.getItem('sim_belt_kb') || '');
-  if (Number.isFinite(k) && k >= 0 && k <= 5000) BELT_KB_COUNT = k;
+  if (Number.isFinite(k) && k >= 0 && k <= 50000) BELT_KB_COUNT = k;
 } catch (e) {}
 
 function buildSolarSystemWithBelts() {
@@ -1399,6 +1549,12 @@ function loadScenario(name) {
   perturbers = [];
   perturberCounter = 0;
   fragmentCounter = 0;
+  totalCollisions = 0;
+  collisionFlashes.length = 0;
+  const cc = document.getElementById('collision-count');
+  if (cc) cc.textContent = '0';
+  const cb = document.getElementById('collision-badge');
+  if (cb) cb.classList.remove('show');
   simTime = 0;
   realElapsedMs = 0; lastTickMs = 0;
   injectMarked = false;
@@ -1439,6 +1595,12 @@ function restoreState(state) {
     trails[s.name] = [];
   }
   perturbers = []; perturberCounter = 0; fragmentCounter = 0;
+  totalCollisions = 0;
+  collisionFlashes.length = 0;
+  const cc2 = document.getElementById('collision-count');
+  if (cc2) cc2.textContent = '0';
+  const cb2 = document.getElementById('collision-badge');
+  if (cb2) cb2.classList.remove('show');
   simTime = 0; injectMarked = false;
   realElapsedMs = 0; lastTickMs = 0;
   computeAccelerations();
@@ -2167,6 +2329,41 @@ function draw() {
     ctx.globalAlpha = prevAlpha;
   }
 
+  // Kollisions-Explosionen: pro Treffer eine kleine, helle, gefuellte
+  // Scheibe mit Radial-Gradient. Waechst in den ersten ~30 % der
+  // Lebenszeit auf max 28 px (oder skaliert mit Body-Groesse, gedeckelt),
+  // dann verblasst sie von INNEN nach AUSSEN — das Zentrum wird zuerst
+  // dunkel, der orange Rand haelt am laengsten. Sieht aus wie eine
+  // Druckwelle, nicht wie ein flacher Ring.
+  if (collisionFlashes.length > 0) {
+    const now = performance.now();
+    for (let i = collisionFlashes.length - 1; i >= 0; i--) {
+      const f = collisionFlashes[i];
+      const t = (now - f.t) / COLLISION_FLASH_MS;   // 0..1
+      if (t >= 1) { collisionFlashes.splice(i, 1); continue; }
+      const [sx, sy] = worldToScreen(f.x, f.y);
+      // Zielradius: klein, aber je nach Body-Groesse leicht skaliert.
+      // Untergrenze 14 px, Obergrenze 28 px.
+      const targetR = Math.max(14, Math.min(28, f.scale * cam.zoom * 80 * 6));
+      // Wachstumsphase: schnell expandieren bis 35 % Lebenszeit, dann konstant.
+      const r = targetR * Math.min(1, t / 0.35);
+      // Alpha-Verlauf pro Gradient-Stop — Zentrum verblasst schnellst,
+      // Rand am langsamsten. So "höhlt" sich die Scheibe aus.
+      const centerA = Math.max(0, 1 - t * 2.4);
+      const midA    = Math.max(0, 1 - t * 1.4);
+      const edgeA   = Math.max(0, 1 - t * 0.9);
+      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+      grad.addColorStop(0,    `rgba(255, 250, 210, ${centerA.toFixed(3)})`);
+      grad.addColorStop(0.45, `rgba(255, 190, 80,  ${midA.toFixed(3)})`);
+      grad.addColorStop(0.85, `rgba(230, 110, 30,  ${(edgeA*0.7).toFixed(3)})`);
+      grad.addColorStop(1,    'rgba(200, 70, 20, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   // Force vectors
   if (showVectors) {
     for (let i = 0; i < bodies.length; i++) {
@@ -2495,7 +2692,7 @@ function advance(dtYears) {
   while (remaining > 1e-12 && guard++ < 100000) {
     const subDt = Math.min(remaining, adaptiveSubDt());
     step(subDt);
-    handleCollisions();
+    handleCollisions(subDt);
     simTime += subDt * 365.25;
     recordTrails();
     remaining -= subDt;
@@ -2670,7 +2867,7 @@ async function advanceAsync(dtYears) {
     return;
   }
   // Kollisionen + Trails 1x pro Frame im Main (vorher pro Sub-Step).
-  handleCollisions();
+  handleCollisions(dtYears);
   simTime += dtYears * 365.25;
   recordTrails();
   _baryDirty = true;
@@ -2682,6 +2879,7 @@ async function advanceAsync(dtYears) {
 //  pro Frame. Bei N >> 1000 deutlich schneller als CPU/Worker.
 // ============================================================
 var useGPU = false;        // Toggle (default aus — experimentell)
+var astAstCollisions = false;  // Toggle Asteroid x Asteroid (default aus, teuer)
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
 
@@ -2919,6 +3117,14 @@ initWebGPU().then(g => { gpu = g; });
 //  v_impact < 1.5*v_escape -> Verschmelzung, sonst Zerbersten.
 // ============================================================
 let fragmentCounter = 0;
+
+// Kollisions-Visualisierung: pro echtem Treffer eine deutlich sichtbare
+// Explosion am Aufprallort, die ueber ~1100 ms verblasst. Plus Zaehler in
+// der Statistik — so erkennt man, ob ein vorbeifliegendes Objekt nur
+// gravitativ abgelenkt wurde oder wirklich getroffen hat.
+const collisionFlashes = [];
+const COLLISION_FLASH_MS = 1100;
+let totalCollisions = 0;
 let perturberCounter = 0;   // monoton — eindeutige Stoermassen-Namen
 
 function removeBody(b) {
@@ -2956,7 +3162,9 @@ function merge(a, b) {
 }
 
 function shatter(a, b) {
-  // Zerbersten in 5 Fragmente — Gesamtmasse und -impuls bleiben erhalten.
+  // Symmetrisches Zerbersten in 5 Fragmente — Gesamtmasse und -impuls
+  // bleiben erhalten. Wird in _tryCollide nur noch fuer Koerper × Koerper
+  // aufgerufen (Asteroid × Koerper und Stern × X laufen ueber merge).
   const mt = a.mass + b.mass;
   const cx  = (a.mass*a.x  + b.mass*b.x)  / mt;
   const cy  = (a.mass*a.y  + b.mass*b.y)  / mt;
@@ -2990,6 +3198,7 @@ function shatter(a, b) {
   }
 }
 
+
 // Spatial-Hash Grid fuer Planet x Asteroid Kollisions-Tests.
 // Zellgroesse = 2x max(realR) — bei Sonne ~5e-3 AU.
 const COLL_CELL_AU = 0.01;
@@ -3003,23 +3212,83 @@ const _astCellMap = new Map();
 
 // Resolve eine einzelne Kollision (geometrische Beruehrung).
 // Returnt true wenn ein Merge/Shatter ausgeloest wurde (bodies-Array geaendert).
-function _tryCollide(a, b) {
+function _tryCollide(a, b, dtFrame) {
   const dx = b.x - a.x, dy = b.y - a.y;
   const touch = a.realR + b.realR;
-  if (dx*dx + dy*dy >= touch*touch) return false;
+  const touchSq = touch * touch;
+  // Phase 1: statischer Distanz-Check auf den aktuellen Snapshot.
+  let hit = (dx*dx + dy*dy) < touchSq;
+  // Phase 2: Continuous Collision Detection — falls die Bodies in
+  // diesem Frame mit hoher Relativ-Geschwindigkeit aneinander
+  // vorbeigeflogen waeren (Tunneling), prueft der parametrische
+  // Bahnschnitt ob sich ihre Trajektorien innerhalb des letzten Frames
+  // beruehrt haben. Loese |p_a(t) - p_b(t)|^2 = touch^2 fuer t in
+  // [-dtFrame, 0]:
+  //   A·t² + B·t + C = 0,   A = |dv|², B = 2·(d0·dv), C = |d0|² - touch²
+  if (!hit && dtFrame > 0) {
+    const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
+    const A = dvx*dvx + dvy*dvy;
+    if (A > 1e-30) {
+      const B = 2 * (dx*dvx + dy*dvy);
+      const C = dx*dx + dy*dy - touchSq;
+      const disc = B*B - 4*A*C;
+      if (disc >= 0) {
+        const sqD = Math.sqrt(disc);
+        const inv2A = 1 / (2*A);
+        const tEnter = (-B - sqD) * inv2A;
+        const tExit  = (-B + sqD) * inv2A;
+        // Bahnen ueberschneiden sich in [tEnter, tExit]. Wenn dieses
+        // Intervall mit [-dtFrame, 0] ueberlappt, gab es einen
+        // Treffer im letzten Frame.
+        if (tEnter <= 0 && tExit >= -dtFrame) hit = true;
+      }
+    }
+  }
+  if (!hit) return false;
   const vImp = Math.hypot(b.vx-a.vx, b.vy-a.vy);
   const vEsc = Math.sqrt(2 * G_AU * (a.mass + b.mass) / touch);
   const blackHoleInvolved = a.isBlackHole || b.isBlackHole;
-  if (blackHoleInvolved || vImp < 1.5 * vEsc) merge(a, b);
+  // Mittelpunkt fuer das Flash-Visual (vor merge/shatter merken, danach
+  // sind a/b ggf. nicht mehr in bodies).
+  const flashX = 0.5 * (a.x + b.x);
+  const flashY = 0.5 * (a.y + b.y);
+  // Reichweite des Rings skaliert grob mit dem groesseren der beiden
+  // Koerper, damit ein Planet-Asteroid-Treffer sichtbar groesser blitzt
+  // als ein Asteroid-Asteroid-Streifer.
+  const flashScale = Math.max(a.realR, b.realR);
+  const aIsAst = !!a.isAsteroid, bIsAst = !!b.isAsteroid;
+  // Verschmelzungs-Pfade (kein shatter):
+  //   Asteroid x Nicht-Asteroid → Asteroid wird absorbiert
+  //   Asteroid x Asteroid       → klumpen zu groesserem Asteroid
+  //   Stern beteiligt            → Stern schluckt
+  //   Schwarzes Loch beteiligt   → SL frisst
+  //   vImp < 1.5 * vEsc          → sticky merge
+  const asteroidImpact = aIsAst || bIsAst;
+  const starInvolved = !!a.isStar || !!b.isStar;
+  if (blackHoleInvolved || starInvolved || asteroidImpact || vImp < 1.5 * vEsc) merge(a, b);
   else shatter(a, b);
+  collisionFlashes.push({
+    x: flashX, y: flashY, scale: flashScale,
+    t: performance.now(),
+    asteroid: aIsAst || bIsAst,
+  });
+  totalCollisions++;
+  const countEl = document.getElementById('collision-count');
+  if (countEl) countEl.textContent = totalCollisions;
+  const badge = document.getElementById('collision-badge');
+  if (badge && !badge.classList.contains('show')) badge.classList.add('show');
   computeAccelerations();
   updatePerturberList();
   return true;
 }
 
-function handleCollisions() {
-  // Drei Phasen — Asteroid-Asteroid wird vollstaendig uebersprungen
-  // (gravitativ + Kollisions-irrelevant, geringe Querschnitte).
+function handleCollisions(dtFrame) {
+  // dtFrame ist die Zeit seit dem letzten Snapshot in Jahren (gleiche
+  // Einheit wie vx/vy). Wird an _tryCollide weitergegeben fuer den CCD-
+  // Bahn-Schnitt, der Tunneling bei hoher Relativgeschwindigkeit erfasst
+  // (Asteroid sausen sonst zwischen zwei Frames durch Planeten hindurch).
+  dtFrame = dtFrame || 0;
+  // Drei Phasen — Asteroid-Asteroid optional ueber Toggle (Phase 4).
   const planets = [];
   for (let i = 0; i < bodies.length; i++) {
     if (!bodies[i].visible) continue;
@@ -3028,7 +3297,7 @@ function handleCollisions() {
   // Phase 1: Planet x Planet — klassisches O(M^2), bei M ~ 10 trivial.
   for (let i = 0; i < planets.length; i++) {
     for (let j = i + 1; j < planets.length; j++) {
-      if (_tryCollide(planets[i], planets[j])) return;
+      if (_tryCollide(planets[i], planets[j], dtFrame)) return;
     }
   }
   // Phase 2: Asteroiden in Hash-Grid einsortieren (O(N_ast)).
@@ -3055,7 +3324,40 @@ function handleCollisions() {
         const cell = _astCellMap.get(kx + (cy + dy + HASH_OFF));
         if (!cell) continue;
         for (let ai = 0; ai < cell.length; ai++) {
-          if (_tryCollide(p, cell[ai])) return;
+          if (_tryCollide(p, cell[ai], dtFrame)) return;
+        }
+      }
+    }
+  }
+  // Phase 4 (optional, Toggle astAstCollisions): Asteroid x Asteroid.
+  // Pro Asteroid die eigenen + 3x3 Nachbarzellen abfragen. Jedes Paar
+  // wird per Pointer-Identitaet-Vergleich (a vs b) und Cell-Order nur
+  // einmal getestet — wir verlangen, dass a in der eigenen Zelle einen
+  // Vorgaengerindex hat oder in einer "fruehen" Nachbarzelle liegt.
+  // Einfacher Dedup-Ansatz: pro Asteroid eindeutige Sequenznummer.
+  if (astAstCollisions) {
+    // Sequenznummer pro Asteroid setzen.
+    let seq = 0;
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i];
+      if (b.visible && b.isAsteroid) b._astSeq = seq++;
+    }
+    for (let i = 0; i < bodies.length; i++) {
+      const a = bodies[i];
+      if (!a.visible || !a.isAsteroid) continue;
+      const cx = Math.floor(a.x * INV_COLL_CELL);
+      const cy = Math.floor(a.y * INV_COLL_CELL);
+      for (let dx = -1; dx <= 1; dx++) {
+        const kx = (cx + dx + HASH_OFF) * HASH_MUL;
+        for (let dy = -1; dy <= 1; dy++) {
+          const cell = _astCellMap.get(kx + (cy + dy + HASH_OFF));
+          if (!cell) continue;
+          for (let ai = 0; ai < cell.length; ai++) {
+            const b = cell[ai];
+            // Dedup: nur Paare (a, b) mit a._astSeq < b._astSeq testen.
+            if (b._astSeq <= a._astSeq) continue;
+            if (_tryCollide(a, b, dtFrame)) return;
+          }
         }
       }
     }
@@ -3244,9 +3546,19 @@ document.getElementById('mob-trail-slider').addEventListener('input', function()
   });
 });
 
-// Guertel-Anzahl-Slider — Wert wird in localStorage gemerkt; ist gerade
-// das Gurtel-Szenario aktiv, wird es bei aenderung neu geladen, damit
-// die neue Anzahl sofort sichtbar ist.
+// Guertel-Anzahl-Slider — logarithmische Skala (0..4.7 entspricht 1..50000),
+// Sonderfall slider==0 → 0 Asteroiden. Wert wird als COUNT in
+// localStorage gespeichert (nicht als log-Wert), damit alte Einstellungen
+// unabhaengig von der Slider-Konfiguration funktionieren.
+function beltSliderToCount(v) {
+  v = parseFloat(v);
+  if (!isFinite(v) || v <= 0.05) return 0;
+  return Math.round(Math.pow(10, v));
+}
+function beltCountToSlider(n) {
+  if (!n || n <= 0) return 0;
+  return Math.log10(n);
+}
 function setBeltCount(kind, n) {
   if (kind === 'ab') {
     BELT_AB_COUNT = n;
@@ -3255,31 +3567,34 @@ function setBeltCount(kind, n) {
     BELT_KB_COUNT = n;
     try { localStorage.setItem('sim_belt_kb', String(n)); } catch (e) {}
   }
+  const sv = beltCountToSlider(n);
   document.getElementById('belt-' + kind + '-val').textContent = n;
   document.getElementById('mob-belt-' + kind + '-val').textContent = n;
-  document.getElementById('belt-' + kind + '-slider').value = n;
-  document.getElementById('mob-belt-' + kind + '-slider').value = n;
+  document.getElementById('belt-' + kind + '-slider').value = sv;
+  document.getElementById('mob-belt-' + kind + '-slider').value = sv;
   if (currentScenario === 'Sonnensystem mit Gürteln') {
     onScenarioChange(currentScenario);
   }
 }
 ['belt-ab-slider', 'mob-belt-ab-slider'].forEach(id => {
   document.getElementById(id).addEventListener('change', function() {
-    setBeltCount('ab', parseInt(this.value));
+    setBeltCount('ab', beltSliderToCount(this.value));
   });
   // Live-Update der angezeigten Zahl waehrend des Ziehens (ohne Reload).
   document.getElementById(id).addEventListener('input', function() {
-    document.getElementById('belt-ab-val').textContent = this.value;
-    document.getElementById('mob-belt-ab-val').textContent = this.value;
+    const n = beltSliderToCount(this.value);
+    document.getElementById('belt-ab-val').textContent = n;
+    document.getElementById('mob-belt-ab-val').textContent = n;
   });
 });
 ['belt-kb-slider', 'mob-belt-kb-slider'].forEach(id => {
   document.getElementById(id).addEventListener('change', function() {
-    setBeltCount('kb', parseInt(this.value));
+    setBeltCount('kb', beltSliderToCount(this.value));
   });
   document.getElementById(id).addEventListener('input', function() {
-    document.getElementById('belt-kb-val').textContent = this.value;
-    document.getElementById('mob-belt-kb-val').textContent = this.value;
+    const n = beltSliderToCount(this.value);
+    document.getElementById('belt-kb-val').textContent = n;
+    document.getElementById('mob-belt-kb-val').textContent = n;
   });
 });
 
@@ -3532,10 +3847,10 @@ function applyInjectAngle(deg) {
 // Inject wuerde die alte Masse verwendet. Deshalb beim Start explizit
 // auf HTML-Default zuruecksetzen und Anzeigen synchronisieren.
 function initInjectControls() {
-  document.getElementById('p-mass').value = 0;
-  document.getElementById('mob-p-mass').value = 0;
-  document.getElementById('p-mass-val').textContent = fmtMassWithSun(1);
-  document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(1);
+  document.getElementById('p-mass').value = 3;
+  document.getElementById('mob-p-mass').value = 3;
+  document.getElementById('p-mass-val').textContent = fmtMassWithSun(1000);
+  document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(1000);
   document.getElementById('p-speed').value = 1.477;       // log10(30)
   document.getElementById('mob-p-speed').value = 1.477;
   document.getElementById('p-speed-val').textContent = '30';
@@ -3555,6 +3870,7 @@ const chkSync = [
   ['chk-bary-no-rogue', 'mob-chk-bary-no-rogue', 'excludeRoguesFromBary'],
   ['chk-worker', 'mob-chk-worker', 'useWorker'],
   ['chk-gpu', 'mob-chk-gpu', 'useGPU'],
+  ['chk-ast-ast', 'mob-chk-ast-ast', 'astAstCollisions'],
 ];
 chkSync.forEach(([desk, mob, varName]) => {
   const toggle = (val, persist) => {
@@ -3941,18 +4257,50 @@ function doReset() {
 
 document.getElementById('btn-inject').addEventListener('click', doInject);
 document.getElementById('mob-inject').addEventListener('click', doInject);
-document.getElementById('float-inject').addEventListener('click', function(e) {
-  // Shift+Klick auf den Floating-Inject-Button setzt eine Wolke statt
-  // einer einzelnen Rogue (gleiche Position/Geschwindigkeit aus Slidern).
-  if (e.shiftKey) doInjectCloud();
-  else doInject();
-});
-document.getElementById('float-recenter').addEventListener('click', () => {
+// Float-Inject: Shift+Klick (Desktop) ODER Long-Press > 500 ms (Mobile)
+// loest doInjectCloud() statt doInject() aus — gleiche Position und
+// Geschwindigkeit aus den Slidern. Auf Touch muss der Click-Handler den
+// Long-Press-Fall unterdruecken, damit nicht beide Wolke + Rogue feuern.
+(function() {
+  const btn = document.getElementById('float-inject');
+  let lpTimer = null;
+  let lpFired = false;
+  const LP_MS = 500;
+  btn.addEventListener('click', function(e) {
+    if (lpFired) { lpFired = false; return; }   // Long-Press hat schon gefeuert
+    if (e.shiftKey) doInjectCloud();
+    else doInject();
+  });
+  btn.addEventListener('touchstart', function() {
+    lpFired = false;
+    lpTimer = setTimeout(() => {
+      lpFired = true;
+      lpTimer = null;
+      doInjectCloud();
+      if (navigator.vibrate) navigator.vibrate(25);
+    }, LP_MS);
+  }, { passive: true });
+  btn.addEventListener('touchend', function() {
+    if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+  });
+  btn.addEventListener('touchcancel', function() {
+    if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+    lpFired = false;
+  });
+})();
+// Mobile-Toolbar-Aktions-Buttons (rot) — Shortcuts fuer die Sidebar-
+// Funktionen ohne das Menue oeffnen zu muessen.
+document.getElementById('mob-fab-clear-escaping').addEventListener('click', doClearEscaping);
+document.getElementById('mob-fab-clear-pert').addEventListener('click', doClearPerturbers);
+document.getElementById('mob-fab-clear-clouds').addEventListener('click', doClearClouds);
+function doRecenter() {
   // Recenter hebt einen aktiven Fokus immer mit auf — sonst zoomt
   // fitZoomToSystem nur auf den fokussierten Body, nicht aufs System.
   focusBody = null;
   fitZoomToSystem(true);
-});
+}
+document.getElementById('float-recenter').addEventListener('click', doRecenter);
+document.getElementById('mob-recenter').addEventListener('click', doRecenter);
 document.getElementById('btn-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('mob-clear-pert').addEventListener('click', doClearPerturbers);
 
@@ -4503,22 +4851,33 @@ canvas.addEventListener('touchcancel', function(e) {
     e.stopPropagation();
     infoPanel.classList.toggle('show');
   });
-  document.addEventListener('click', function(e) {
-    if (e.target !== helpToggle && !infoPanel.contains(e.target)) {
+  function closeIfOutside(e) {
+    if (!infoPanel.classList.contains('show')) return;
+    const t = e.target;
+    if (t !== helpToggle && !infoPanel.contains(t)) {
       infoPanel.classList.remove('show');
     }
-  });
+  }
+  document.addEventListener('click', closeIfOutside);
+  // Touch-Pfad zusaetzlich, weil das Canvas seine touchstart-Events mit
+  // preventDefault() konsumiert — der synthesized click feuert dann nicht
+  // mehr, und der click-Listener oben wuerde das Panel auf Mobile nie
+  // schliessen. Passive listener, damit Scroll-Performance erhalten bleibt.
+  document.addEventListener('touchstart', closeIfOutside, { passive: true });
 })();
 
 // --- Init ---
 refreshScenarioOptions();   // gespeicherte Konfigurationen ins Menue
 initInjectControls();       // Browser-Form-Restore neutralisieren
 // Belt-Slider auf persistierte Werte setzen (Default 800 / 600).
+// Slider ist logarithmisch — Wert via beltCountToSlider umgerechnet.
+const _abSv = beltCountToSlider(BELT_AB_COUNT);
+const _kbSv = beltCountToSlider(BELT_KB_COUNT);
 ['belt-ab-slider', 'mob-belt-ab-slider'].forEach(id => {
-  const el = document.getElementById(id); if (el) el.value = BELT_AB_COUNT;
+  const el = document.getElementById(id); if (el) el.value = _abSv;
 });
 ['belt-kb-slider', 'mob-belt-kb-slider'].forEach(id => {
-  const el = document.getElementById(id); if (el) el.value = BELT_KB_COUNT;
+  const el = document.getElementById(id); if (el) el.value = _kbSv;
 });
 ['belt-ab-val', 'mob-belt-ab-val'].forEach(id => {
   const el = document.getElementById(id); if (el) el.textContent = BELT_AB_COUNT;

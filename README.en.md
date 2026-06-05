@@ -12,11 +12,12 @@ any static web server.
 
 ## Features
 
-- **15 built-in scenarios**: Solar System, TRAPPIST-1, Alpha Centauri,
-  Kepler-16, Kepler-47 (binary star with 3 planets), Trisolaris (3
-  suns), stable/unstable Lagrange configurations, L4 Trojans, the
-  figure-8 choreography, Butterfly I, Moth I, Goggles, Yarn, and an
-  empty system for sandboxing
+- **16 built-in scenarios**: Solar System, Solar System with asteroid
+  belts (asteroid + Kuiper belt, body count adjustable via slider),
+  TRAPPIST-1, Alpha Centauri, Kepler-16, Kepler-47 (binary star with
+  3 planets), Trisolaris (3 suns), stable/unstable Lagrange
+  configurations, L4 Trojans, the figure-8 choreography, Butterfly I,
+  Moth I, Goggles, Yarn, and an empty system for sandboxing
 - **Inject perturber masses interactively** — position, mass (10⁻³ to
   10⁶ Earth masses, including stars above ~80 M⊕), speed and direction
 - **Real-time N-body integration** with configurable time step and
