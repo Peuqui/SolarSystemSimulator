@@ -20,6 +20,18 @@ statischen Webserver ausliefern.
   Butterfly I, Moth I, Goggles, Yarn, „Leeres System" zum freien Bauen
 - **Störmassen interaktiv injizieren** — Position, Masse (10⁻³ bis 10⁶
   Erdmassen, inkl. Sternen ab ~80 M⊕), Geschwindigkeit und Richtung
+- **Asteroiden-Wolken injizieren** — ganze Schwärme aus Kleinkörpern mit
+  Anzahl, Gesamtmasse, Dichte und Streuung per Slider; Shift+Klick auf den
+  Inject-Button (bzw. langer Druck auf Mobile) spawnt statt einer Rogue
+  eine Wolke
+- **Elastische Asteroiden-Kollisionen** (optional per Toggle) — Asteroiden
+  prallen wie Kugeln unterschiedlicher Masse voneinander ab, mit massen-
+  abhängigem Slingshot (der leichtere wird vom schwereren weggeschleudert).
+  Sie verschmelzen **nicht**, zerbersten **nicht** und ziehen sich
+  untereinander **nicht** gravitativ an — beim Stoß wird der schwerere blau,
+  der leichtere rot markiert und fliegt sichtbar weg. Erst beim Treffer auf
+  einen Planeten oder Stern wird ein Asteroid absorbiert bzw. löst
+  Verschmelzung/Zerbersten aus
 - **Echtzeit-N-Body-Integration** mit konfigurierbarem Zeitschritt und
   Verlangsamungsfaktor; Pause, Reset und Einzelschritt
 - **Log-Zoom-Modus** für gleichzeitige Sicht auf Sonne und äußere Planeten
@@ -103,7 +115,13 @@ keine Rolle; alle Browser laufen flüssig auf 60 fps.
 ## Technik
 
 - **Reines HTML / CSS / Canvas-2D / Vanilla-JS** in einer einzigen Datei
-- **N-Body-Integration** mit symplektischem Verlet-Schritt
+- **N-Body-Integration** mit symplektischem Verlet-Schritt (Yoshida-4.
+  Ordnung); asteroidenreiche Szenarien überspringen die Asteroid-Asteroid-
+  Gravitation für O(N)-Aufwand statt O(N²)
+- **Kontinuierliche Kollisionserkennung (CCD)** über parametrischen
+  Bahnschnitt — schnelle Begegnungen (Wolke gegen Gürtel im Gegenlauf)
+  werden erkannt und korrekt zum Kontaktzeitpunkt aufgelöst, ohne dass
+  Körper durcheinander hindurchtunneln
 - **Keine Build-Pipeline, kein npm, keine Bibliotheken** — die Sim-Engine
   selbst lädt nichts nach. Nur der Footer holt optional GoatCounter
   (privacy-friendly Pageview-Zähler) und den aktuellen GitHub-Stars-Wert

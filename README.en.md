@@ -20,6 +20,16 @@ any static web server.
   Moth I, Goggles, Yarn, and an empty system for sandboxing
 - **Inject perturber masses interactively** — position, mass (10⁻³ to
   10⁶ Earth masses, including stars above ~80 M⊕), speed and direction
+- **Inject asteroid clouds** — whole swarms of small bodies with count,
+  total mass, density and spread set via sliders; Shift+click on the inject
+  button (or a long press on mobile) spawns a cloud instead of a rogue
+- **Elastic asteroid collisions** (optional toggle) — asteroids bounce off
+  each other like balls of different mass, with a mass-dependent slingshot
+  (the lighter one is flung away by the heavier). They do **not** merge,
+  **not** shatter and do **not** attract each other gravitationally — on
+  impact the heavier one is marked blue, the lighter one red, and it visibly
+  flies off. Only when hitting a planet or star is an asteroid absorbed or
+  does it trigger a merge/shatter
 - **Real-time N-body integration** with configurable time step and
   slowdown factor; pause, reset and single-step controls
 - **Log-zoom mode** so the Sun and the outer planets fit on screen at
@@ -103,7 +113,13 @@ negligible; all browsers run smoothly at 60 fps.
 ## Technical notes
 
 - **Pure HTML / CSS / Canvas 2D / vanilla JS**, single file
-- **Symplectic Verlet integrator** for the N-body step
+- **Symplectic Verlet integrator** for the N-body step (4th-order
+  Yoshida); asteroid-heavy scenarios skip asteroid-asteroid gravity for
+  O(N) instead of O(N²) cost
+- **Continuous collision detection (CCD)** via parametric trajectory
+  intersection — fast encounters (a cloud counter-orbiting a belt) are
+  caught and resolved correctly at the contact instant, without bodies
+  tunnelling through each other
 - **No build pipeline, no npm, no libraries** — the sim engine itself
   fetches nothing. The footer optionally pulls GoatCounter (privacy-
   friendly pageview counter) and the current GitHub star count from the
