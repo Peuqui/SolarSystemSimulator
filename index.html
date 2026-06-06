@@ -100,7 +100,10 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   background: rgba(10,12,20,0.96); border: 1px solid #2a2a3a;
   padding: 14px 18px; font-size: 13px; z-index: 19; color: #ccc;
   max-width: 460px; width: calc(100vw - 24px); border-radius: 6px;
-  max-height: 75vh; overflow-y: auto;
+  /* Volle verfuegbare Hoehe nutzen (Panel sitzt bei top:48px, 8px Luft
+     unten). Passt der Text rein, gibt es keinen Scrollbalken; nur wenn der
+     Schirm zu niedrig ist (mobil/klein) greift overflow-y. */
+  max-height: calc(100vh - 56px); overflow-y: auto;
   display: none; line-height: 1.55;
   touch-action: pan-y;   /* vertikales Scrollen im Panel auf Mobile */
 }
