@@ -18,8 +18,15 @@ button, canvas, #toggle-sidebar, #help-toggle, #mobile-menu-btn,
   user-select: none;
   -webkit-touch-callout: none;
 }
-body { background: #000; color: #ccc; font-family: 'Segoe UI', monospace; overflow: hidden; width: 100%; height: 100vh; touch-action: none; }
+body { background: #050510; color: #ccc; font-family: 'Segoe UI', monospace; overflow: hidden; width: 100%; height: 100vh; touch-action: none; }
 canvas { display: block; cursor: crosshair; width: 100%; height: 100%; }
+/* Asteroid-Render-Canvas (WebGL) liegt UNTER dem 2D-Canvas. Alle
+   Asteroiden werden hier mit einem einzigen draw-Call gezeichnet,
+   waehrend das 2D-Canvas oben drueber Bodies, Trails und Flashes
+   rendert. position: absolute, damit beide Canvases exakt deckend
+   liegen. */
+#ast-canvas { position: absolute; top: 0; left: 0; z-index: 0; pointer-events: none; }
+#canvas    { position: absolute; top: 0; left: 0; z-index: 1; }
 
 /* Sidebar */
 #sidebar {
@@ -344,6 +351,7 @@ input[type=range] {
 </head>
 <body>
 
+<canvas id="ast-canvas"></canvas>
 <canvas id="canvas"></canvas>
 
 <div id="slider-bubble"></div>
@@ -1222,6 +1230,16 @@ let W, H;
 // wandert die nutzbare Mitte nach rechts. Geschlossene Sidebar / mobil:
 // getBoundingClientRect().width ist 0 (display:none) -> Mitte = W/2.
 let viewCX = window.innerWidth / 2;
+// WebGL-Asteroid-Renderer-State (Init folgt erst weiter unten); hier
+// nur die const-Deklaration nach oben, damit resizeAsteroidGL() vom
+// resize-Handler aus aufgerufen werden kann, bevor initAsteroidGL läuft.
+const astGL = {
+  canvas: null, ctx: null, program: null, buffer: null,
+  loc: {},
+  vertexData: new Float32Array(1024),
+  enabled: false,
+};
+
 function updateViewCenter() {
   const sb = document.getElementById('sidebar');
   const w = sb ? sb.getBoundingClientRect().width : 0;
@@ -1232,6 +1250,8 @@ function resize() {
   W = canvas.width = window.innerWidth;
   H = canvas.height = window.innerHeight;
   updateViewCenter();
+  // Asteroid-GL-Canvas mit gleicher Aufloesung mitziehen.
+  if (typeof resizeAsteroidGL === 'function') resizeAsteroidGL();
 }
 resize();
 window.addEventListener('resize', resize);
@@ -2194,9 +2214,180 @@ function drawArrow(fromX, fromY, toX, toY, color, width) {
   ctx.fill();
 }
 
+// ============================================================
+//  Asteroid-GL: rendert alle Asteroiden mit EINEM WebGL-Draw-Call
+//  statt 50.000 fillRect-Aufrufen. Liegt unter dem Canvas2D, Punkte
+//  haben feste 2-px-Groesse, Farbe pro Vertex.
+// ============================================================
+function initAsteroidGL() {
+  const canvas = document.getElementById('ast-canvas');
+  if (!canvas) return;
+  astGL.canvas = canvas;
+  let gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+  if (!gl) gl = canvas.getContext('webgl', { antialias: false, premultipliedAlpha: false });
+  if (!gl) {
+    // Kein WebGL — Fallback aufs alte fillRect-Rendering.
+    console.log('Asteroid-GL: kein WebGL verfuegbar, Fallback auf fillRect.');
+    return;
+  }
+  astGL.ctx = gl;
+
+  // Shader-Quellen — funktionieren in WebGL1 und 2 (kein #version).
+  const vsSrc = `
+    attribute vec2 aPos;
+    attribute vec3 aColor;
+    uniform vec3 uCamera;        // (cam.cx, cam.cy, k = zoom*80)
+    uniform vec2 uView;          // (viewCX, H/2)
+    uniform vec2 uScreen;        // (W, H)
+    uniform float uLogZoom;      // 0.0 oder 1.0
+    uniform float uInvLog33;     // 1 / log(33)
+    varying vec3 vColor;
+    void main() {
+      vec2 p = aPos;
+      if (uLogZoom > 0.5) {
+        float r2 = p.x*p.x + p.y*p.y;
+        if (r2 > 1e-24) {
+          float r = sqrt(r2);
+          float scale = log(1.0 + r) * uInvLog33 / r;
+          p = p * scale;
+        } else {
+          p = vec2(0.0);
+        }
+      }
+      vec2 sxsy = vec2(
+        uView.x + (p.x - uCamera.x) * uCamera.z,
+        uView.y + (p.y - uCamera.y) * uCamera.z
+      );
+      vec2 clip = vec2(
+        sxsy.x / uScreen.x * 2.0 - 1.0,
+        1.0 - sxsy.y / uScreen.y * 2.0
+      );
+      gl_Position = vec4(clip, 0.0, 1.0);
+      gl_PointSize = 2.0;
+      vColor = aColor;
+    }
+  `;
+  const fsSrc = `
+    precision mediump float;
+    varying vec3 vColor;
+    void main() { gl_FragColor = vec4(vColor, 1.0); }
+  `;
+
+  function compile(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.warn('Asteroid-GL Shader-Fehler:', gl.getShaderInfoLog(sh));
+      return null;
+    }
+    return sh;
+  }
+  const vs = compile(gl.VERTEX_SHADER, vsSrc);
+  const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
+  if (!vs || !fs) return;
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.warn('Asteroid-GL Programm-Link fehlgeschlagen:', gl.getProgramInfoLog(prog));
+    return;
+  }
+  astGL.program = prog;
+  astGL.loc.aPos      = gl.getAttribLocation(prog, 'aPos');
+  astGL.loc.aColor    = gl.getAttribLocation(prog, 'aColor');
+  astGL.loc.uCamera   = gl.getUniformLocation(prog, 'uCamera');
+  astGL.loc.uView     = gl.getUniformLocation(prog, 'uView');
+  astGL.loc.uScreen   = gl.getUniformLocation(prog, 'uScreen');
+  astGL.loc.uLogZoom  = gl.getUniformLocation(prog, 'uLogZoom');
+  astGL.loc.uInvLog33 = gl.getUniformLocation(prog, 'uInvLog33');
+  astGL.buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, astGL.buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, astGL.vertexData.byteLength, gl.DYNAMIC_DRAW);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  astGL.enabled = true;
+  resizeAsteroidGL();
+}
+
+function resizeAsteroidGL() {
+  if (!astGL.enabled || !astGL.canvas) return;
+  astGL.canvas.width = W;
+  astGL.canvas.height = H;
+  astGL.ctx.viewport(0, 0, W, H);
+}
+
+// Parse Hex-Farbe einmal, dann cachen am Body. Spart pro Frame
+// 50.000 substring/parseInt-Calls.
+function _hexToRgb(hex) {
+  if (typeof hex !== 'string' || hex.length < 7) return [1, 1, 1];
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  return [r, g, b];
+}
+
+function renderAsteroidsGL() {
+  if (!astGL.enabled) return false;
+  const gl = astGL.ctx;
+  // Zaehle und packe in einem Durchgang.
+  let n = 0;
+  for (let i = 0; i < bodies.length; i++) {
+    if (bodies[i].visible && bodies[i].isAsteroid) n++;
+  }
+  // Canvas immer clearen, auch wenn n=0 (sonst bleibt der alte Frame).
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (n === 0) return true;
+
+  // Vertex-Buffer ggf. vergroessern (2× Wachstum).
+  const need = n * 5;   // pro Vertex: x, y, r, g, b
+  if (astGL.vertexData.length < need) {
+    let newSize = astGL.vertexData.length;
+    while (newSize < need) newSize *= 2;
+    astGL.vertexData = new Float32Array(newSize);
+    gl.bindBuffer(gl.ARRAY_BUFFER, astGL.buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, astGL.vertexData.byteLength, gl.DYNAMIC_DRAW);
+  }
+  const data = astGL.vertexData;
+  let off = 0;
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.visible || !b.isAsteroid) continue;
+    let cached = b._glColor;
+    if (!cached) {
+      cached = _hexToRgb(b.color);
+      b._glColor = cached;
+    }
+    data[off++] = b.x;
+    data[off++] = b.y;
+    data[off++] = cached[0];
+    data[off++] = cached[1];
+    data[off++] = cached[2];
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, astGL.buffer);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, need);
+
+  gl.useProgram(astGL.program);
+  gl.enableVertexAttribArray(astGL.loc.aPos);
+  gl.enableVertexAttribArray(astGL.loc.aColor);
+  // Stride 5 * 4 = 20 bytes; aPos offset 0, aColor offset 8.
+  gl.vertexAttribPointer(astGL.loc.aPos,   2, gl.FLOAT, false, 20, 0);
+  gl.vertexAttribPointer(astGL.loc.aColor, 3, gl.FLOAT, false, 20, 8);
+  gl.uniform3f(astGL.loc.uCamera, cam.cx, cam.cy, cam.zoom * 80);
+  gl.uniform2f(astGL.loc.uView, viewCX, H / 2);
+  gl.uniform2f(astGL.loc.uScreen, W, H);
+  gl.uniform1f(astGL.loc.uLogZoom, useLogZoom ? 1 : 0);
+  gl.uniform1f(astGL.loc.uInvLog33, _INV_LOG_33);
+  gl.drawArrays(gl.POINTS, 0, n);
+  return true;
+}
+
 function draw() {
-  ctx.fillStyle = '#050510';
-  ctx.fillRect(0, 0, W, H);
+  // Transparent clearen statt opaque fillRect — das WebGL-Canvas hinter
+  // uns rendert die Asteroiden. body.background liefert den dunklen Ton.
+  ctx.clearRect(0, 0, W, H);
 
   if (showStars) {
     // Sterne laufen gleichsinnig und exakt mit dem Welt-Achsenkreuz —
@@ -2429,9 +2620,14 @@ function draw() {
     }
   }
 
-  // Asteroiden-Batch: nach Farbe gruppiert mit fillRect zeichnen.
-  // Spart pro Asteroid ein beginPath()+arc()+fill() (drei Canvas-Calls)
-  // — bei ~1400 Asteroiden der dickste Render-Brocken.
+  // Asteroiden-Render:
+  // - WebGL (default): ein einziger draw-Call ueber Vertex-Buffer fuer
+  //   alle Asteroiden, im Hintergrund-Canvas. Spart 50.000 fillRect-Calls.
+  // - Fallback (kein WebGL oder beim Init fehlgeschlagen): wie bisher
+  //   nach Farbe gruppiert mit fillRect zeichnen.
+  if (renderAsteroidsGL()) {
+    // WebGL hat das uebernommen — fillRect-Pfad ueberspringen.
+  } else {
   const _astByColor = new Map();
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
@@ -2464,6 +2660,7 @@ function draw() {
       ctx.fillRect(sx - 1, sy - 1, 2, 2);
     }
   }
+  }   // Ende des Fallback-fillRect-Pfads
 
   // Bodies (Asteroiden werden uebersprungen — schon im Batch oben gezeichnet;
   // ausgenommen unbound-/Fokus-Marker, die einzeln gerendert bleiben).
@@ -5252,6 +5449,11 @@ onScenarioChange(startScenario);
 });
 // Initial-Apply nach DOM-Aufbau und nach Scenario-Load.
 setLang(currentLang);
+
+// WebGL-Asteroid-Renderer initialisieren (Fallback aufs alte fillRect,
+// wenn kein WebGL verfuegbar). Muss NACH resize() laufen, damit das
+// ast-canvas die korrekte Aufloesung bekommt.
+initAsteroidGL();
 
 simLoop();
 
