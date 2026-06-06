@@ -3782,59 +3782,86 @@ function handleCollisions(dtFrame) {
     }
   }
   // Phase 4 (optional, Toggle astAstCollisions): Asteroid x Asteroid.
-  // Forward-only Cell-Pattern: statt alle 9 Nachbarzellen + Dedup pruefen
-  // wir nur 5 "vordere" Zellen — eigene + E, NE, N, NW. Jedes Paar
-  // landet so genau einmal in dieser Schleife (das Spiegel-Paar testet
-  // den anderen Asteroiden als "a"). Halbiert die Cell-Lookups und
-  // erspart den _astSeq-Filter in 4 der 5 Zellen.
-  // Eigene Zelle braucht weiterhin den Filter (sonst Selbst- und
-  // Doppel-Tests).
+  // Hybrid-Strategie: wenn die maximale Asteroid-Geschwindigkeit pro
+  // Frame mehr als 2 Cells zurueckliegt (chaotische Wolke nach Rogue,
+  // Hochgeschwindigkeits-Streuung), dann teures dynamisches Schild.
+  // Sonst (langsamer Belt-Orbit, ueblicher Default) der billigere
+  // forward-only-Pfad mit 5 Cells.
   if (astAstCollisions) {
     let seq = 0;
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
       if (b.visible && b.isAsteroid) b._astSeq = seq++;
     }
-    for (let i = 0; i < bodies.length; i++) {
-      const a = bodies[i];
-      if (!a.visible || !a.isAsteroid) continue;
-      const cx = Math.floor(a.x * INV_COLL_CELL);
-      const cy = Math.floor(a.y * INV_COLL_CELL);
-      const aSeq = a._astSeq;
-      const kxOwn = (cx + HASH_OFF) * HASH_MUL;
-      const kxE   = (cx + 1 + HASH_OFF) * HASH_MUL;
-      const kxNW  = (cx - 1 + HASH_OFF) * HASH_MUL;
-      const ky    = cy + HASH_OFF;
-      const kyN   = cy + 1 + HASH_OFF;
-
-      // 1) Eigene Zelle — Filter, damit jedes Paar (a, b) nur einmal testet.
-      let cell = _astCellMap.get(kxOwn + ky);
-      if (cell) {
-        for (let ai = 0; ai < cell.length; ai++) {
-          const b = cell[ai];
-          if (b._astSeq <= aSeq) continue;
-          if (_tryCollide(a, b, dtFrame)) return;
+    const sweepCells = maxAstSpeed * dtFrame * INV_COLL_CELL;
+    const useShield = sweepCells > 2;
+    if (useShield) {
+      // Dynamisches Schild: pro Asteroid Bahn-Bounding-Box absuchen.
+      for (let i = 0; i < bodies.length; i++) {
+        const a = bodies[i];
+        if (!a.visible || !a.isAsteroid) continue;
+        const aSeq = a._astSeq;
+        const endX = a.x + a.vx * dtFrame;
+        const endY = a.y + a.vy * dtFrame;
+        const minCxRaw = Math.floor(Math.min(a.x, endX) * INV_COLL_CELL) - 1;
+        const maxCxRaw = Math.floor(Math.max(a.x, endX) * INV_COLL_CELL) + 1;
+        const minCyRaw = Math.floor(Math.min(a.y, endY) * INV_COLL_CELL) - 1;
+        const maxCyRaw = Math.floor(Math.max(a.y, endY) * INV_COLL_CELL) + 1;
+        const minCx = minCxRaw;
+        const maxCx = Math.min(maxCxRaw, minCxRaw + 8);
+        const minCy = minCyRaw;
+        const maxCy = Math.min(maxCyRaw, minCyRaw + 8);
+        for (let cx = minCx; cx <= maxCx; cx++) {
+          const kx = (cx + HASH_OFF) * HASH_MUL;
+          for (let cy = minCy; cy <= maxCy; cy++) {
+            const cell = _astCellMap.get(kx + (cy + HASH_OFF));
+            if (!cell) continue;
+            for (let ai = 0; ai < cell.length; ai++) {
+              const b = cell[ai];
+              if (b._astSeq <= aSeq) continue;
+              if (_tryCollide(a, b, dtFrame)) return;
+            }
+          }
         }
       }
-      // 2) East (cx+1, cy) — kein Filter noetig
-      cell = _astCellMap.get(kxE + ky);
-      if (cell) for (let ai = 0; ai < cell.length; ai++) {
-        if (_tryCollide(a, cell[ai], dtFrame)) return;
-      }
-      // 3) NE (cx+1, cy+1)
-      cell = _astCellMap.get(kxE + kyN);
-      if (cell) for (let ai = 0; ai < cell.length; ai++) {
-        if (_tryCollide(a, cell[ai], dtFrame)) return;
-      }
-      // 4) N (cx, cy+1)
-      cell = _astCellMap.get(kxOwn + kyN);
-      if (cell) for (let ai = 0; ai < cell.length; ai++) {
-        if (_tryCollide(a, cell[ai], dtFrame)) return;
-      }
-      // 5) NW (cx-1, cy+1)
-      cell = _astCellMap.get(kxNW + kyN);
-      if (cell) for (let ai = 0; ai < cell.length; ai++) {
-        if (_tryCollide(a, cell[ai], dtFrame)) return;
+    } else {
+      // Forward-only: 5 "vordere" Zellen (own + E, NE, N, NW), jedes
+      // Paar landet genau einmal. Eigene Zelle braucht den Filter.
+      for (let i = 0; i < bodies.length; i++) {
+        const a = bodies[i];
+        if (!a.visible || !a.isAsteroid) continue;
+        const cx = Math.floor(a.x * INV_COLL_CELL);
+        const cy = Math.floor(a.y * INV_COLL_CELL);
+        const aSeq = a._astSeq;
+        const kxOwn = (cx + HASH_OFF) * HASH_MUL;
+        const kxE   = (cx + 1 + HASH_OFF) * HASH_MUL;
+        const kxNW  = (cx - 1 + HASH_OFF) * HASH_MUL;
+        const ky    = cy + HASH_OFF;
+        const kyN   = cy + 1 + HASH_OFF;
+        let cell = _astCellMap.get(kxOwn + ky);
+        if (cell) {
+          for (let ai = 0; ai < cell.length; ai++) {
+            const b = cell[ai];
+            if (b._astSeq <= aSeq) continue;
+            if (_tryCollide(a, b, dtFrame)) return;
+          }
+        }
+        cell = _astCellMap.get(kxE + ky);
+        if (cell) for (let ai = 0; ai < cell.length; ai++) {
+          if (_tryCollide(a, cell[ai], dtFrame)) return;
+        }
+        cell = _astCellMap.get(kxE + kyN);
+        if (cell) for (let ai = 0; ai < cell.length; ai++) {
+          if (_tryCollide(a, cell[ai], dtFrame)) return;
+        }
+        cell = _astCellMap.get(kxOwn + kyN);
+        if (cell) for (let ai = 0; ai < cell.length; ai++) {
+          if (_tryCollide(a, cell[ai], dtFrame)) return;
+        }
+        cell = _astCellMap.get(kxNW + kyN);
+        if (cell) for (let ai = 0; ai < cell.length; ai++) {
+          if (_tryCollide(a, cell[ai], dtFrame)) return;
+        }
       }
     }
   }
