@@ -3764,13 +3764,14 @@ function handleCollisions(dtFrame) {
     }
   }
   // Phase 4 (optional, Toggle astAstCollisions): Asteroid x Asteroid.
-  // Pro Asteroid die eigenen + 3x3 Nachbarzellen abfragen. Jedes Paar
-  // wird per Pointer-Identitaet-Vergleich (a vs b) und Cell-Order nur
-  // einmal getestet — wir verlangen, dass a in der eigenen Zelle einen
-  // Vorgaengerindex hat oder in einer "fruehen" Nachbarzelle liegt.
-  // Einfacher Dedup-Ansatz: pro Asteroid eindeutige Sequenznummer.
+  // Forward-only Cell-Pattern: statt alle 9 Nachbarzellen + Dedup pruefen
+  // wir nur 5 "vordere" Zellen — eigene + E, NE, N, NW. Jedes Paar
+  // landet so genau einmal in dieser Schleife (das Spiegel-Paar testet
+  // den anderen Asteroiden als "a"). Halbiert die Cell-Lookups und
+  // erspart den _astSeq-Filter in 4 der 5 Zellen.
+  // Eigene Zelle braucht weiterhin den Filter (sonst Selbst- und
+  // Doppel-Tests).
   if (astAstCollisions) {
-    // Sequenznummer pro Asteroid setzen.
     let seq = 0;
     for (let i = 0; i < bodies.length; i++) {
       const b = bodies[i];
@@ -3781,18 +3782,41 @@ function handleCollisions(dtFrame) {
       if (!a.visible || !a.isAsteroid) continue;
       const cx = Math.floor(a.x * INV_COLL_CELL);
       const cy = Math.floor(a.y * INV_COLL_CELL);
-      for (let dx = -1; dx <= 1; dx++) {
-        const kx = (cx + dx + HASH_OFF) * HASH_MUL;
-        for (let dy = -1; dy <= 1; dy++) {
-          const cell = _astCellMap.get(kx + (cy + dy + HASH_OFF));
-          if (!cell) continue;
-          for (let ai = 0; ai < cell.length; ai++) {
-            const b = cell[ai];
-            // Dedup: nur Paare (a, b) mit a._astSeq < b._astSeq testen.
-            if (b._astSeq <= a._astSeq) continue;
-            if (_tryCollide(a, b, dtFrame)) return;
-          }
+      const aSeq = a._astSeq;
+      const kxOwn = (cx + HASH_OFF) * HASH_MUL;
+      const kxE   = (cx + 1 + HASH_OFF) * HASH_MUL;
+      const kxNW  = (cx - 1 + HASH_OFF) * HASH_MUL;
+      const ky    = cy + HASH_OFF;
+      const kyN   = cy + 1 + HASH_OFF;
+
+      // 1) Eigene Zelle — Filter, damit jedes Paar (a, b) nur einmal testet.
+      let cell = _astCellMap.get(kxOwn + ky);
+      if (cell) {
+        for (let ai = 0; ai < cell.length; ai++) {
+          const b = cell[ai];
+          if (b._astSeq <= aSeq) continue;
+          if (_tryCollide(a, b, dtFrame)) return;
         }
+      }
+      // 2) East (cx+1, cy) — kein Filter noetig
+      cell = _astCellMap.get(kxE + ky);
+      if (cell) for (let ai = 0; ai < cell.length; ai++) {
+        if (_tryCollide(a, cell[ai], dtFrame)) return;
+      }
+      // 3) NE (cx+1, cy+1)
+      cell = _astCellMap.get(kxE + kyN);
+      if (cell) for (let ai = 0; ai < cell.length; ai++) {
+        if (_tryCollide(a, cell[ai], dtFrame)) return;
+      }
+      // 4) N (cx, cy+1)
+      cell = _astCellMap.get(kxOwn + kyN);
+      if (cell) for (let ai = 0; ai < cell.length; ai++) {
+        if (_tryCollide(a, cell[ai], dtFrame)) return;
+      }
+      // 5) NW (cx-1, cy+1)
+      cell = _astCellMap.get(kxNW + kyN);
+      if (cell) for (let ai = 0; ai < cell.length; ai++) {
+        if (_tryCollide(a, cell[ai], dtFrame)) return;
       }
     }
   }
