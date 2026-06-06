@@ -130,12 +130,17 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 
 /* Mobile overlay buttons */
 #mobile-controls {
-  display: none;
-  position: absolute; bottom: 46px; left: 10px;
+  /* Immer sichtbar — Desktop wie Mobile. Position dynamisch:
+     - Sidebar offen → left: 350 px (10 px rechts neben der 340-px-Sidebar)
+     - Sidebar collapsed / Mobile → left: 10 px (linker Bildrand) */
+  display: flex;
+  position: absolute; bottom: 46px; left: 350px;
   z-index: 15;
   max-width: 260px;
   flex-wrap: wrap;
 }
+body.sidebar-collapsed #mobile-controls,
+body.is-mobile #mobile-controls { left: 10px; }
 #mobile-controls button {
   width: 44px; height: 44px; border-radius: 50%;
   font-size: 18px; margin: 3px; display: inline-flex;
@@ -150,8 +155,10 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
    Buttons "schwerer Eingriff" (Bodies entfernen) — rot, separat von der
    linken Steuerungsleiste, alles in einer unteren Zeile. */
 #mobile-actions {
-  display: none;
+  display: flex;   /* auf Desktop UND Mobile sichtbar */
   position: absolute; bottom: 46px; right: 88px;
+  /* Rote Aktions-Buttons IMMER rechts, links neben dem Inject-FAB.
+     Egal ob Sidebar offen oder collapsed, egal ob Desktop oder Mobile. */
   z-index: 15;
   flex-direction: row;
   gap: 6px;
@@ -181,17 +188,20 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 #float-inject:hover { background: #cc4444; }
 #float-inject:active { background: #dd5555; }
 
-/* Re-Center-Button — links neben dem Inject-Button. Zentriert das
-   Bild manuell auf das aktuelle System (Auto-Fit + smooth lerp). */
+/* Re-Center-Button — durch mob-recenter in #mobile-controls ersetzt,
+   Element bleibt im DOM nur als Fallback und ist immer ausgeblendet.
+   (Der zweite `display: flex` der frueheren Form ist raus — sonst hat
+   er das `display: none` ueberschrieben und der Button war doch sichtbar.) */
 #float-recenter {
   position: absolute; bottom: 40px; right: 86px;
   z-index: 16;
   width: 48px; height: 48px; border-radius: 50%;
   background: #335577; border: 2px solid #5588aa; color: #fff;
   font-size: 20px;
-  display: flex; align-items: center; justify-content: center;
+  align-items: center; justify-content: center;
   cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.6);
   -webkit-tap-highlight-color: transparent;
+  display: none !important;
 }
 #float-recenter:hover { background: #4477aa; }
 #float-recenter:active { background: #5588cc; }
@@ -254,7 +264,7 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 @media (max-width: 1024px) {
   #sidebar { display: none !important; }
   #toggle-sidebar { display: none !important; }
-  #mobile-controls { display: flex; }
+  #mobile-controls { display: flex; left: 10px; }
   #mobile-actions { display: flex; }
   #float-recenter { display: none !important; }
   #mobile-sheet { display: block; }
@@ -267,6 +277,17 @@ body.is-mobile #mobile-actions { display: flex; }
 body.is-mobile #float-recenter { display: none !important; }
 body.is-mobile #mobile-sheet { display: block; }
 body.is-mobile #mobile-menu-btn { display: flex; }
+
+/* Belt-Slider nur sichtbar, wenn das Gürtel-Szenario aktiv ist —
+   sonst hätten sie keinen sichtbaren Effekt und wirken kaputt.
+   IDs in #sidebar label / #mobile-sheet label haben höhere Spezifität
+   als nur .belt-config, daher hier die qualifizierten Selektoren. */
+.belt-config,
+#sidebar label.belt-config,
+#mobile-sheet label.belt-config { display: none; }
+body.belt-active .belt-config,
+body.belt-active #sidebar label.belt-config,
+body.belt-active #mobile-sheet label.belt-config { display: block; }
 
 /* Range slider track styling */
 input[type=range] {
@@ -361,10 +382,10 @@ input[type=range] {
       <button id="btn-import-cfg" data-i18n="btn.import" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Import</button>
     </div>
     <input type="file" id="import-file" accept=".json,application/json" style="display:none;">
-    <label data-i18n-title="tt.belt" style="margin-top:6px;"><span data-i18n="lbl.belt-ab">Asteroidengürtel</span> <span class="val" id="belt-ab-val">800</span></label>
-    <input type="range" autocomplete="off" id="belt-ab-slider" min="0" max="4.7" step="0.02" value="2.9">
-    <label data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="belt-kb-val">600</span></label>
-    <input type="range" autocomplete="off" id="belt-kb-slider" min="0" max="4.7" step="0.02" value="2.78">
+    <label class="belt-config" data-i18n-title="tt.belt" style="margin-top:6px;"><span data-i18n="lbl.belt-ab">Asteroidengürtel</span> <span class="val" id="belt-ab-val">800</span></label>
+    <input class="belt-config" type="range" autocomplete="off" id="belt-ab-slider" min="0" max="4.7" step="0.02" value="2.9">
+    <label class="belt-config" data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="belt-kb-val">600</span></label>
+    <input class="belt-config" type="range" autocomplete="off" id="belt-kb-slider" min="0" max="4.7" step="0.02" value="2.78">
   </details>
   <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage/Schritt)</span> <span class="val" id="dt-val">1</span></label>
@@ -530,10 +551,10 @@ input[type=range] {
       <button id="mob-btn-export-cfg" data-i18n="btn.export" style="flex:1; font-size:12px;">Export</button>
       <button id="mob-btn-import-cfg" data-i18n="btn.import" style="flex:1; font-size:12px;">Import</button>
     </div>
-    <label data-i18n-title="tt.belt" style="margin-top:6px;"><span data-i18n="lbl.belt-ab">Asteroidengürtel</span> <span class="val" id="mob-belt-ab-val">800</span></label>
-    <input type="range" autocomplete="off" id="mob-belt-ab-slider" min="0" max="4.7" step="0.02" value="2.9">
-    <label data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="mob-belt-kb-val">600</span></label>
-    <input type="range" autocomplete="off" id="mob-belt-kb-slider" min="0" max="4.7" step="0.02" value="2.78">
+    <label class="belt-config" data-i18n-title="tt.belt" style="margin-top:6px;"><span data-i18n="lbl.belt-ab">Asteroidengürtel</span> <span class="val" id="mob-belt-ab-val">800</span></label>
+    <input class="belt-config" type="range" autocomplete="off" id="mob-belt-ab-slider" min="0" max="4.7" step="0.02" value="2.9">
+    <label class="belt-config" data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="mob-belt-kb-val">600</span></label>
+    <input class="belt-config" type="range" autocomplete="off" id="mob-belt-kb-slider" min="0" max="4.7" step="0.02" value="2.78">
   </details>
   <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage)</span> <span class="val" id="mob-dt-val">1</span></label>
@@ -609,6 +630,54 @@ input[type=range] {
 //  Newtonsche Gravitation + Velocity Verlet-Integration
 //  Mobil-optimiert mit Touch-Support
 // ============================================================
+
+// ============================================================
+//  DEFAULTS — alle benutzer-relevanten Default-Werte zentral, damit
+//  man hier eine Zahl aendern kann und die ganze App nutzt sie.
+//  Slider-Werte sind die ROHEN Slider-Values (oft log10 von einer
+//  echten Groesse, siehe Kommentar je Feld). applyDefaults() unten
+//  setzt sie beim Init auf alle Slider/Checkboxen (Desktop + Mobile).
+//  Die HTML-`value=`/`checked`-Attribute dienen nur als Fallback.
+// ============================================================
+const DEFAULTS = {
+  // --- Zeitsteuerung ---
+  dt: 1,                // Tage/Frame
+  slow: 0,              // log10 — 0 = 1× Echtzeit
+  // --- Ansicht ---
+  zoom: 0.35,           // Welt-AU pro Schirm-Schritt (linear)
+  trail: 150,           // Bahnspur-Laenge Hauptkoerper
+  trailAst: 0,          // Bahnspur-Laenge Asteroiden (0 = aus)
+  showTrails: true,
+  showVectors: false,
+  showGrid: true,       // konzentrische Schwerpunkts-Ringe
+  showStars: true,      // Hintergrund-Sternfeld
+  showWorldGrid: false, // x=0/y=0 Achsenkreuz
+  useLogZoom: true,
+  lockBarycenter: true,
+  excludeRoguesFromBary: true,
+  useWorker: true,      // Physik im WebWorker
+  useGPU: false,        // Physik via WebGPU
+  astAstCollisions: false, // Asteroid x Asteroid Kollisionen
+  // --- Inject (Rogue / Wolke benutzen teilweise dieselben Slider) ---
+  injectMass: 3,        // log10(M⊕) — 3 → 1000 Erdmassen
+  injectSpeed: 1.477,   // log10(km/s) — 1.477 → 30 km/s
+  injectAngle: 270,     // Kompass-Kurs (0=N, 90=O, 180=S, 270=W)
+  // --- Wolke (eigene Werte) ---
+  cloudN: 500,
+  cloudMass: -1,        // log10(M⊕) — -1 → 0,1 Erdmassen
+  cloudDensity: 4,      // log10 — 4 → 10.000 Asteroiden/AU²
+  cloudJit: 5,          // % Speed-Streuung + ° Richtungs-Streuung
+  // --- Guertel (Sonnensystem mit Guerteln) ---
+  beltAB: 800,          // Anzahl Asteroidengürtel
+  beltKB: 600,          // Anzahl Kuipergürtel
+  // --- Physik-Schwellen / Konstanten ---
+  bhMassThreshold: 230.0,        // M_sun ab der Merge → Schwarzes Loch
+  collFlashMs: 1100,             // Lebenszeit Kollisions-Explosion (ms)
+  longPressMs: 500,              // Touch-Long-Press-Dauer
+  longPressMoveTolerance: 10,    // px Toleranz waehrend Long-Press
+  dragThreshold: 10,             // px ab denen Tap → Drag wird
+  collisionLog: false,           // console.log fuer jede Kollision (Diagnose)
+};
 
 // Mobile-Detection per UA — als Ergaenzung zur CSS-Media-Query. Chrome
 // Mobile meldet in manchen Konfigurationen eine zu grosse Viewport-Breite
@@ -1024,7 +1093,7 @@ const STAR_MASS_THRESHOLD = 0.08;
 // beobachteten Hauptreihensterns (BAT99-98 ≈ 226 M_sonne, R136a1 ≈ 196).
 // Lebende Sterne koennen theoretisch bis ~300 M_sonne existieren (Pair-
 // Instability-Region 130–250), darueber direkter Kollaps zum SL.
-const BH_MASS_THRESHOLD = 230.0;
+const BH_MASS_THRESHOLD = DEFAULTS.bhMassThreshold;
 
 // Ab diesem Sonnenabstand (AU) gilt ein ungebundenes Objekt als
 // "auf Fluchtkurs" — weit jenseits der Neptunbahn (~30 AU).
@@ -1170,8 +1239,8 @@ window.addEventListener('resize', resize);
 // --- Simulation ---
 let bodies = [];
 let trails = {};
-let MAX_TRAIL = 150;       // per Slider konfigurierbare Bahnspur-Laenge
-let MAX_TRAIL_AST = 0;     // eigener Wert fuer Asteroiden — default aus
+let MAX_TRAIL = DEFAULTS.trail;       // per Slider konfigurierbare Bahnspur-Laenge
+let MAX_TRAIL_AST = DEFAULTS.trailAst; // eigener Wert fuer Asteroiden
 
 // ============================================================
 //  SZENARIEN
@@ -1267,8 +1336,8 @@ function addBelt(prefix, count, aMin, aMax, eMax, totalMassEarth, color) {
 // Per-Slider konfigurierbare Anzahl der Guertel-Asteroiden — der User
 // kann zwischen "wenig fuer Performance" und "viel fuer Stimmung" waehlen,
 // ohne den Code aendern zu muessen. Beim Laden aus localStorage geclamped.
-let BELT_AB_COUNT = 800;
-let BELT_KB_COUNT = 600;
+let BELT_AB_COUNT = DEFAULTS.beltAB;
+let BELT_KB_COUNT = DEFAULTS.beltKB;
 try {
   const a = parseInt(localStorage.getItem('sim_belt_ab') || '');
   if (Number.isFinite(a) && a >= 0 && a <= 50000) BELT_AB_COUNT = a;
@@ -1830,7 +1899,7 @@ function recordTrails() {
 
 // --- Camera ---
 let cam = { cx: 0, cy: 0, zoom: 0.35 };
-var useLogZoom = true;
+var useLogZoom = DEFAULTS.useLogZoom;
 
 const _LOG_33 = Math.log(33);
 const _INV_LOG_33 = 1 / _LOG_33;
@@ -1892,14 +1961,14 @@ function screenToWorld(sx, sy) {
 }
 
 // --- Rendering ---
-var showTrails = true;
-var showVectors = false;
-var showGrid = true;
-var lockBarycenter = true;   // Kamera haelt den Massenschwerpunkt mittig
+var showTrails = DEFAULTS.showTrails;
+var showVectors = DEFAULTS.showVectors;
+var showGrid = DEFAULTS.showGrid;
+var lockBarycenter = DEFAULTS.lockBarycenter;   // Kamera haelt den Massenschwerpunkt mittig
 let focusBody = null;        // Bei gesetztem Body: Kamera folgt ihm statt Schwerpunkt
-var excludeRoguesFromBary = true;  // Rogues nicht zum Schwerpunkt zaehlen
-var showStars = true;        // Hintergrund-Sternfeld als Bewegungsreferenz
-var showWorldGrid = false;   // Welt-fixiertes Rechteckgitter (statt nur die Ringe)
+var excludeRoguesFromBary = DEFAULTS.excludeRoguesFromBary;  // Rogues nicht zum Schwerpunkt zaehlen
+var showStars = DEFAULTS.showStars;        // Hintergrund-Sternfeld als Bewegungsreferenz
+var showWorldGrid = DEFAULTS.showWorldGrid;   // Welt-fixiertes Rechteckgitter (statt nur die Ringe)
 
 // Statisches Sternfeld als Bewegungsreferenz. Die Sterne wohnen NICHT in
 // Welt-Koordinaten (das wuerde im Log-Zoom alle Sterne radial nach aussen
@@ -2019,12 +2088,16 @@ function updateBoundState() {
   // nicht gegen sich selbst gemessen wird.
   // perturbers in Set fuer O(1) Lookup statt O(M) pro Body — bei N=1400
   // Bodies und 2 Schleifen sonst O(N*M) Aufwand.
+  // Asteroiden komplett aus dem Schwerpunkts-Aufbau heraushalten — ihre
+  // Gesamtmasse ist im Default < 0,001 Erdmassen gegen Sonne (332.000
+  // Erdmassen), Beitrag ist physikalisch vernachlaessigbar. Bei N=50.000
+  // Asteroiden sparen wir hier 50.000 Iterationen pro Frame.
   const pertSet = perturbers.length > 0 ? new Set(perturbers) : null;
   let mx=0, my=0, mvx=0, mvy=0, mt=0;
   let mxA=0, myA=0, mvxA=0, mvyA=0, mtA=0;
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
-    if (!b.visible) continue;
+    if (!b.visible || b.isAsteroid) continue;
     const isRogue = pertSet ? pertSet.has(b) : false;
     let w;
     if (isRogue) w = 1;
@@ -2055,6 +2128,10 @@ function updateBoundState() {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible) { b.unbound = false; b.escapeScore = 0; continue; }
+    // Asteroiden bekommen keinen Fluchtkurs-Check: sie sind massearm
+    // und visuell irrelevant fuer die ↗-Markierung. Spart bei N=50.000
+    // die zweite teure O(N)-Schleife mit sqrt + Mathe pro Body.
+    if (b.isAsteroid) { b.unbound = false; b.escapeScore = 0; continue; }
     const isRogue = pertSet ? pertSet.has(b) : false;
     // Bahnenergie-Pruefung gegen den jeweils aktiven Schwerpunkt
     // (Hauptsystem bei Toggle an, Gesamt bei Toggle aus) — auch fuer
@@ -2337,41 +2414,6 @@ function draw() {
     ctx.globalAlpha = prevAlpha;
   }
 
-  // Kollisions-Explosionen: pro Treffer eine kleine, helle, gefuellte
-  // Scheibe mit Radial-Gradient. Waechst in den ersten ~30 % der
-  // Lebenszeit auf max 28 px (oder skaliert mit Body-Groesse, gedeckelt),
-  // dann verblasst sie von INNEN nach AUSSEN — das Zentrum wird zuerst
-  // dunkel, der orange Rand haelt am laengsten. Sieht aus wie eine
-  // Druckwelle, nicht wie ein flacher Ring.
-  if (collisionFlashes.length > 0) {
-    const now = performance.now();
-    for (let i = collisionFlashes.length - 1; i >= 0; i--) {
-      const f = collisionFlashes[i];
-      const t = (now - f.t) / COLLISION_FLASH_MS;   // 0..1
-      if (t >= 1) { collisionFlashes.splice(i, 1); continue; }
-      const [sx, sy] = worldToScreen(f.x, f.y);
-      // Zielradius: klein, aber je nach Body-Groesse leicht skaliert.
-      // Untergrenze 14 px, Obergrenze 28 px.
-      const targetR = Math.max(14, Math.min(28, f.scale * cam.zoom * 80 * 6));
-      // Wachstumsphase: schnell expandieren bis 35 % Lebenszeit, dann konstant.
-      const r = targetR * Math.min(1, t / 0.35);
-      // Alpha-Verlauf pro Gradient-Stop — Zentrum verblasst schnellst,
-      // Rand am langsamsten. So "höhlt" sich die Scheibe aus.
-      const centerA = Math.max(0, 1 - t * 2.4);
-      const midA    = Math.max(0, 1 - t * 1.4);
-      const edgeA   = Math.max(0, 1 - t * 0.9);
-      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
-      grad.addColorStop(0,    `rgba(255, 250, 210, ${centerA.toFixed(3)})`);
-      grad.addColorStop(0.45, `rgba(255, 190, 80,  ${midA.toFixed(3)})`);
-      grad.addColorStop(0.85, `rgba(230, 110, 30,  ${(edgeA*0.7).toFixed(3)})`);
-      grad.addColorStop(1,    'rgba(200, 70, 20, 0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
   // Force vectors
   if (showVectors) {
     for (let i = 0; i < bodies.length; i++) {
@@ -2399,13 +2441,26 @@ function draw() {
     arr.push(b);
   }
   // Sichtfeld-Cull: Asteroiden ausserhalb Canvas erst gar nicht zeichnen.
-  // Bei stark gezoomten Ansichten oft 60..80 % der Asteroiden ausserhalb.
+  // Im linearen Modus PRE-CULL in Welt-Koordinaten — spart die teuren
+  // worldToScreen-Aufrufe (trig + Allokation) fuer Off-Screen-Bodies.
+  // Im Log-Modus ist die Welt-Bounds-Rechnung nicht trivial (radiale
+  // Stauchung), daher post-cull wie bisher.
+  let wxMin = -Infinity, wxMax = Infinity, wyMin = -Infinity, wyMax = Infinity;
+  if (!useLogZoom) {
+    const k = cam.zoom * 80;
+    const invK = 1 / k;
+    wxMin = cam.cx - (viewCX + 2) * invK;
+    wxMax = cam.cx + (W - viewCX + 2) * invK;
+    wyMin = cam.cy - (H / 2 + 2) * invK;
+    wyMax = cam.cy + (H / 2 + 2) * invK;
+  }
   for (const [color, arr] of _astByColor) {
     ctx.fillStyle = color;
     for (let k = 0; k < arr.length; k++) {
       const b = arr[k];
+      if (b.x < wxMin || b.x > wxMax || b.y < wyMin || b.y > wyMax) continue;
       const [sx, sy] = worldToScreen(b.x, b.y);
-      if (sx < -2 || sx > W + 2 || sy < -2 || sy > H + 2) continue;
+      if (useLogZoom && (sx < -2 || sx > W + 2 || sy < -2 || sy > H + 2)) continue;
       ctx.fillRect(sx - 1, sy - 1, 2, 2);
     }
   }
@@ -2519,6 +2574,36 @@ function draw() {
     ctx.fillStyle = b.unbound ? '#ff6a6a' : b.color + 'dd';
     ctx.font = '11px monospace';
     ctx.fillText(b.unbound ? b.name + ' ⇗' : b.name, sx + b.radius + 5, sy + 4);
+  }
+
+  // Kollisions-Explosionen: pro Treffer eine kleine, helle, gefuellte
+  // Scheibe mit Radial-Gradient. Waechst in den ersten ~35 % der
+  // Lebenszeit auf max 28 px (oder skaliert mit Body-Groesse, gedeckelt),
+  // dann verblasst sie von INNEN nach AUSSEN. WICHTIG: nach allen Bodies
+  // und Asteroiden gezeichnet, damit sie ueber dichten Asteroidenwolken
+  // sichtbar bleibt (Canvas 2D hat kein Z-Ordering, last-drawn = top).
+  if (collisionFlashes.length > 0) {
+    const now = performance.now();
+    for (let i = collisionFlashes.length - 1; i >= 0; i--) {
+      const f = collisionFlashes[i];
+      const t = (now - f.t) / COLLISION_FLASH_MS;   // 0..1
+      if (t >= 1) { collisionFlashes.splice(i, 1); continue; }
+      const [sx, sy] = worldToScreen(f.x, f.y);
+      const targetR = Math.max(14, Math.min(28, f.scale * cam.zoom * 80 * 6));
+      const r = targetR * Math.min(1, t / 0.35);
+      const centerA = Math.max(0, 1 - t * 2.4);
+      const midA    = Math.max(0, 1 - t * 1.4);
+      const edgeA   = Math.max(0, 1 - t * 0.9);
+      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
+      grad.addColorStop(0,    `rgba(255, 250, 210, ${centerA.toFixed(3)})`);
+      grad.addColorStop(0.45, `rgba(255, 190, 80,  ${midA.toFixed(3)})`);
+      grad.addColorStop(0.85, `rgba(230, 110, 30,  ${(edgeA*0.7).toFixed(3)})`);
+      grad.addColorStop(1,    'rgba(200, 70, 20, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   // Perturber injection preview — zeigt die Stoermasse schon beim
@@ -2714,7 +2799,7 @@ function advance(dtYears) {
 //  Kollisionen; handleCollisions/recordTrails laufen einmal pro
 //  Frame im Main nach Worker-Return.
 // ============================================================
-var useWorker = true;
+var useWorker = DEFAULTS.useWorker;
 let physWorker = null;
 let workerBusy = false;
 let workerResolver = null;
@@ -2886,8 +2971,8 @@ async function advanceAsync(dtYears) {
 //  (Yoshida + adaptive Sub-Steps) im Compute Shader, ein Read-back
 //  pro Frame. Bei N >> 1000 deutlich schneller als CPU/Worker.
 // ============================================================
-var useGPU = false;        // Toggle (default aus — experimentell)
-var astAstCollisions = false;  // Toggle Asteroid x Asteroid (default aus, teuer)
+var useGPU = DEFAULTS.useGPU;        // Toggle (default aus — experimentell)
+var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
 
@@ -3131,7 +3216,7 @@ let fragmentCounter = 0;
 // der Statistik — so erkennt man, ob ein vorbeifliegendes Objekt nur
 // gravitativ abgelenkt wurde oder wirklich getroffen hat.
 const collisionFlashes = [];
-const COLLISION_FLASH_MS = 1100;
+const COLLISION_FLASH_MS = DEFAULTS.collFlashMs;
 let totalCollisions = 0;
 let perturberCounter = 0;   // monoton — eindeutige Stoermassen-Namen
 
@@ -3269,6 +3354,12 @@ function _tryCollide(a, b, dtFrame) {
   const touchSq = touch * touch;
   // Phase 1: statischer Distanz-Check auf den aktuellen Snapshot.
   let hit = (dx*dx + dy*dy) < touchSq;
+  // Zeit (relativ zu jetzt, in Jahren) wann die Kollision passierte.
+  // 0 = jetzt (statischer Hit). Negativ = im letzten Frame (CCD-Hit).
+  // Wird unten zur Rueck-Extrapolation der Flash-Position benutzt —
+  // sonst wuerde der Visual am Frame-End-Mittelpunkt sitzen, nicht dort
+  // wo die Bodies sich physikalisch beruehrt haben.
+  let tCollision = 0;
   // Phase 2: Continuous Collision Detection — falls die Bodies in
   // diesem Frame mit hoher Relativ-Geschwindigkeit aneinander
   // vorbeigeflogen waeren (Tunneling), prueft der parametrische
@@ -3283,15 +3374,37 @@ function _tryCollide(a, b, dtFrame) {
       const B = 2 * (dx*dvx + dy*dvy);
       const C = dx*dx + dy*dy - touchSq;
       const disc = B*B - 4*A*C;
-      if (disc >= 0) {
-        const sqD = Math.sqrt(disc);
+      // Toleranz auf die Diskriminante: setzt sich aus zwei Beitraegen
+      // zusammen.
+      //   1) Float-Rauschen: touchSq * 0,01 — fängt Rundungsfehler bei
+      //      Bahn-Tangenten.
+      //   2) Sweep-proportional: ein Bruchteil der vrel·dt-Strecke. Bei
+      //      Hochgeschwindigkeits-Begegnungen (Planet GEGEN Asteroiden-
+      //      Strom) wandert ein Asteroid pro Frame Millionen km — der
+      //      tatsaechliche touch (~6 400 km Erdradius) deckt davon < 1 %
+      //      ab. Ohne Toleranz uebersieht CCD knapp-vorbei-Fluege, die
+      //      physikalisch durch gravitative Linsung sehr wohl getroffen
+      //      haetten. Toleranz = 0,5 % des Sweep-Quadrats ergibt einen
+      //      effektiven Trefferradius etwa proportional zur Begegnungs-
+      //      geschwindigkeit — mit-Strom-Bodies (vrel ≈ 0) werden nicht
+      //      veraendert, schnelle Vorbei-Flüge bekommen mehr Chancen.
+      const sweepSq = A * dtFrame * dtFrame;
+      const discTol = touchSq * 0.01 + sweepSq * 0.005;
+      if (disc >= -discTol) {
+        const sqD = Math.sqrt(Math.max(0, disc));
         const inv2A = 1 / (2*A);
         const tEnter = (-B - sqD) * inv2A;
         const tExit  = (-B + sqD) * inv2A;
         // Bahnen ueberschneiden sich in [tEnter, tExit]. Wenn dieses
         // Intervall mit [-dtFrame, 0] ueberlappt, gab es einen
         // Treffer im letzten Frame.
-        if (tEnter <= 0 && tExit >= -dtFrame) hit = true;
+        if (tEnter <= 0 && tExit >= -dtFrame) {
+          hit = true;
+          // Beste Zeitabschaetzung: Mitte des sichtbaren Treffer-Intervalls
+          // (auf [-dtFrame, 0] geclippt) — Flash sitzt dann auf der Bahn-
+          // Beruehrung statt am End-Mittelpunkt.
+          tCollision = 0.5 * (Math.max(tEnter, -dtFrame) + Math.min(tExit, 0));
+        }
       }
     }
   }
@@ -3299,10 +3412,15 @@ function _tryCollide(a, b, dtFrame) {
   const vImp = Math.hypot(b.vx-a.vx, b.vy-a.vy);
   const vEsc = Math.sqrt(2 * G_AU * (a.mass + b.mass) / touch);
   const blackHoleInvolved = a.isBlackHole || b.isBlackHole;
-  // Mittelpunkt fuer das Flash-Visual (vor merge/shatter merken, danach
-  // sind a/b ggf. nicht mehr in bodies).
-  const flashX = 0.5 * (a.x + b.x);
-  const flashY = 0.5 * (a.y + b.y);
+  // Mittelpunkt fuer das Flash-Visual — auf den Kollisions-Zeitpunkt
+  // rueckwaerts-extrapoliert. Bei statischem Hit ist tCollision = 0,
+  // also gleichbedeutend mit dem alten 0.5*(a.x+b.x). Bei CCD-Hit liegt
+  // tCollision irgendwo in [-dtFrame, 0] — der Flash sitzt dann dort,
+  // wo die Bodies sich physikalisch beruehrt haben statt am
+  // Frame-End-Mittelpunkt (sonst Verschiebung nach hinten relativ zur
+  // Asteroid-Bewegungsrichtung).
+  const flashX = 0.5 * ((a.x + a.vx * tCollision) + (b.x + b.vx * tCollision));
+  const flashY = 0.5 * ((a.y + a.vy * tCollision) + (b.y + b.vy * tCollision));
   // Reichweite des Rings skaliert grob mit dem groesseren der beiden
   // Koerper, damit ein Planet-Asteroid-Treffer sichtbar groesser blitzt
   // als ein Asteroid-Asteroid-Streifer.
@@ -3332,23 +3450,32 @@ function _tryCollide(a, b, dtFrame) {
   else if (blackHoleInvolved || starInvolved
         || vImp < 1.5 * vEsc)                         path = 'merge';
   else                                                path = 'shatter';
-  // Diagnose-Log: jede Kollision in die Konsole, damit man nachvollziehen
-  // kann warum ein "wichtiger" Body verschwand. Format:
-  //   [collision N] aName(mass, ast?, star?) vs bName(...) -> bounce|absorb|merge|shatter
-  console.log('[collision ' + (totalCollisions + 1) + '] ' +
-    a.name + '(m=' + a.mass.toExponential(2) +
-    (aIsAst ? ',ast' : '') + (a.isStar ? ',star' : '') +
-    (a.isBlackHole ? ',BH' : '') + ')' +
-    ' vs ' +
-    b.name + '(m=' + b.mass.toExponential(2) +
-    (bIsAst ? ',ast' : '') + (b.isStar ? ',star' : '') +
-    (b.isBlackHole ? ',BH' : '') + ')' +
-    ' vImp=' + vImp.toFixed(2) + ' vEsc=' + vEsc.toFixed(2) +
-    ' -> ' + path);
+  // Diagnose-Log nur wenn DEFAULTS.collisionLog === true (default aus —
+  // bei dichten Wolken sind hunderte Hits/Sek, String-Build + console.log
+  // kostet sonst spuerbar Performance).
+  if (DEFAULTS.collisionLog) {
+    console.log('[collision ' + (totalCollisions + 1) + '] ' +
+      a.name + '(m=' + a.mass.toExponential(2) +
+      (aIsAst ? ',ast' : '') + (a.isStar ? ',star' : '') +
+      (a.isBlackHole ? ',BH' : '') + ')' +
+      ' vs ' +
+      b.name + '(m=' + b.mass.toExponential(2) +
+      (bIsAst ? ',ast' : '') + (b.isStar ? ',star' : '') +
+      (b.isBlackHole ? ',BH' : '') + ')' +
+      ' vImp=' + vImp.toFixed(2) + ' vEsc=' + vEsc.toFixed(2) +
+      ' -> ' + path);
+  }
   if (path === 'bounce')      _bounce(a, b);
   else if (path === 'absorb') _absorb(aIsAst ? a : b, aIsAst ? b : a);
   else if (path === 'merge')  merge(a, b);
   else                        shatter(a, b);
+  // computeAccelerations + updatePerturberList nur, wenn der Massen-/
+  // Bahn-Mittelpunkt sich tatsaechlich geaendert hat. Bei _bounce
+  // (nur Velocity-Tausch, Massen + Positionen unveraendert) und _absorb
+  // (kleiner Body weg, grosser unveraendert) braucht keiner der anderen
+  // Bodies neue Beschleunigungen — das spart bei dichten Wolken
+  // hunderte O(N²)-Aufrufe pro Sekunde.
+  const heavyChange = (path === 'merge' || path === 'shatter');
   collisionFlashes.push({
     x: flashX, y: flashY, scale: flashScale,
     t: performance.now(),
@@ -3359,8 +3486,10 @@ function _tryCollide(a, b, dtFrame) {
   if (countEl) countEl.textContent = totalCollisions;
   const badge = document.getElementById('collision-badge');
   if (badge && !badge.classList.contains('show')) badge.classList.add('show');
-  computeAccelerations();
-  updatePerturberList();
+  if (heavyChange) {
+    computeAccelerations();
+    updatePerturberList();
+  }
   return true;
 }
 
@@ -3382,8 +3511,11 @@ function handleCollisions(dtFrame) {
       if (_tryCollide(planets[i], planets[j], dtFrame)) return;
     }
   }
-  // Phase 2: Asteroiden in Hash-Grid einsortieren (O(N_ast)).
+  // Phase 2: Asteroiden in Hash-Grid einsortieren (O(N_ast)) und gleich
+  // die hoechste Asteroid-Geschwindigkeit dieses Frames mitnehmen — wird
+  // in Phase 3 fuer die dynamische Cell-Range benoetigt.
   _astCellMap.clear();
+  let maxAstSpeedSq = 0;
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible || !b.isAsteroid) continue;
@@ -3393,16 +3525,25 @@ function handleCollisions(dtFrame) {
     let cell = _astCellMap.get(k);
     if (!cell) { cell = []; _astCellMap.set(k, cell); }
     cell.push(b);
+    const v2 = b.vx*b.vx + b.vy*b.vy;
+    if (v2 > maxAstSpeedSq) maxAstSpeedSq = v2;
   }
-  // Phase 3: pro Planet die 3x3-Nachbarschaft im Asteroid-Grid abfragen.
-  // ~9 Lookups, typisch 0..2 Asteroiden pro Zelle. M*9 statt M*N_ast.
+  const maxAstSpeed = Math.sqrt(maxAstSpeedSq);
+  // Phase 3: pro Planet eine DYNAMISCHE Nachbarschaft im Asteroid-Grid.
+  // Reichweite skaliert mit (vPlanet + vAstMax) * dtFrame — sodass auch
+  // weit voneinander entfernte Bahn-Schnittpunkte erfasst werden und CCD
+  // im _tryCollide den Treffer im letzten Frame findet. Cap bei 8 Cells
+  // (= 17x17 Lookups) damit extreme dt nicht in die Performance einbrechen.
   for (let pi = 0; pi < planets.length; pi++) {
     const p = planets[pi];
     const cx = Math.floor(p.x * INV_COLL_CELL);
     const cy = Math.floor(p.y * INV_COLL_CELL);
-    for (let dx = -1; dx <= 1; dx++) {
+    const vP = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+    const sweepAU = (vP + maxAstSpeed) * dtFrame;
+    const range = Math.min(8, Math.max(1, Math.ceil(sweepAU * INV_COLL_CELL) + 1));
+    for (let dx = -range; dx <= range; dx++) {
       const kx = (cx + dx + HASH_OFF) * HASH_MUL;
-      for (let dy = -1; dy <= 1; dy++) {
+      for (let dy = -range; dy <= range; dy++) {
         const cell = _astCellMap.get(kx + (cy + dy + HASH_OFF));
         if (!cell) continue;
         for (let ai = 0; ai < cell.length; ai++) {
@@ -3682,6 +3823,8 @@ function setBeltCount(kind, n) {
 
 // --- Szenario-Auswahl ---
 function onScenarioChange(name) {
+  // Belt-Slider nur im Guertel-Szenario einblenden (CSS-Klasse).
+  document.body.classList.toggle('belt-active', name === 'Sonnensystem mit Gürteln');
   cam.cx = 0; cam.cy = 0;
   if (SCENARIOS[name]) {
     loadScenario(name);
@@ -3957,15 +4100,17 @@ function applyInjectAngle(deg) {
 // Inject wuerde die alte Masse verwendet. Deshalb beim Start explizit
 // auf HTML-Default zuruecksetzen und Anzeigen synchronisieren.
 function initInjectControls() {
-  document.getElementById('p-mass').value = 3;
-  document.getElementById('mob-p-mass').value = 3;
-  document.getElementById('p-mass-val').textContent = fmtMassWithSun(1000);
-  document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(1000);
-  document.getElementById('p-speed').value = 1.477;       // log10(30)
-  document.getElementById('mob-p-speed').value = 1.477;
-  document.getElementById('p-speed-val').textContent = '30';
-  document.getElementById('mob-p-speed-val').textContent = '30';
-  applyInjectAngle(270);
+  const m = Math.pow(10, DEFAULTS.injectMass);
+  const v = Math.pow(10, DEFAULTS.injectSpeed);
+  document.getElementById('p-mass').value = DEFAULTS.injectMass;
+  document.getElementById('mob-p-mass').value = DEFAULTS.injectMass;
+  document.getElementById('p-mass-val').textContent = fmtMassWithSun(m);
+  document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(m);
+  document.getElementById('p-speed').value = DEFAULTS.injectSpeed;
+  document.getElementById('mob-p-speed').value = DEFAULTS.injectSpeed;
+  document.getElementById('p-speed-val').textContent = fmtSpeed(v);
+  document.getElementById('mob-p-speed-val').textContent = fmtSpeed(v);
+  applyInjectAngle(DEFAULTS.injectAngle);
 }
 
 // Checkboxes (sync)
@@ -4522,6 +4667,9 @@ const toggleBtn = document.getElementById('toggle-sidebar');
 toggleBtn.addEventListener('click', function() {
   sidebar.classList.toggle('collapsed');
   this.classList.toggle('shifted');
+  // body-Klasse spiegelt Sidebar-Zustand \u2014 mobile-controls h\u00E4ngen davon
+  // ab (Positionierung rechts neben Sidebar vs. linker Bildrand).
+  document.body.classList.toggle('sidebar-collapsed', sidebar.classList.contains('collapsed'));
   this.textContent = sidebar.classList.contains('collapsed') ? '\u25B6' : '\u25C0';
   updateViewCenter();
 });
@@ -4668,13 +4816,13 @@ let touchDragCurrent = { x: 0, y: 0 };
 let touchPanStart = { x: 0, y: 0, cx: 0, cy: 0 };
 let touchPinchStartDist = 0;
 let touchPinchStartZoom = 1;
-const DRAG_THRESHOLD = 10; // px to distinguish tap from drag
+const DRAG_THRESHOLD = DEFAULTS.dragThreshold; // px to distinguish tap from drag
 
 // Long-Press: 1-Finger muss ~500 ms gehalten werden, bevor eine Stoer-
 // masse positioniert wird. Verhindert Fehl-Inject beim Pinch-Zoom (wenn
 // der zweite Finger kurz nach dem ersten landet).
-const LONG_PRESS_MS = 500;
-const LONG_PRESS_MOVE_TOLERANCE = 10; // px
+const LONG_PRESS_MS = DEFAULTS.longPressMs;
+const LONG_PRESS_MOVE_TOLERANCE = DEFAULTS.longPressMoveTolerance; // px
 let longPressTimer = null;
 let longPressStartTime = 0;
 let longPressFeedback = null; // {x, y} screen-pos waehrend wait-longpress
@@ -4980,6 +5128,80 @@ canvas.addEventListener('touchcancel', function(e) {
 })();
 
 // --- Init ---
+// Setzt alle Slider + Checkboxen (Desktop + Mobile) aus dem zentralen
+// DEFAULTS-Block oben im Script. Aufrufen VOR den anderen Init-Schritten.
+function applyDefaults() {
+  // Slider — Liste von [stem, defaultValue]; Desktop ('stem') und Mobile
+  // ('mob-stem') werden gleich behandelt.
+  const sliderDefs = [
+    ['dt-slider',        DEFAULTS.dt],
+    ['slow-slider',      DEFAULTS.slow],
+    ['zoom-slider',      DEFAULTS.zoom],
+    ['trail-slider',     DEFAULTS.trail],
+    ['trail-ast-slider', DEFAULTS.trailAst],
+    ['p-mass',           DEFAULTS.injectMass],
+    ['p-speed',          DEFAULTS.injectSpeed],
+    ['p-angle',          DEFAULTS.injectAngle],
+    ['cloud-n',          DEFAULTS.cloudN],
+    ['cloud-mass',       DEFAULTS.cloudMass],
+    ['cloud-density',    DEFAULTS.cloudDensity],
+    ['cloud-jit',        DEFAULTS.cloudJit],
+  ];
+  for (const [stem, val] of sliderDefs) {
+    // Slider-Persistierung: wenn ein Wert in localStorage gespeichert ist,
+    // nehmen wir den statt des DEFAULTS-Wertes. Key 'sim_slider_<stem>'.
+    let useVal = val;
+    try {
+      const saved = localStorage.getItem('sim_slider_' + stem);
+      if (saved !== null && saved !== '' && !isNaN(parseFloat(saved))) useVal = saved;
+    } catch (e) {}
+    const a = document.getElementById(stem);
+    const b = document.getElementById('mob-' + stem);
+    if (a) { a.value = useVal; a.dispatchEvent(new Event('input', { bubbles: true })); }
+    if (b) { b.value = useVal; b.dispatchEvent(new Event('input', { bubbles: true })); }
+    // Beim 'change'-Event (Slider losgelassen) den aktuellen Wert in
+    // localStorage schreiben. Nicht 'input', sonst feuert jeder Frame
+    // beim Ziehen einen Schreibzugriff.
+    const persist = function() {
+      try { localStorage.setItem('sim_slider_' + stem, this.value); } catch (e) {}
+    };
+    if (a) a.addEventListener('change', persist);
+    if (b) b.addEventListener('change', persist);
+  }
+  // Checkboxen: nur setzen wenn KEIN persistierter Zustand vorliegt.
+  // chkSync hat oben bereits aus localStorage restauriert und die
+  // Variable + Checkbox dabei gesetzt — den Wert duerfen wir nicht
+  // ueberschreiben (sonst weicht UI vom restauriierten Zustand ab).
+  // varName-Schluessel muss zum localStorage-Key 'sim_' + varName passen.
+  const chkDefs = [
+    ['chk-trails',         'showTrails',            DEFAULTS.showTrails],
+    ['chk-vectors',        'showVectors',           DEFAULTS.showVectors],
+    ['chk-grid',           'showGrid',              DEFAULTS.showGrid],
+    ['chk-stars',          'showStars',             DEFAULTS.showStars],
+    ['chk-worldgrid',      'showWorldGrid',         DEFAULTS.showWorldGrid],
+    ['chk-logzoom',        'useLogZoom',            DEFAULTS.useLogZoom],
+    ['chk-baryctr',        'lockBarycenter',        DEFAULTS.lockBarycenter],
+    ['chk-bary-no-rogue',  'excludeRoguesFromBary', DEFAULTS.excludeRoguesFromBary],
+    ['chk-worker',         'useWorker',             DEFAULTS.useWorker],
+    ['chk-gpu',            'useGPU',                DEFAULTS.useGPU],
+    ['chk-ast-ast',        'astAstCollisions',      DEFAULTS.astAstCollisions],
+  ];
+  for (const [stem, varName, val] of chkDefs) {
+    let saved = null;
+    try { saved = localStorage.getItem('sim_' + varName); } catch (e) {}
+    if (saved !== null) continue;   // wurde von chkSync bereits restauriert
+    const a = document.getElementById(stem);
+    const b = document.getElementById('mob-' + stem);
+    if (a) a.checked = !!val;
+    if (b) b.checked = !!val;
+  }
+}
+
+// Alle Slider und Checkboxen aus DEFAULTS-Block oben füllen. Sollte
+// VOR refreshScenarioOptions / initInjectControls / onScenarioChange
+// laufen, damit Folge-Initialisierungen aus den konsistenten Werten
+// lesen koennen. HTML-`value=`/`checked`-Attribute werden ueberschrieben.
+applyDefaults();
 refreshScenarioOptions();   // gespeicherte Konfigurationen ins Menue
 initInjectControls();       // Browser-Form-Restore neutralisieren
 // Belt-Slider auf persistierte Werte setzen (Default 800 / 600).
