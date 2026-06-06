@@ -5729,6 +5729,18 @@ try {
 } catch (e) {}
 onScenarioChange(startScenario);
 
+// Zeitsteuerung (dt/slow) persistiert ueber den initialen Szenario-Load
+// hinweg: onScenarioChange hat dt/slow gerade auf die Szenario-Presets
+// gesetzt — einen gespeicherten User-Wert danach wiederherstellen, damit er
+// einen Reload uebersteht. (Belt-Slider persistieren bereits ueber
+// BELT_AB/KB_COUNT; alle anderen Slider bleiben unveraendert.)
+try {
+  const _dtSv = localStorage.getItem('sim_slider_dt-slider');
+  if (_dtSv !== null && _dtSv !== '' && !isNaN(parseFloat(_dtSv))) applyDt(_dtSv);
+  const _slowSv = localStorage.getItem('sim_slider_slow-slider');
+  if (_slowSv !== null && _slowSv !== '' && !isNaN(parseFloat(_slowSv))) applySlow(_slowSv);
+} catch (e) {}
+
 // Sprach-Toggle: zeigt jeweils die ANDERE Sprache als Label (i18n liefert
 // 'misc.lang' = "EN" im DE-Modus, "DE" im EN-Modus). Klick wechselt.
 ['btn-lang', 'mob-btn-lang'].forEach(id => {
