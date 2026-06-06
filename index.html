@@ -649,7 +649,7 @@ input[type=range] {
 // ============================================================
 const DEFAULTS = {
   // --- Zeitsteuerung ---
-  dt: 1,                // Tage/Frame
+  dt: 0.5,              // Tage/Frame
   slow: 0,              // log10 — 0 = 1× Echtzeit
   // --- Ansicht ---
   zoom: 0.35,           // Welt-AU pro Schirm-Schritt (linear)
@@ -3793,8 +3793,12 @@ function handleCollisions(dtFrame) {
       const b = bodies[i];
       if (b.visible && b.isAsteroid) b._astSeq = seq++;
     }
-    const sweepCells = maxAstSpeed * dtFrame * INV_COLL_CELL;
-    const useShield = sweepCells > 2;
+    // Worst-Case vRel ist 2 · maxAstSpeed (zwei entgegenkommende Asteroiden).
+    // Damit gegenlaeufige Wolken im Belt korrekt detektiert werden, muss
+    // die Schwelle die mögliche vRel-Reichweite einbeziehen, nicht nur
+    // die maximale Einzel-Geschwindigkeit.
+    const sweepCells = 2 * maxAstSpeed * dtFrame * INV_COLL_CELL;
+    const useShield = sweepCells > 1.5;
     if (useShield) {
       // Dynamisches Schild: pro Asteroid Bahn-Bounding-Box absuchen.
       for (let i = 0; i < bodies.length; i++) {
