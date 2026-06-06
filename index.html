@@ -3302,6 +3302,11 @@ const INV_COLL_CELL = 1 / COLL_CELL_AU;
 const HASH_OFF = 1e6;
 const HASH_MUL = 2e6;
 const _astCellMap = new Map();
+// Pool fuer Cell-Arrays — bei 50.000 Asteroiden in der Wolke entstehen
+// jedes Frame ~10.000 Cell-Arrays. Ohne Pool wuerden sie nach
+// Map.clear() vom GC eingesammelt; mit Pool werden sie recycelt und
+// die Minor-GC-Spitzen verschwinden.
+const _astCellArrayPool = [];
 
 // Resolve eine einzelne Kollision (geometrische Beruehrung).
 // Returnt true wenn ein Merge/Shatter ausgeloest wurde (bodies-Array geaendert).
@@ -3514,6 +3519,12 @@ function handleCollisions(dtFrame) {
   // Phase 2: Asteroiden in Hash-Grid einsortieren (O(N_ast)) und gleich
   // die hoechste Asteroid-Geschwindigkeit dieses Frames mitnehmen — wird
   // in Phase 3 fuer die dynamische Cell-Range benoetigt.
+  // Cell-Arrays aus dem letzten Frame ins Pool zurueckgeben, dann Map
+  // leeren. So entstehen keine GC-belastenden neuen Arrays jedes Frame.
+  for (const arr of _astCellMap.values()) {
+    arr.length = 0;
+    _astCellArrayPool.push(arr);
+  }
   _astCellMap.clear();
   let maxAstSpeedSq = 0;
   for (let i = 0; i < bodies.length; i++) {
@@ -3523,7 +3534,10 @@ function handleCollisions(dtFrame) {
     const cy = Math.floor(b.y * INV_COLL_CELL);
     const k = (cx + HASH_OFF) * HASH_MUL + (cy + HASH_OFF);
     let cell = _astCellMap.get(k);
-    if (!cell) { cell = []; _astCellMap.set(k, cell); }
+    if (!cell) {
+      cell = _astCellArrayPool.length > 0 ? _astCellArrayPool.pop() : [];
+      _astCellMap.set(k, cell);
+    }
     cell.push(b);
     const v2 = b.vx*b.vx + b.vy*b.vy;
     if (v2 > maxAstSpeedSq) maxAstSpeedSq = v2;
