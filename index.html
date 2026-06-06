@@ -2350,11 +2350,27 @@ function renderAsteroidsGL() {
     gl.bindBuffer(gl.ARRAY_BUFFER, astGL.buffer);
     gl.bufferData(gl.ARRAY_BUFFER, astGL.vertexData.byteLength, gl.DYNAMIC_DRAW);
   }
+  // Sichtfeld-Cull: nur Asteroiden ins Vertex-Buffer packen, die auch
+  // im aktuellen Canvas-Ausschnitt liegen. Spart bei eingezoomten
+  // Ansichten 60..80 % der JS-Schleifen-Arbeit + Buffer-Upload.
+  // Im Log-Modus ist die Welt-Bounds-Rechnung nicht trivial — dort
+  // kein Cull, alle Asteroiden landen im Buffer (GPU clipped sie eh).
+  let wxMin = -Infinity, wxMax = Infinity, wyMin = -Infinity, wyMax = Infinity;
+  if (!useLogZoom) {
+    const k = cam.zoom * 80;
+    const invK = 1 / k;
+    wxMin = cam.cx - (viewCX + 2) * invK;
+    wxMax = cam.cx + (W - viewCX + 2) * invK;
+    wyMin = cam.cy - (H / 2 + 2) * invK;
+    wyMax = cam.cy + (H / 2 + 2) * invK;
+  }
   const data = astGL.vertexData;
   let off = 0;
+  let drawn = 0;
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible || !b.isAsteroid) continue;
+    if (b.x < wxMin || b.x > wxMax || b.y < wyMin || b.y > wyMax) continue;
     let cached = b._glColor;
     if (!cached) {
       cached = _hexToRgb(b.color);
@@ -2365,9 +2381,11 @@ function renderAsteroidsGL() {
     data[off++] = cached[0];
     data[off++] = cached[1];
     data[off++] = cached[2];
+    drawn++;
   }
+  if (drawn === 0) return true;
   gl.bindBuffer(gl.ARRAY_BUFFER, astGL.buffer);
-  gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, need);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, data, 0, off);
 
   gl.useProgram(astGL.program);
   gl.enableVertexAttribArray(astGL.loc.aPos);
@@ -2380,7 +2398,7 @@ function renderAsteroidsGL() {
   gl.uniform2f(astGL.loc.uScreen, W, H);
   gl.uniform1f(astGL.loc.uLogZoom, useLogZoom ? 1 : 0);
   gl.uniform1f(astGL.loc.uInvLog33, _INV_LOG_33);
-  gl.drawArrays(gl.POINTS, 0, n);
+  gl.drawArrays(gl.POINTS, 0, drawn);
   return true;
 }
 
