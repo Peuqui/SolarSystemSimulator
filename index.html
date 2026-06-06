@@ -4942,6 +4942,13 @@ document.addEventListener('keydown', function(e) {
     doReset();
   } else if (e.key === 'Escape') {
     focusBody = null;   // Fokus aufheben
+  } else if (e.key === '+' || e.key === '=') {
+    // Zoom in (= ist die ungeshiftete Variante von + auf US-Tastaturen)
+    e.preventDefault();
+    document.getElementById('mob-zoom-in').click();
+  } else if (e.key === '-' || e.key === '_') {
+    e.preventDefault();
+    document.getElementById('mob-zoom-out').click();
   }
 });
 
