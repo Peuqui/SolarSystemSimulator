@@ -2715,15 +2715,15 @@ function draw() {
     }
     if (!b._bounceFlash) continue;
     const age = _bounceNow - b._bounceFlash;
-    if (age > 800) continue;
+    if (age > BOUNCE_FLASH_MS) continue;
     const [sx, sy] = worldToScreen(b.x, b.y);
     if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
-    const alpha = 1 - age / 800;
+    const alpha = 1 - age / BOUNCE_FLASH_MS;
     ctx.beginPath();
     ctx.strokeStyle = b._bounceColor || '#ffffff';
     ctx.globalAlpha = alpha;
     ctx.lineWidth = 1.5;
-    ctx.arc(sx, sy, 4 + age * 0.012, 0, Math.PI*2);
+    ctx.arc(sx, sy, 4 + age * 0.005, 0, Math.PI*2);
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
@@ -3287,10 +3287,20 @@ fn initAccel(@builtin(global_invocation_id) gid: vec3u) {
   acc[i] = computeAccelOne(i);
 }
 
+// Velocity-Verlet in ZWEI getrennten Dispatches (echtes 2-Pass-Schema).
+// Pass A schreibt nur die neuen Positionen, Pass B liest danach ALLE
+// neuen Positionen fuer die neue Beschleunigung. Der von WebGPU zwischen
+// zwei Compute-Passes automatisch eingefuegte Barrier garantiert, dass
+// Pass B keine halb-aktualisierten Positionen sieht. Im alten fusionierten
+// Kernel war das ein Data Race ueber state[]: jeder Thread schrieb state[i]
+// und las gleichzeitig state[j] aller anderen Threads -> computeAccelOne
+// bekam eine wilde Mischung aus alten und neuen Positionen, nichtdetermini-
+// stisch und mit Energiedrift (v.a. bei dichter Asteroidenwolke sichtbar).
+//
+// acc[] bleibt in Pass A unberuehrt und haelt damit weiterhin die ALTE
+// Beschleunigung, die Pass B fuer den Velocity-Schritt braucht.
 @compute @workgroup_size(64)
-fn verletStep(@builtin(global_invocation_id) gid: vec3u) {
-  // Wird in JS mit unterschiedlichen dt-Werten (Yoshida) gepushed via
-  // dtSub im Params. Hier nur ein Velocity-Verlet-Schritt.
+fn positionStep(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.x;
   if (i >= p.N) { return; }
   let bi = state[i];
@@ -3298,16 +3308,21 @@ fn verletStep(@builtin(global_invocation_id) gid: vec3u) {
   if ((flagsI & 1u) == 0u) { return; }
   let dt = p.dtSub;
   let oldAx = acc[i];
-  // Position-Schritt
-  var pos = bi.xy;
-  pos = pos + vel[i] * dt + 0.5 * oldAx * dt * dt;
+  let pos = bi.xy + vel[i] * dt + 0.5 * oldAx * dt * dt;
   state[i] = vec4f(pos, bi.zw);
-  // Neue Beschleunigung
-  let newA = computeAccelOne(i);
-  // Workgroup-Synchronisation? Kann nicht — alle Bodies brauchen
-  // alte Positionen fuer accel. Daher: 2-Pass-Schema.
+}
+
+@compute @workgroup_size(64)
+fn velocityStep(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= p.N) { return; }
+  let bi = state[i];
+  let flagsI = u32(bi.w);
+  if ((flagsI & 1u) == 0u) { return; }
+  let dt = p.dtSub;
+  let oldAx = acc[i];               // alte Beschleunigung (Pass A liess sie stehen)
+  let newA = computeAccelOne(i);    // jetzt aus DURCHWEG neuen Positionen
   acc[i] = newA;
-  // Velocity-Schritt
   vel[i] = vel[i] + 0.5 * (oldAx + newA) * dt;
 }
 `;
@@ -3328,10 +3343,11 @@ async function initWebGPU() {
     });
     const module = device.createShaderModule({ code: WGSL_NBODY });
     const layout = 'auto';
-    const initPipe   = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'initAccel' } });
-    const verletPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'verletStep' } });
+    const initPipe     = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'initAccel' } });
+    const positionPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'positionStep' } });
+    const velocityPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'velocityStep' } });
     console.log('WebGPU bereit:', adapter.info?.vendor || 'unbekannt', adapter.info?.architecture || '');
-    return { device, initPipe, verletPipe };
+    return { device, initPipe, positionPipe, velocityPipe };
   } catch (e) {
     console.warn('WebGPU init fehlgeschlagen:', e);
     return null;
@@ -3358,8 +3374,17 @@ function ensureGpuBuffers(N) {
       { binding: 3, resource: { buffer: gpuBuf.params } },
     ]
   });
-  gpuBuf.bindVerlet = gpu.device.createBindGroup({
-    layout: gpu.verletPipe.getBindGroupLayout(0),
+  gpuBuf.bindPosition = gpu.device.createBindGroup({
+    layout: gpu.positionPipe.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: gpuBuf.state } },
+      { binding: 1, resource: { buffer: gpuBuf.vel } },
+      { binding: 2, resource: { buffer: gpuBuf.accel } },
+      { binding: 3, resource: { buffer: gpuBuf.params } },
+    ]
+  });
+  gpuBuf.bindVelocity = gpu.device.createBindGroup({
+    layout: gpu.velocityPipe.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: gpuBuf.state } },
       { binding: 1, resource: { buffer: gpuBuf.vel } },
@@ -3414,15 +3439,25 @@ async function advanceGPU(dtYears) {
   pass.end();
   gpu.device.queue.submit([enc.finish()]);
 
-  // Yoshida-Schritte
+  // Yoshida-Schritte. Pro Teilschritt zwei Compute-Passes (Position dann
+  // Velocity) im selben Encoder — der Barrier zwischen den Passes loest den
+  // alten state[]-Race auf.
+  const groups = Math.ceil(N / 64);
   for (let s = 0; s < steps; s++) {
     for (const wDt of wDts) {
       writeGpuParams(N, 0, 1e-6, wDt);
       enc = gpu.device.createCommandEncoder();
+      // Pass A: nur neue Positionen schreiben.
       pass = enc.beginComputePass();
-      pass.setPipeline(gpu.verletPipe);
-      pass.setBindGroup(0, gpuBuf.bindVerlet);
-      pass.dispatchWorkgroups(Math.ceil(N / 64));
+      pass.setPipeline(gpu.positionPipe);
+      pass.setBindGroup(0, gpuBuf.bindPosition);
+      pass.dispatchWorkgroups(groups);
+      pass.end();
+      // Pass B: neue Beschleunigung aus ALLEN neuen Positionen + Velocity.
+      pass = enc.beginComputePass();
+      pass.setPipeline(gpu.velocityPipe);
+      pass.setBindGroup(0, gpuBuf.bindVelocity);
+      pass.dispatchWorkgroups(groups);
       pass.end();
       gpu.device.queue.submit([enc.finish()]);
     }
@@ -3589,42 +3624,75 @@ function _absorb(small, big) {
 // auseinander, damit der naechste Frame nicht sofort dieselbe Kollision
 // neu auslosed.
 const COLOR_REVERT_MS = 5000;   // nach Bounce: 5 s rot/cyan, dann zurueck
-function _bounce(a, b) {
-  let nx = b.x - a.x, ny = b.y - a.y;
+const BOUNCE_FLASH_MS = 2000;   // Ring-Flash-Dauer um gebouncten Asteroid
+function _bounce(a, b, tContact) {
+  // Stoßnormale entlang der Verbindungslinie der Massenmittelpunkte
+  // (echte Physik fuer Kugel-Stoss). Slingshot wirkt ENTLANG der Normale —
+  // bei head-on Stoss voll, bei perpendicular keine Beschleunigung
+  // (nur Reflexion in Normalenrichtung). Tangentiale Bewegung bleibt
+  // erhalten.
+  //
+  // WICHTIG: Normale + vRel werden zum KOLLISIONSZEITPUNKT (tContact <= 0)
+  // berechnet, nicht am Frame-Ende. Schnelle Gegenlaeufer (Wolke gegen
+  // Belt) werden fast immer per CCD erkannt — am Frame-Ende sind sie dann
+  // schon aneinander vorbei, die JETZT-Normale zeigt falsch herum und
+  // vRel > 0 (sie entfernen sich) wuerde den Impuls-Guard blockieren. Der
+  // Body fliegt sichtbar durch, obwohl die UI eine Kollision meldet. Mit
+  // Rueck-Extrapolation auf den Erst-Kontakt naehern sie sich -> vRel < 0.
+  const tc = tContact || 0;
+  const ax = a.x + a.vx * tc, ay = a.y + a.vy * tc;
+  const bx = b.x + b.vx * tc, by = b.y + b.vy * tc;
+  let nx = bx - ax, ny = by - ay;
   let dist = Math.hypot(nx, ny);
   if (dist < 1e-30) { nx = 1; ny = 0; dist = 1; }
   const inv = 1 / dist;
   nx *= inv; ny *= inv;
   const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
-  // Volle Relativgeschwindigkeits-Magnitude statt projizierte vRel.
-  // Damit funktionieren sowohl echte Konvergenz-Hits als auch CCD-
-  // Streifer-Hits visuell — Bodies bekommen immer einen sichtbaren
-  // Auseinander-Push entlang der Normalen.
-  const vRelMag = Math.hypot(dvx, dvy);
-  const J = 2 * vRelMag / (1 / a.mass + 1 / b.mass);
-  let Jx = J * nx, Jy = J * ny;
-  // Tangentialer Streu-Anteil: modelliert unregelmaessige Asteroid-Formen
-  // (Reibung am Touch-Punkt -> seitlicher Impulsanteil). Tangente ist die
-  // 90°-Drehung der Normale. Random-Faktor ±50% von J -> Bounces gehen in
-  // zufaelligen Winkeln, nicht exakt entlang der Verbindungslinie.
-  const tx = -ny, ty = nx;
-  const tangential = (Math.random() - 0.5) * J;
-  Jx += tx * tangential;
-  Jy += ty * tangential;
-  // a wird von b WEG geschoben (entlang -n), b von a WEG (entlang +n).
-  // Impuls-Erhaltung bleibt: Δp_a + Δp_b = -Jx + Jx = 0.
-  a.vx -= Jx / a.mass;  a.vy -= Jy / a.mass;
-  b.vx += Jx / b.mass;  b.vy += Jy / b.mass;
-  // Ueberlapp aufloesen mit ECHTER Normale, damit Bodies wirklich
-  // auseinander geschoben werden und naechster Frame nicht sofort wieder
-  // einen Treffer registriert (Masse-gewichtetes Auseinanderschieben).
+  const vRel = dvx * nx + dvy * ny;
+  // Massen-aware elastische Kollision (Slingshot bei Massendifferenz):
+  // J = -2·vRel·μ_red, leichter Asteroid wird in Richtung des schweren
+  // Bewegungsvektors mit erhoehter Geschwindigkeit weggeschleudert
+  // (Tennisball-auf-Basketball-Effekt). Schwerer bleibt fast unveraendert.
+  if (vRel < 0) {
+    const J = -2 * vRel / (1 / a.mass + 1 / b.mass);
+    const Jx = J * nx, Jy = J * ny;
+    a.vx -= Jx / a.mass;  a.vy -= Jy / a.mass;
+    b.vx += Jx / b.mass;  b.vy += Jy / b.mass;
+  }
+  // CCD-Hits (schnelle Gegenlaeufer) sind am Frame-Ende bereits
+  // durcheinander DURCHGETUNNELT — die Bodies stehen auf vertauschten
+  // Seiten. Wuerde man sie dort lassen und nur die Geschwindigkeit umkehren,
+  // bewegen sie sich naechsten Frame wieder aufeinander zu (Re-Kollision,
+  // sichtbares "nach-hinten-Schiessen" von der falschen Seite). Daher: vom
+  // Kontaktpunkt (ax/ay, bx/by) aus mit der NEUEN Geschwindigkeit die seit
+  // dem Kontakt verstrichene Zeit (-tc) weiterfliegen -> reflektierte Bahn.
+  // Bei statischem Hit ist tc = 0 -> Block ist ein No-Op (Positionen bleiben,
+  // die Ueberlapp-Aufloesung unten greift). Falls kein Impuls angewandt
+  // wurde (vRel >= 0), ist die Reprojektion ebenfalls identisch zur
+  // aktuellen Position, also harmlos.
+  if (tc < 0) {
+    a.x = ax + a.vx * (-tc);  a.y = ay + a.vy * (-tc);
+    b.x = bx + b.vx * (-tc);  b.y = by + b.vy * (-tc);
+  }
+  // Ueberlapp aufloesen ENTLANG POSITION-VERBINDUNGSLINIE (nicht der
+  // Bewegungs-n, das ist eine andere Achse). Sonst bleiben die Bodies
+  // ueberlappend und triggern jeden Frame neue Re-Bounces — wie ein
+  // gravitativ gebundener Doppel-Asteroid. Buffer-Multiplikator > 1 damit
+  // sie zuverlaessig auseinander kommen.
+  const pdx = b.x - a.x, pdy = b.y - a.y;
+  const pdist = Math.hypot(pdx, pdy);
   const touch = a.realR + b.realR;
-  const overlap = touch - dist;
-  if (overlap > 0) {
+  const overlap = touch - pdist;
+  if (overlap > 0 && pdist > 1e-30) {
+    const pinv = 1 / pdist;
+    const pnx = pdx * pinv, pny = pdy * pinv;
     const wA = b.mass / (a.mass + b.mass);
     const wB = a.mass / (a.mass + b.mass);
-    a.x -= nx * overlap * wA;  a.y -= ny * overlap * wA;
-    b.x += nx * overlap * wB;  b.y += ny * overlap * wB;
+    // Buffer 1.1x — gibt Bodies einen kleinen Abstand, damit Mikro-
+    // Schwingungen + Float-Rauschen sie nicht sofort wieder ueberlappen.
+    const push = overlap * 1.1;
+    a.x -= pnx * push * wA;  a.y -= pny * push * wA;
+    b.x += pnx * push * wB;  b.y += pny * push * wB;
   }
   // Farb-Marker: schwerer Asteroid -> Blau, leichterer -> Rot.
   // Original-Farbe einmalig sichern, damit nach COLOR_REVERT_MS wieder
@@ -3658,6 +3726,12 @@ function _tryCollide(a, b, dtFrame) {
   // sonst wuerde der Visual am Frame-End-Mittelpunkt sitzen, nicht dort
   // wo die Bodies sich physikalisch beruehrt haben.
   let tCollision = 0;
+  // Erst-Kontakt-Zeit (<= 0) speziell fuer die Bounce-Aufloesung. Anders
+  // als tCollision (= Mittelpunkt des Ueberlapp-Intervalls, fuer den Flash)
+  // ist das der Moment, in dem die Bodies sich GERADE beruehren und sich
+  // nachweislich annaehern. Beim Mittelpunkt waere vRel entlang der Normalen
+  // ~0 (tiefster Ueberlapp) -> Impuls ~0. 0 = statischer Hit (Default).
+  let tContact = 0;
   // Phase 2: Continuous Collision Detection — falls die Bodies in
   // diesem Frame mit hoher Relativ-Geschwindigkeit aneinander
   // vorbeigeflogen waeren (Tunneling), prueft der parametrische
@@ -3686,8 +3760,11 @@ function _tryCollide(a, b, dtFrame) {
       //      effektiven Trefferradius etwa proportional zur Begegnungs-
       //      geschwindigkeit — mit-Strom-Bodies (vrel ≈ 0) werden nicht
       //      veraendert, schnelle Vorbei-Flüge bekommen mehr Chancen.
-      const sweepSq = A * dtFrame * dtFrame;
-      const discTol = touchSq * 0.01 + sweepSq * 0.005;
+      // Sweep-Toleranz raus — sonst werden viele "knapp-vorbei"-Streifer
+      // als Hits gemeldet, bei denen die Asteroiden physisch schon weit
+      // auseinander sind. Slingshot greift dann mangels echter Konvergenz
+      // nicht. Nur Float-Rauschen tolerieren.
+      const discTol = touchSq * 0.01;
       if (disc >= -discTol) {
         const sqD = Math.sqrt(Math.max(0, disc));
         const inv2A = 1 / (2*A);
@@ -3702,6 +3779,10 @@ function _tryCollide(a, b, dtFrame) {
           // (auf [-dtFrame, 0] geclippt) — Flash sitzt dann auf der Bahn-
           // Beruehrung statt am End-Mittelpunkt.
           tCollision = 0.5 * (Math.max(tEnter, -dtFrame) + Math.min(tExit, 0));
+          // Erst-Kontakt ins Frame-Fenster geclippt — dort naehern sich die
+          // Bodies an (vRel < 0), unabhaengig davon ob sie am Frame-Ende
+          // laengst aneinander vorbeigeflogen sind.
+          tContact = Math.max(tEnter, -dtFrame);
         }
       }
     }
@@ -3763,7 +3844,7 @@ function _tryCollide(a, b, dtFrame) {
       ' vImp=' + vImp.toFixed(2) + ' vEsc=' + vEsc.toFixed(2) +
       ' -> ' + path);
   }
-  if (path === 'bounce')      _bounce(a, b);
+  if (path === 'bounce')      _bounce(a, b, tContact);
   else if (path === 'absorb') _absorb(aIsAst ? a : b, aIsAst ? b : a);
   else if (path === 'merge')  merge(a, b);
   else                        shatter(a, b);
@@ -3788,7 +3869,16 @@ function _tryCollide(a, b, dtFrame) {
     computeAccelerations();
     updatePerturberList();
   }
-  return true;
+  // Rueckgabe = "hat sich das bodies-Array strukturell geaendert?". Nur
+  // merge/shatter/absorb entfernen/erzeugen Bodies — dann MUSS die
+  // aufrufende Kollisions-Schleife abbrechen (sie iteriert sonst ueber ein
+  // mutiertes Array). Ein Bounce taucht nur Velocity/Position, laesst das
+  // Array unangetastet -> false, damit die Phase-4-Schleife WEITERlaeuft und
+  // ALLE ueberlappenden Asteroid-Paare im selben Frame aufloest. Sonst wird
+  // pro Frame nur ein Paar entstaut und dichte Belts/Klumpen flimmern
+  // (jeden Frame schiebt der Integrator die unbehandelten Paare neu
+  // ineinander).
+  return path !== 'bounce';
 }
 
 function handleCollisions(dtFrame) {
@@ -4496,6 +4586,11 @@ chkSync.forEach(([desk, mob, varName]) => {
     document.getElementById(mob).checked = val;
     // Log-Zoom braucht einen anderen Kamera-Zoom — Szenario-Wert neu setzen.
     if (varName === 'useLogZoom') fitZoomToSystem(true);   // smooth
+    // useWorker und useGPU schliessen sich gegenseitig aus — schalte das
+    // jeweils andere aus, wenn eins aktiviert wird (sie ergaenzen sich
+    // nicht, advanceAsync nimmt nur einen pro Frame).
+    if (val && varName === 'useGPU')    toggle_other('useWorker');
+    if (val && varName === 'useWorker') toggle_other('useGPU');
     if (persist) {
       try { localStorage.setItem('sim_' + varName, val ? '1' : '0'); } catch (e) {}
     }
@@ -4507,6 +4602,17 @@ chkSync.forEach(([desk, mob, varName]) => {
   try { saved = localStorage.getItem('sim_' + varName); } catch (e) {}
   if (saved !== null) toggle(saved === '1', false);
 });
+
+// Hilfsfunktion zum gegenseitigen Ausschalten der Engine-Toggles.
+function toggle_other(varName) {
+  const row = chkSync.find(r => r[2] === varName);
+  if (!row) return;
+  const [desk, mob] = row;
+  window[varName] = false;
+  document.getElementById(desk).checked = false;
+  document.getElementById(mob).checked = false;
+  try { localStorage.setItem('sim_' + varName, '0'); } catch (e) {}
+}
 
 // Buttons
 function setPaused(p) {
@@ -5010,7 +5116,6 @@ function updateStats() {
 
 // --- Keyboard ---
 document.addEventListener('keydown', function(e) {
-  if (e.target.tagName === 'INPUT') return;
   if (e.key === 'p' || e.key === 'P') {
     document.getElementById('btn-pause').click();
   } else if (e.key === ' ') {
