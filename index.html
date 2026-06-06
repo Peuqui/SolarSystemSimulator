@@ -361,14 +361,15 @@ input[type=range] {
 
 <!-- Desktop Sidebar -->
 <div id="sidebar">
-  <div style="display:flex; justify-content:flex-start; margin-bottom:8px;">
-    <button id="btn-lang" data-i18n="misc.lang" data-i18n-title="misc.lang-title"
-            style="background:#1a1a2e; color:#7af; border:1px solid #333; border-radius:4px;
-                   padding:4px 10px; font-size:12px; font-weight:bold; cursor:pointer;
-                   min-width:auto; min-height:auto;">EN</button>
-  </div>
   <details open style="margin-bottom:10px;">
-    <summary style="color:#7af; font-size:15px; font-weight:bold; cursor:pointer; padding-bottom:4px; border-bottom:1px solid #333;" data-i18n="sec.scenario">&#x1F30C; Szenario</summary>
+    <summary style="color:#7af; font-size:15px; font-weight:bold; cursor:pointer; padding-bottom:4px; border-bottom:1px solid #333; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+      <span data-i18n="sec.scenario">&#x1F30C; Szenario</span>
+      <button id="btn-lang" data-i18n="misc.lang" data-i18n-title="misc.lang-title"
+              onclick="event.preventDefault()"
+              style="background:#1a1a2e; color:#7af; border:1px solid #333; border-radius:4px;
+                     padding:4px 10px; font-size:12px; font-weight:bold; cursor:pointer;
+                     min-width:auto; min-height:auto;">EN</button>
+    </summary>
     <select id="scenario-select" style="width:100%; margin-top:8px; font-size:14px; background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:4px; padding:6px; min-height:34px;">
       <option value="Sonnensystem" data-i18n="sc.solarsystem">Sonnensystem</option>
       <option value="Sonnensystem mit Gürteln" data-i18n="sc.solarsystem-belts">Sonnensystem mit Gürteln</option>
@@ -440,11 +441,15 @@ input[type=range] {
   <label data-i18n-title="tt.bary-no-rogue">
     <input type="checkbox" id="chk-bary-no-rogue" checked> <span data-i18n="lbl.exclude-rogues-bary">Rogues bei Schwerpunkt ignorieren</span>
   </label>
+  <label data-i18n="lbl.engine" style="margin-top:6px; color:#7af;">Physik-Engine</label>
+  <label data-i18n-title="tt.engine-cpu">
+    <input type="radio" name="engine" id="rad-cpu" value="cpu"> <span data-i18n="lbl.engine-cpu">Hauptthread (CPU)</span>
+  </label>
   <label data-i18n-title="tt.worker">
-    <input type="checkbox" id="chk-worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span>
+    <input type="radio" name="engine" id="rad-worker" value="worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span>
   </label>
   <label data-i18n-title="tt.gpu">
-    <input type="checkbox" id="chk-gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span>
+    <input type="radio" name="engine" id="rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span>
   </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
@@ -588,8 +593,10 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-logzoom" checked> <span data-i18n="lbl.logzoom">Log-Zoom</span></label>
   <label><input type="checkbox" id="mob-chk-baryctr" checked> <span data-i18n="lbl.centerbary">Schwerpunkt zentrieren</span></label>
   <label data-i18n-title="tt.bary-no-rogue"><input type="checkbox" id="mob-chk-bary-no-rogue" checked> <span data-i18n="lbl.exclude-rogues-bary">Rogues bei Schwerpunkt ignorieren</span></label>
-  <label data-i18n-title="tt.worker"><input type="checkbox" id="mob-chk-worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span></label>
-  <label data-i18n-title="tt.gpu"><input type="checkbox" id="mob-chk-gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
+  <label data-i18n="lbl.engine" style="margin-top:6px; color:#7af;">Physik-Engine</label>
+  <label data-i18n-title="tt.engine-cpu"><input type="radio" name="engine-mob" id="mob-rad-cpu" value="cpu"> <span data-i18n="lbl.engine-cpu">Hauptthread (CPU)</span></label>
+  <label data-i18n-title="tt.worker"><input type="radio" name="engine-mob" id="mob-rad-worker" value="worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span></label>
+  <label data-i18n-title="tt.gpu"><input type="radio" name="engine-mob" id="mob-rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
@@ -785,6 +792,8 @@ const I18N = {
     'lbl.trail-len-body': 'Bahnspur-Länge',
     'lbl.trail-len-asteroid': 'Asteroid-Bahnspur',
     'lbl.vectors-show': 'Kraftvektoren anzeigen',
+    'lbl.engine': 'Physik-Engine',
+    'lbl.engine-cpu': 'Hauptthread (CPU)',
     'lbl.worldworker': 'Physik in WebWorker',
     'lbl.worldgpu': 'Physik via WebGPU',
     'lbl.inject-mass': 'Masse',
@@ -801,6 +810,7 @@ const I18N = {
     'tt.stars': 'Statisches Sternfeld als Bewegungsreferenz, wenn das System sich bewegt.',
     'tt.worldgrid': 'Festes Achsenkreuz x=0/y=0 in Welt-Koordinaten mit Tick-Marks an Dekaden — bewegt sich nicht mit der Kamera.',
     'tt.bary-no-rogue': 'Wenn aktiv: Rogues zählen nicht zur Schwerpunkts-Berechnung — die Kamera bleibt am Hauptsystem, auch wenn schwere Störmassen einfliegen.',
+    'tt.engine-cpu': 'Physik im Haupt-Thread (kein Worker, keine GPU). Einfachster Pfad, bei wenigen Körpern völlig ausreichend.',
     'tt.worker': 'Physik auf separatem Thread (WebWorker) — flüssiger bei vielen Bodies. Bei Problemen ausschalten.',
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
     'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
@@ -955,6 +965,8 @@ const I18N = {
     'lbl.trail-len-asteroid': 'Asteroid trail',
     'lbl.vectors-show': 'Show force vectors',
     'lbl.worldworker': 'Physics in WebWorker',
+    'lbl.engine': 'Physics engine',
+    'lbl.engine-cpu': 'Main thread (CPU)',
     'lbl.worldgpu': 'Physics via WebGPU',
     'lbl.inject-mass': 'Mass',
     'lbl.inject-speed': 'Speed (km/s)',
@@ -969,6 +981,7 @@ const I18N = {
     'tt.stars': 'Static star field as movement reference when the system itself is moving.',
     'tt.worldgrid': 'Fixed x=0/y=0 axis cross in world coordinates with tick marks at decades — does not move with the camera.',
     'tt.bary-no-rogue': 'If active: rogues are not counted for the barycenter — the camera stays with the main system, even when heavy perturbers fly through.',
+    'tt.engine-cpu': 'Physics on the main thread (no worker, no GPU). Simplest path, perfectly fine for few bodies.',
     'tt.worker': 'Physics on a separate thread (WebWorker) — smoother with many bodies. Disable if problems occur.',
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
     'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
@@ -4578,8 +4591,6 @@ const chkSync = [
   ['chk-logzoom', 'mob-chk-logzoom', 'useLogZoom'],
   ['chk-baryctr', 'mob-chk-baryctr', 'lockBarycenter'],
   ['chk-bary-no-rogue', 'mob-chk-bary-no-rogue', 'excludeRoguesFromBary'],
-  ['chk-worker', 'mob-chk-worker', 'useWorker'],
-  ['chk-gpu', 'mob-chk-gpu', 'useGPU'],
   ['chk-ast-ast', 'mob-chk-ast-ast', 'astAstCollisions'],
 ];
 chkSync.forEach(([desk, mob, varName]) => {
@@ -4589,11 +4600,6 @@ chkSync.forEach(([desk, mob, varName]) => {
     document.getElementById(mob).checked = val;
     // Log-Zoom braucht einen anderen Kamera-Zoom — Szenario-Wert neu setzen.
     if (varName === 'useLogZoom') fitZoomToSystem(true);   // smooth
-    // useWorker und useGPU schliessen sich gegenseitig aus — schalte das
-    // jeweils andere aus, wenn eins aktiviert wird (sie ergaenzen sich
-    // nicht, advanceAsync nimmt nur einen pro Frame).
-    if (val && varName === 'useGPU')    toggle_other('useWorker');
-    if (val && varName === 'useWorker') toggle_other('useGPU');
     if (persist) {
       try { localStorage.setItem('sim_' + varName, val ? '1' : '0'); } catch (e) {}
     }
@@ -4606,16 +4612,34 @@ chkSync.forEach(([desk, mob, varName]) => {
   if (saved !== null) toggle(saved === '1', false);
 });
 
-// Hilfsfunktion zum gegenseitigen Ausschalten der Engine-Toggles.
-function toggle_other(varName) {
-  const row = chkSync.find(r => r[2] === varName);
-  if (!row) return;
-  const [desk, mob] = row;
-  window[varName] = false;
-  document.getElementById(desk).checked = false;
-  document.getElementById(mob).checked = false;
-  try { localStorage.setItem('sim_' + varName, '0'); } catch (e) {}
+// Physik-Engine: Hauptthread / WebWorker / WebGPU schliessen sich
+// gegenseitig aus -> native Radio-Gruppe statt Checkbox + manuellem
+// Ausschluss. mode: 'cpu' | 'worker' | 'gpu'. Desktop- und Mobile-Gruppe
+// (name="engine" / "engine-mob") werden gespiegelt.
+function applyEngine(mode, persist) {
+  useWorker = (mode === 'worker');
+  useGPU    = (mode === 'gpu');
+  for (const prefix of ['rad', 'mob-rad']) {
+    const el = document.getElementById(prefix + '-' + mode);
+    if (el) el.checked = true;
+  }
+  if (persist) {
+    try { localStorage.setItem('sim_engine', mode); } catch (e) {}
+  }
 }
+['rad-cpu', 'rad-worker', 'rad-gpu', 'mob-rad-cpu', 'mob-rad-worker', 'mob-rad-gpu']
+  .forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', function() {
+      if (this.checked) applyEngine(this.value, true);
+    });
+  });
+// Persistierten Modus wiederherstellen, sonst Default aus DEFAULTS ableiten.
+(() => {
+  let mode = DEFAULTS.useWorker ? 'worker' : (DEFAULTS.useGPU ? 'gpu' : 'cpu');
+  try { const s = localStorage.getItem('sim_engine'); if (s) mode = s; } catch (e) {}
+  applyEngine(mode, false);
+})();
 
 // Buttons
 function setPaused(p) {
@@ -5659,8 +5683,6 @@ function applyDefaults() {
     ['chk-logzoom',        'useLogZoom',            DEFAULTS.useLogZoom],
     ['chk-baryctr',        'lockBarycenter',        DEFAULTS.lockBarycenter],
     ['chk-bary-no-rogue',  'excludeRoguesFromBary', DEFAULTS.excludeRoguesFromBary],
-    ['chk-worker',         'useWorker',             DEFAULTS.useWorker],
-    ['chk-gpu',            'useGPU',                DEFAULTS.useGPU],
     ['chk-ast-ast',        'astAstCollisions',      DEFAULTS.astAstCollisions],
   ];
   for (const [stem, varName, val] of chkDefs) {
