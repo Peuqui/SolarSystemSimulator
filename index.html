@@ -182,6 +182,14 @@ body.is-mobile #mobile-controls { left: 10px; }
 }
 #mobile-actions button:active { background: #7a3333; }
 
+/* Mobile: groessere Touch-Targets fuer die unteren Button-Reihen — 44 px
+   sind mit dem Finger schwer zu treffen. Nur auf Mobile (body.is-mobile),
+   Desktop bleibt kompakt. max-width angehoben, damit die Steuer-Reihe trotz
+   groesserer Buttons in einer Zeile bleibt. */
+body.is-mobile #mobile-controls button,
+body.is-mobile #mobile-actions button { width: 54px; height: 54px; font-size: 21px; }
+body.is-mobile #mobile-controls { max-width: 320px; }
+
 /* Floating-Inject-Button — unten mittig, auf Desktop UND Mobile sichtbar.
    Prominent platziert weil "Rogue injizieren" die Hauptinteraktion
    ist und in der Sidebar/im Sheet schnell aus dem Blickfeld geraet. */
@@ -536,14 +544,15 @@ input[type=range] {
 
 <!-- Mobile Bottom Sheet -->
 <div id="mobile-sheet" class="hidden">
-  <div style="display:flex; justify-content:flex-start; margin-bottom:8px;">
-    <button id="mob-btn-lang" data-i18n="misc.lang" data-i18n-title="misc.lang-title"
-            style="background:#1a1a2e; color:#7af; border:1px solid #333; border-radius:4px;
-                   padding:4px 10px; font-size:12px; font-weight:bold; cursor:pointer;
-                   min-width:auto; min-height:auto;">EN</button>
-  </div>
   <details open style="margin-bottom:10px;">
-    <summary style="color:#7af; font-size:14px; font-weight:bold; cursor:pointer;" data-i18n="sec.scenario">&#x1F30C; Szenario</summary>
+    <summary style="color:#7af; font-size:14px; font-weight:bold; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+      <span data-i18n="sec.scenario">&#x1F30C; Szenario</span>
+      <button id="mob-btn-lang" data-i18n="misc.lang" data-i18n-title="misc.lang-title"
+              onclick="event.preventDefault()"
+              style="background:#1a1a2e; color:#7af; border:1px solid #333; border-radius:4px;
+                     padding:4px 10px; font-size:12px; font-weight:bold; cursor:pointer;
+                     min-width:auto; min-height:auto;">EN</button>
+    </summary>
     <select id="mob-scenario-select" style="width:100%; margin-top:6px; font-size:14px; background:#1a1a2e; color:#ddd; border:1px solid #333; border-radius:4px; padding:6px; min-height:36px;">
       <option value="Sonnensystem" data-i18n="sc.solarsystem">Sonnensystem</option>
       <option value="Sonnensystem mit Gürteln" data-i18n="sc.solarsystem-belts">Sonnensystem mit Gürteln</option>
@@ -1141,15 +1150,15 @@ const ESCAPE_MARK_AU = 45;
 
 // rkm = echter physikalischer Radius in km (fuer die Kollisionsphysik).
 const PLANET_DATA = [
-  { name: "Sonne",   mass: 1.0,      color: "#ffdd44", a: 0,      ecc: 0,      rkm: 696000 },
-  { name: "Merkur",  mass: 1.660e-7, color: "#aaaaaa", a: 0.3871, ecc: 0.2056, rkm: 2440 },
-  { name: "Venus",   mass: 2.447e-6, color: "#e8cda0", a: 0.7233, ecc: 0.0068, rkm: 6052 },
-  { name: "Erde",    mass: 3.003e-6, color: "#4488ff", a: 1.0000, ecc: 0.0167, rkm: 6371 },
-  { name: "Mars",    mass: 3.229e-7, color: "#dd5533", a: 1.5237, ecc: 0.0934, rkm: 3390 },
-  { name: "Jupiter", mass: 9.543e-4, color: "#ddaa77", a: 5.2026, ecc: 0.0484, rkm: 69911 },
-  { name: "Saturn",  mass: 2.855e-4, color: "#ddcc88", a: 9.5549, ecc: 0.0547, rkm: 58232 },
-  { name: "Uranus",  mass: 4.366e-5, color: "#88ccdd", a: 19.218, ecc: 0.0473, rkm: 25362 },
-  { name: "Neptun",  mass: 5.151e-5, color: "#4466dd", a: 30.110, ecc: 0.0086, rkm: 24622 },
+  { name: "Sol",       mass: 1.0,      color: "#ffdd44", a: 0,      ecc: 0,      rkm: 696000 },
+  { name: "Mercurius", mass: 1.660e-7, color: "#aaaaaa", a: 0.3871, ecc: 0.2056, rkm: 2440 },
+  { name: "Venus",     mass: 2.447e-6, color: "#e8cda0", a: 0.7233, ecc: 0.0068, rkm: 6052 },
+  { name: "Terra",     mass: 3.003e-6, color: "#4488ff", a: 1.0000, ecc: 0.0167, rkm: 6371 },
+  { name: "Mars",      mass: 3.229e-7, color: "#dd5533", a: 1.5237, ecc: 0.0934, rkm: 3390 },
+  { name: "Iuppiter",  mass: 9.543e-4, color: "#ddaa77", a: 5.2026, ecc: 0.0484, rkm: 69911 },
+  { name: "Saturnus",  mass: 2.855e-4, color: "#ddcc88", a: 9.5549, ecc: 0.0547, rkm: 58232 },
+  { name: "Uranus",    mass: 4.366e-5, color: "#88ccdd", a: 19.218, ecc: 0.0473, rkm: 25362 },
+  { name: "Neptunus",  mass: 5.151e-5, color: "#4466dd", a: 30.110, ecc: 0.0086, rkm: 24622 },
   // Pluto — Zwergplanet, exzentrische Bahn (e=0,2488), Perihel 29,66 AU
   // innerhalb Neptun-Bahn. Daten: NASA JPL Horizons (mittlere Werte).
   { name: "Pluto",   mass: 6.55e-9,  color: "#ccaa99", a: 39.482, ecc: 0.2488, rkm: 1188 },
@@ -1465,9 +1474,9 @@ function buildKepler47() {
 function buildTrisolaris() {
   // Chaotisches Dreikoerpersystem aus Liu Cixins "Drei-Koerper-Problem".
   const stars = [
-    { name:'Sonne I',   mass:1.0, color:'#ffdd44', rkm:696000, x: 0,   y: 4,  vx: 1.4, vy: 0    },
-    { name:'Sonne II',  mass:1.0, color:'#ff9944', rkm:696000, x:-3.5, y:-2,  vx:-0.7, vy:-1.2  },
-    { name:'Sonne III', mass:1.0, color:'#ffcc88', rkm:696000, x: 3.5, y:-2,  vx:-0.7, vy: 1.2  },
+    { name:'Sol I',   mass:1.0, color:'#ffdd44', rkm:696000, x: 0,   y: 4,  vx: 1.4, vy: 0    },
+    { name:'Sol II',  mass:1.0, color:'#ff9944', rkm:696000, x:-3.5, y:-2,  vx:-0.7, vy:-1.2  },
+    { name:'Sol III', mass:1.0, color:'#ffcc88', rkm:696000, x: 3.5, y:-2,  vx:-0.7, vy: 1.2  },
   ];
   for (const s of stars) pushBody({ ...s, isStar:true });
   pushBody({ name:'Trisolaris', mass:3*M_EARTH_SUN, color:'#4488ff', rkm:8000,
@@ -1545,9 +1554,9 @@ function buildTrojan() {
   const omega = Math.sqrt(G_AU * mTot / (L*L*L));
   // Eckpunkte relativ zur Sonne: Jupiter bei 0 Grad, Trojaner 60 Grad voraus.
   const def = [
-    { name:'Sonne',    mass:1.0,   color:'#ffdd44', rkm:696000, isStar:true,  x:0,       y:0 },
-    { name:'Jupiter',  mass:M_JUP, color:'#ccaa88', rkm:69911,  isStar:false, x:L,       y:0 },
-    { name:'Trojaner', mass:M_TRO, color:'#88ccff', rkm:120,    isStar:false,
+    { name:'Sol',      mass:1.0,   color:'#ffdd44', rkm:696000, isStar:true,  x:0,       y:0 },
+    { name:'Iuppiter', mass:M_JUP, color:'#ccaa88', rkm:69911,  isStar:false, x:L,       y:0 },
+    { name:'Troianus', mass:M_TRO, color:'#88ccff', rkm:120,    isStar:false,
       x:L*0.5, y:L*Math.sqrt(3)/2 },
   ];
   // Massenschwerpunkt -> rigide Rotation:  v = omega x (r - Schwerpunkt).
@@ -1577,9 +1586,9 @@ function buildFigure8() {
   const px = 0.97000436, py = 0.24308753;
   const vx = 0.4662036850, vy = 0.4323657300;
   const def = [
-    { name:'Acht I',   x:-px, y: py, vx: vx,   vy: vy   },
-    { name:'Acht II',  x: px, y:-py, vx: vx,   vy: vy   },
-    { name:'Acht III', x: 0,  y: 0,  vx:-2*vx, vy:-2*vy },
+    { name:'Corpus I',   x:-px, y: py, vx: vx,   vy: vy   },
+    { name:'Corpus II',  x: px, y:-py, vx: vx,   vy: vy   },
+    { name:'Corpus III', x: 0,  y: 0,  vx:-2*vx, vy:-2*vy },
   ];
   const colors = ['#88ccff', '#ffcc66', '#ff8888'];
   for (let k = 0; k < 3; k++) {
@@ -1601,9 +1610,9 @@ function buildChoreography(v1, v2, alpha) {
   const gamma = Math.sqrt(alpha*alpha*alpha / (G_AU * m));
   const vs = alpha / gamma;
   const def = [
-    { name:'Koerper I',   x:-1, y:0, vx: v1,   vy: v2   },
-    { name:'Koerper II',  x: 1, y:0, vx: v1,   vy: v2   },
-    { name:'Koerper III', x: 0, y:0, vx:-2*v1, vy:-2*v2 },
+    { name:'Corpus I',   x:-1, y:0, vx: v1,   vy: v2   },
+    { name:'Corpus II',  x: 1, y:0, vx: v1,   vy: v2   },
+    { name:'Corpus III', x: 0, y:0, vx:-2*v1, vy:-2*v2 },
   ];
   const colors = ['#88ccff', '#ffcc66', '#ff8888'];
   for (let k = 0; k < 3; k++) {
@@ -1625,14 +1634,14 @@ const SCENARIOS = {
   'Sonnensystem':          { build: buildSolarSystem,   zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
   'Sonnensystem mit Gürteln': { build: buildSolarSystemWithBelts, zoom: 0.02, zoomLog: 4, dt: 1, slow: 0 },
   'Trisolaris (3 Sonnen)': { build: buildTrisolaris,    zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, injectAngle: 180 },
-  'Lagrange (instabil)':   { build: buildLagrange,       zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Lagrange (stabil)':     { build: buildLagrangeStable, zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Trojaner (L4)':         { build: buildTrojan,         zoom: 0.6,  zoomLog: 6.55, dt: 1,   slow: 0 },
-  'Figur 8 (Choreografie)':{ build: buildFigure8,        zoom: 0.8,  zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Butterfly I':           { build: () => buildChoreography(0.30689, 0.12551, 2.5), zoom: 0.8, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Moth I':                { build: () => buildChoreography(0.46444, 0.39606, 2.5), zoom: 0.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Goggles':               { build: () => buildChoreography(0.08330, 0.12789, 2.5), zoom: 0.7, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Yarn':                  { build: () => buildChoreography(0.55906, 0.34919, 2.5), zoom: 0.9, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Lagrange (instabil)':   { build: buildLagrange,       zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Lagrange (stabil)':     { build: buildLagrangeStable, zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Trojaner (L4)':         { build: buildTrojan,         zoom: 0.6,  zoomLog: 6.55, dt: 1,   slow: 0, precise: true },
+  'Figur 8 (Choreografie)':{ build: buildFigure8,        zoom: 0.8,  zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Butterfly I':           { build: () => buildChoreography(0.30689, 0.12551, 2.5), zoom: 0.8, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Moth I':                { build: () => buildChoreography(0.46444, 0.39606, 2.5), zoom: 0.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Goggles':               { build: () => buildChoreography(0.08330, 0.12789, 2.5), zoom: 0.7, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Yarn':                  { build: () => buildChoreography(0.55906, 0.34919, 2.5), zoom: 0.9, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
   'Leeres System':         { build: buildEmpty,         zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
   'TRAPPIST-1':            { build: buildTrappist,      zoom: 96,   zoomLog: 330,  dt: 0.1, slow: Math.log10(7) },
   'Alpha Centauri':        { build: buildAlphaCentauri, zoom: 0.15, zoomLog: 6.55, dt: 5,   slow: 0 },
@@ -3236,7 +3245,15 @@ function advanceWorker(dtYears) {
 
 // async-Variante: macht Physik im Worker, danach Kollisionen + Trails im Main.
 async function advanceAsync(dtYears) {
-  if (useGPU && gpu) {
+  // Empfindliche Szenarien (3-Koerper-Choreografien, Lagrange, Trojaner)
+  // balancieren auf der Messerschneide und brauchen f64-Praezision. WebGPU
+  // (WGSL) kennt nur f32 -> die Bahnen zerfallen sofort. Solche Szenarien
+  // daher NIE auf GPU rechnen, sondern auf dem f64-Pfad (Worker bzw. CPU),
+  // auch wenn WebGPU gewaehlt ist. GPU bleibt fuer asteroidenreiche
+  // Szenarien aktiv, wo f32 unkritisch ist und die GPU echten Speed bringt.
+  const sc = SCENARIOS[currentScenario];
+  const needF64 = !!(sc && sc.precise);
+  if (useGPU && gpu && !needF64) {
     await advanceGPU(dtYears);
   } else if (useWorker) {
     await advanceWorker(dtYears);
