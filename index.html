@@ -86,17 +86,6 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 }
 #collision-badge.show { display: inline-block; }
 
-#gpu64-error {
-  position: fixed; top: 0; left: 50%; transform: translateX(-50%);
-  max-width: 92vw; z-index: 100; display: none;
-  background: #3a0d0d; color: #ffb3b3; border: 1px solid #a44; border-top: none;
-  border-radius: 0 0 6px 6px; padding: 8px 14px;
-  font-size: 12px; font-family: monospace; line-height: 1.4;
-  white-space: pre-wrap; word-break: break-word;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
-}
-#gpu64-error.show { display: block; }
-
 #help-toggle {
   position: absolute; top: 8px; right: 8px; z-index: 20;
   width: 32px; height: 32px; display: flex; align-items: center;
@@ -198,8 +187,8 @@ body.is-mobile #mobile-controls { left: 10px; }
    Desktop bleibt kompakt. max-width angehoben, damit die Steuer-Reihe trotz
    groesserer Buttons in einer Zeile bleibt. */
 body.is-mobile #mobile-controls button,
-body.is-mobile #mobile-actions button { width: 65px; height: 65px; font-size: 26px; }
-body.is-mobile #mobile-controls { max-width: 380px; }
+body.is-mobile #mobile-actions button { width: 54px; height: 54px; font-size: 21px; }
+body.is-mobile #mobile-controls { max-width: 320px; }
 
 /* Floating-Inject-Button — unten mittig, auf Desktop UND Mobile sichtbar.
    Prominent platziert weil "Rogue injizieren" die Hauptinteraktion
@@ -470,9 +459,6 @@ input[type=range] {
   <label data-i18n-title="tt.gpu">
     <input type="radio" name="engine" id="rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span>
   </label>
-  <label data-i18n-title="tt.gpu64">
-    <input type="radio" name="engine" id="rad-gpu64" value="gpu64"> <span data-i18n="lbl.worldgpu64">WebGPU fp64 (Körper)</span>
-  </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
@@ -521,7 +507,6 @@ input[type=range] {
 <div id="toggle-sidebar" data-i18n-title="tt.toggle-sidebar">&#9664;</div>
 
 <div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><!-- &nbsp;|&nbsp; Bounces: <span id="bounce-count">0</span> --></div>
-<div id="gpu64-error"></div>
 
 <div id="help-toggle" data-i18n-title="tt.help">&#x1F4A1;</div>
 <div id="info-panel" data-i18n-html="help.body">
@@ -621,7 +606,6 @@ input[type=range] {
   <label data-i18n-title="tt.engine-cpu"><input type="radio" name="engine-mob" id="mob-rad-cpu" value="cpu"> <span data-i18n="lbl.engine-cpu">Hauptthread (CPU)</span></label>
   <label data-i18n-title="tt.worker"><input type="radio" name="engine-mob" id="mob-rad-worker" value="worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span></label>
   <label data-i18n-title="tt.gpu"><input type="radio" name="engine-mob" id="mob-rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
-  <label data-i18n-title="tt.gpu64"><input type="radio" name="engine-mob" id="mob-rad-gpu64" value="gpu64"> <span data-i18n="lbl.worldgpu64">WebGPU fp64 (Körper)</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
@@ -821,7 +805,6 @@ const I18N = {
     'lbl.engine-cpu': 'Hauptthread (CPU)',
     'lbl.worldworker': 'Physik in WebWorker',
     'lbl.worldgpu': 'Physik via WebGPU',
-    'lbl.worldgpu64': 'WebGPU fp64 (Körper)',
     'lbl.inject-mass': 'Masse',
     'lbl.inject-speed': 'Geschwindigkeit (km/s)',
     'lbl.inject-angle': 'Kompass-Kurs (°)',
@@ -839,7 +822,6 @@ const I18N = {
     'tt.engine-cpu': 'Physik im Haupt-Thread (kein Worker, keine GPU). Einfachster Pfad, bei wenigen Körpern völlig ausreichend.',
     'tt.worker': 'Physik auf separatem Thread (WebWorker) — flüssiger bei vielen Bodies. Bei Problemen ausschalten.',
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
-    'tt.gpu64': 'WebGPU mit emulierter fp64 (Double-Float) für massive Körper — Planeten/Sterne/Choreografien rechnen in ~doppelter Genauigkeit, Asteroiden bleiben f32. Für empfindliche Bahnen (z. B. Butterfly), die in reinem f32 zerfallen.',
     'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
     'tt.density': 'Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.',
     'tt.jitter': 'Zufällige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.',
@@ -995,7 +977,6 @@ const I18N = {
     'lbl.engine': 'Physics engine',
     'lbl.engine-cpu': 'Main thread (CPU)',
     'lbl.worldgpu': 'Physics via WebGPU',
-    'lbl.worldgpu64': 'WebGPU fp64 (bodies)',
     'lbl.inject-mass': 'Mass',
     'lbl.inject-speed': 'Speed (km/s)',
     'lbl.inject-angle': 'Heading (°)',
@@ -1012,7 +993,6 @@ const I18N = {
     'tt.engine-cpu': 'Physics on the main thread (no worker, no GPU). Simplest path, perfectly fine for few bodies.',
     'tt.worker': 'Physics on a separate thread (WebWorker) — smoother with many bodies. Disable if problems occur.',
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
-    'tt.gpu64': 'WebGPU with emulated fp64 (double-float) for massive bodies — planets/stars/choreographies run at ~double precision, asteroids stay f32. For delicate orbits (e.g. Butterfly) that decay in pure f32.',
     'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
     'tt.density': 'Asteroids per AU² — the effective cloud size derives from count/density.',
     'tt.jitter': 'Random scatter in velocity (±%) AND direction (±°). 0 = perfectly parallel.',
@@ -1654,14 +1634,14 @@ const SCENARIOS = {
   'Sonnensystem':          { build: buildSolarSystem,   zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
   'Sonnensystem mit Gürteln': { build: buildSolarSystemWithBelts, zoom: 0.02, zoomLog: 4, dt: 1, slow: 0 },
   'Trisolaris (3 Sonnen)': { build: buildTrisolaris,    zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, injectAngle: 180 },
-  'Lagrange (instabil)':   { build: buildLagrange,       zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Lagrange (stabil)':     { build: buildLagrangeStable, zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Trojaner (L4)':         { build: buildTrojan,         zoom: 0.6,  zoomLog: 6.55, dt: 1,   slow: 0 },
-  'Figur 8 (Choreografie)':{ build: buildFigure8,        zoom: 0.8,  zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Butterfly I':           { build: () => buildChoreography(0.30689, 0.12551, 2.5), zoom: 0.8, zoomLog: 6.55, dt: 0.5, slow: 0, gpu64: true },
-  'Moth I':                { build: () => buildChoreography(0.46444, 0.39606, 2.5), zoom: 0.55, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Goggles':               { build: () => buildChoreography(0.08330, 0.12789, 2.5), zoom: 0.7, zoomLog: 6.55, dt: 0.5, slow: 0 },
-  'Yarn':                  { build: () => buildChoreography(0.55906, 0.34919, 2.5), zoom: 0.9, zoomLog: 6.55, dt: 0.5, slow: 0 },
+  'Lagrange (instabil)':   { build: buildLagrange,       zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Lagrange (stabil)':     { build: buildLagrangeStable, zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Trojaner (L4)':         { build: buildTrojan,         zoom: 0.6,  zoomLog: 6.55, dt: 1,   slow: 0, precise: true },
+  'Figur 8 (Choreografie)':{ build: buildFigure8,        zoom: 0.8,  zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Butterfly I':           { build: () => buildChoreography(0.30689, 0.12551, 2.5), zoom: 0.8, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Moth I':                { build: () => buildChoreography(0.46444, 0.39606, 2.5), zoom: 0.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Goggles':               { build: () => buildChoreography(0.08330, 0.12789, 2.5), zoom: 0.7, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
+  'Yarn':                  { build: () => buildChoreography(0.55906, 0.34919, 2.5), zoom: 0.9, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
   'Leeres System':         { build: buildEmpty,         zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
   'TRAPPIST-1':            { build: buildTrappist,      zoom: 96,   zoomLog: 330,  dt: 0.1, slow: Math.log10(7) },
   'Alpha Centauri':        { build: buildAlphaCentauri, zoom: 0.15, zoomLog: 6.55, dt: 5,   slow: 0 },
@@ -3271,12 +3251,9 @@ async function advanceAsync(dtYears) {
   // daher NIE auf GPU rechnen, sondern auf dem f64-Pfad (Worker bzw. CPU),
   // auch wenn WebGPU gewaehlt ist. GPU bleibt fuer asteroidenreiche
   // Szenarien aktiv, wo f32 unkritisch ist und die GPU echten Speed bringt.
-  // Engine wird pro Szenario gewaehlt/gemerkt (siehe engineForScenario);
-  // hier nur noch nach den aktiven Flags routen. gpu64/gpu fallen auf den
-  // CPU-Pfad zurueck, falls WebGPU nicht verfuegbar ist (gpu === null).
-  if (useGPU64 && gpu && gpu.initPipe64) {
-    await advanceGPU64(dtYears);
-  } else if (useGPU && gpu) {
+  const sc = SCENARIOS[currentScenario];
+  const needF64 = !!(sc && sc.precise);
+  if (useGPU && gpu && !needF64) {
     await advanceGPU(dtYears);
   } else if (useWorker) {
     await advanceWorker(dtYears);
@@ -3297,13 +3274,9 @@ async function advanceAsync(dtYears) {
 //  pro Frame. Bei N >> 1000 deutlich schneller als CPU/Worker.
 // ============================================================
 var useGPU = DEFAULTS.useGPU;        // Toggle (default aus — experimentell)
-var useGPU64 = false;                // WebGPU mit emulierter fp64 (df64) fuer massive Koerper
-let gpu64Error = null;               // WGSL-Compile-/Pipeline-Fehler des df64-Moduls (fuer sichtbares Banner)
-let gpuInitDone = false;             // true sobald initWebGPU aufgeloest ist (Banner erst dann zeigen)
 var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
-const gpuBuf64 = { pos: null, vel: null, mf: null, accel: null, read: null, N: 0 };
 
 const WGSL_NBODY = `
 struct Params {
@@ -3393,172 +3366,6 @@ fn velocityStep(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-// ------------------------------------------------------------------
-//  df64-Pfad ("WebGPU fp64 (Koerper)"): WebGPU/WGSL kennt nur f32, daher
-//  wird f64 per Double-Float emuliert — jede Koordinate als Paar (hi, lo)
-//  zweier f32, mit kompensierter Arithmetik (Two-Sum/Two-Prod). Koerper x
-//  Koerper rechnet KOMPLETT df64 (Differenz, r^2, sqrt, 1/r^3, Kraft,
-//  Positions-/Velocity-Akkumulation) — sonst limitiert die f32-Kraft die
-//  Genauigkeit. Sobald ein Asteroid beteiligt ist, reicht f32 (tiny/visuell),
-//  daher kostet ein Gürtel kaum mehr als der reine f32-Modus.
-//  pos/vel werden als vec4f = (x.hi, x.lo, y.hi, y.lo) abgelegt.
-const WGSL_NBODY64 = `
-struct Params {
-  N: u32, steps: u32, G: f32, soft: f32, dtSub: f32, yW1: f32, yW0: f32, _pad: f32,
-}
-@group(0) @binding(0) var<storage, read_write> pos: array<vec4f>; // x.hi,x.lo,y.hi,y.lo
-@group(0) @binding(1) var<storage, read_write> vel: array<vec4f>; // vx.hi,vx.lo,vy.hi,vy.lo
-@group(0) @binding(2) var<storage, read>       mf:  array<vec2f>; // mass, flags
-@group(0) @binding(3) var<storage, read_write> acc: array<vec4f>; // ax.hi,ax.lo,ay.hi,ay.lo (df64)
-@group(0) @binding(4) var<uniform> p: Params;
-
-// --- Double-Float-Primitiven (a > |b|: quick; sonst two) ---
-fn quick_two_sum(a: f32, b: f32) -> vec2f { let s = a + b; let e = b - (s - a); return vec2f(s, e); }
-fn two_sum(a: f32, b: f32) -> vec2f { let s = a + b; let v = s - a; let e = (a - (s - v)) + (b - v); return vec2f(s, e); }
-// Produkt-Fehler via Dekker-Splitting (KEIN fma — manche GPUs/SwiftShader
-// lowern fma zu mul+add mit zwei Rundungen, dann waere der Fehlerterm 0 und
-// df_mul kollabierte zu f32). Split-Konstante 2^12+1 fuer f32 (24-bit Mantisse).
-fn df_split(a: f32) -> vec2f { let c = 4097.0 * a; let hi = c - (c - a); return vec2f(hi, a - hi); }
-fn two_prod(a: f32, b: f32) -> vec2f {
-  let p = a * b;
-  let aa = df_split(a);
-  let bb = df_split(b);
-  let e = ((aa.x * bb.x - p) + aa.x * bb.y + aa.y * bb.x) + aa.y * bb.y;
-  return vec2f(p, e);
-}
-fn df_add(a: vec2f, b: vec2f) -> vec2f {
-  var s = two_sum(a.x, b.x);
-  let t = two_sum(a.y, b.y);
-  s.y = s.y + t.x;
-  s = quick_two_sum(s.x, s.y);
-  s.y = s.y + t.y;
-  s = quick_two_sum(s.x, s.y);
-  return s;
-}
-fn df_neg(a: vec2f) -> vec2f { return vec2f(-a.x, -a.y); }
-fn df_sub(a: vec2f, b: vec2f) -> vec2f { return df_add(a, vec2f(-b.x, -b.y)); }
-fn df_from(a: f32) -> vec2f { return vec2f(a, 0.0); }
-fn df_mul(a: vec2f, b: vec2f) -> vec2f {
-  var pp = two_prod(a.x, b.x);
-  pp.y = pp.y + (a.x * b.y + a.y * b.x);
-  pp = quick_two_sum(pp.x, pp.y);
-  return pp;
-}
-// 1/b per einem Newton-Schritt aus dem f32-Startwert (~24 -> ~48 bit).
-fn df_recip(b: vec2f) -> vec2f {
-  let x = 1.0 / b.x;
-  let r = df_add(vec2f(1.0, 0.0), df_neg(df_mul(b, vec2f(x, 0.0))));  // 1 - b*x (klein)
-  return df_add(vec2f(x, 0.0), df_mul(vec2f(x, 0.0), r));             // x*(2 - b*x)
-}
-// sqrt(a) per einem Newton-Schritt: ax = sqrt(a.hi)-Naeherung, Korrektur in df.
-fn df_sqrt(a: vec2f) -> vec2f {
-  if (a.x <= 0.0) { return vec2f(0.0, 0.0); }
-  let x = inverseSqrt(a.x);
-  let ax = a.x * x;                    // ~sqrt(a)
-  let s = two_prod(ax, ax);           // ax^2 in df
-  let e = (a.x - s.x) + (a.y - s.y);  // a - ax^2 (klein)
-  return quick_two_sum(ax, e * x * 0.5);
-}
-
-// Beschleunigung von Koerper i als df64 (Rueckgabe vec4f = ax(hi,lo),ay(hi,lo)).
-// Koerper x Koerper: KOMPLETT df64 (Differenz, r^2, sqrt, 1/r^3, Akkumulation)
-// — bei den Choreografien sind die Koordinaten klein, der limitierende Fehler
-// ist die Kraft, nicht die Auslöschung. Sobald ein Asteroid beteiligt ist,
-// reicht f32 (Asteroiden sind tiny/visuell) -> billig.
-fn accel_i(i: u32) -> vec4f {
-  let flagsI = u32(mf[i].y);
-  if ((flagsI & 1u) == 0u) { return vec4f(0.0); }
-  let astI = (flagsI & 2u) != 0u;
-  let xi = pos[i].xy;
-  let yi = pos[i].zw;
-  let xif = xi.x + xi.y;
-  let yif = yi.x + yi.y;
-  var ax = vec2f(0.0);
-  var ay = vec2f(0.0);
-  let N = p.N; let G = p.G; let soft = p.soft;
-  let softdf = vec2f(soft, 0.0);
-  for (var j: u32 = 0u; j < N; j = j + 1u) {
-    if (j == i) { continue; }
-    let flagsJ = u32(mf[j].y);
-    if ((flagsJ & 1u) == 0u) { continue; }
-    let astJ = (flagsJ & 2u) != 0u;
-    if (astI && astJ) { continue; }
-    if (astI || astJ) {
-      // mind. ein Asteroid -> f32, Beitrag in den df-Akkumulator
-      let dxf = (pos[j].x + pos[j].y) - xif;
-      let dyf = (pos[j].z + pos[j].w) - yif;
-      let r2 = dxf*dxf + dyf*dyf + soft;
-      let f = G * mf[j].x / (r2 * sqrt(r2));
-      ax = df_add(ax, vec2f(f * dxf, 0.0));
-      ay = df_add(ay, vec2f(f * dyf, 0.0));
-    } else {
-      // Koerper x Koerper -> komplett df64
-      let dx = df_sub(pos[j].xy, xi);
-      let dy = df_sub(pos[j].zw, yi);
-      let r2 = df_add(df_add(df_mul(dx, dx), df_mul(dy, dy)), softdf);
-      let invr3 = df_recip(df_mul(r2, df_sqrt(r2)));     // 1 / r^3
-      let fm = df_mul(invr3, vec2f(G * mf[j].x, 0.0));    // G*m / r^3
-      ax = df_add(ax, df_mul(fm, dx));
-      ay = df_add(ay, df_mul(fm, dy));
-    }
-  }
-  return vec4f(ax, ay);
-}
-
-@compute @workgroup_size(64)
-fn initAccel64(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x; if (i >= p.N) { return; }
-  acc[i] = accel_i(i);
-}
-
-@compute @workgroup_size(64)
-fn positionStep64(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x; if (i >= p.N) { return; }
-  let flagsI = u32(mf[i].y);
-  if ((flagsI & 1u) == 0u) { return; }
-  let astI = (flagsI & 2u) != 0u;
-  let dt = p.dtSub;
-  let oldA = acc[i];
-  if (astI) {
-    // Asteroid: reine f32-Integration (acc.hi = .x bzw. .z)
-    let nx = pos[i].x + vel[i].x * dt + 0.5 * oldA.x * dt * dt;
-    let ny = pos[i].z + vel[i].z * dt + 0.5 * oldA.z * dt * dt;
-    pos[i] = vec4f(nx, 0.0, ny, 0.0);
-  } else {
-    // Massiver Koerper: df64. pos += vel*dt + 0.5*a*dt^2 (acc als df: xy / zw)
-    let dtdf = vec2f(dt, 0.0);
-    let half = vec2f(0.5 * dt * dt, 0.0);
-    let nx = df_add(df_add(pos[i].xy, df_mul(vel[i].xy, dtdf)), df_mul(oldA.xy, half));
-    let ny = df_add(df_add(pos[i].zw, df_mul(vel[i].zw, dtdf)), df_mul(oldA.zw, half));
-    pos[i] = vec4f(nx, ny);
-  }
-}
-
-@compute @workgroup_size(64)
-fn velocityStep64(@builtin(global_invocation_id) gid: vec3u) {
-  let i = gid.x; if (i >= p.N) { return; }
-  let flagsI = u32(mf[i].y);
-  if ((flagsI & 1u) == 0u) { return; }
-  let astI = (flagsI & 2u) != 0u;
-  let dt = p.dtSub;
-  let oldA = acc[i];
-  let newA = accel_i(i);
-  acc[i] = newA;
-  if (astI) {
-    // acc.hi = .x (ax) bzw. .z (ay)
-    let nvx = vel[i].x + 0.5 * (oldA.x + newA.x) * dt;
-    let nvy = vel[i].z + 0.5 * (oldA.z + newA.z) * dt;
-    vel[i] = vec4f(nvx, 0.0, nvy, 0.0);
-  } else {
-    // df64: vel += 0.5*(oldA+newA)*dt, acc als df xy/zw
-    let halfdt = vec2f(0.5 * dt, 0.0);
-    let nvx = df_add(vel[i].xy, df_mul(df_add(oldA.xy, newA.xy), halfdt));
-    let nvy = df_add(vel[i].zw, df_mul(df_add(oldA.zw, newA.zw), halfdt));
-    vel[i] = vec4f(nvx, nvy);
-  }
-}
-`;
-
 async function initWebGPU() {
   if (!navigator.gpu) {
     console.log('WebGPU nicht verfuegbar — Browser unterstuetzt es nicht.');
@@ -3579,31 +3386,7 @@ async function initWebGPU() {
     const positionPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'positionStep' } });
     const velocityPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'velocityStep' } });
     console.log('WebGPU bereit:', adapter.info?.vendor || 'unbekannt', adapter.info?.architecture || '');
-    // df64-Pipelines SEPARAT — ein Compile-Fehler hier darf den f32-Pfad
-    // nicht mitreissen. Compile-Meldungen werden geloggt, damit WGSL-Fehler
-    // sichtbar sind. Schlaegt es fehl -> gpu64 faellt spaeter auf CPU-f64.
-    let initPipe64 = null, positionPipe64 = null, velocityPipe64 = null;
-    try {
-      const module64 = device.createShaderModule({ code: WGSL_NBODY64 });
-      const errs = [];
-      if (module64.getCompilationInfo) {
-        const info = await module64.getCompilationInfo();
-        for (const m of info.messages) {
-          const line = `df64 WGSL ${m.type} Z${m.lineNum}:${m.linePos} — ${m.message}`;
-          console[m.type === 'error' ? 'error' : 'warn'](line);
-          if (m.type === 'error') errs.push(line);
-        }
-      }
-      initPipe64     = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'initAccel64' } });
-      positionPipe64 = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'positionStep64' } });
-      velocityPipe64 = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'velocityStep64' } });
-      console.log('WebGPU df64 (fp64-Modus) bereit.');
-      if (errs.length) gpu64Error = errs.join('\n');
-    } catch (e64) {
-      console.warn('WebGPU df64-Pipeline fehlgeschlagen — gpu64 nicht verfuegbar:', e64);
-      gpu64Error = String(e64 && e64.message || e64);
-    }
-    return { device, initPipe, positionPipe, velocityPipe, initPipe64, positionPipe64, velocityPipe64 };
+    return { device, initPipe, positionPipe, velocityPipe };
   } catch (e) {
     console.warn('WebGPU init fehlgeschlagen:', e);
     return null;
@@ -3649,31 +3432,6 @@ function ensureGpuBuffers(N) {
     ]
   });
   gpuBuf.N = N;
-}
-
-// Buffer-Pool fuer den df64-Pfad. pos/vel als vec4f (x.hi,x.lo,y.hi,y.lo).
-function ensureGpuBuffers64(N) {
-  if (gpuBuf64.N === N) return;
-  for (const k of ['pos','vel','mf','accel','read']) if (gpuBuf64[k]) gpuBuf64[k].destroy();
-  gpuBuf64.pos   = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
-  gpuBuf64.vel   = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
-  gpuBuf64.mf    = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  gpuBuf64.accel = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  gpuBuf64.read  = gpu.device.createBuffer({ size: N * 32, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-  if (!gpuBuf.params) {
-    gpuBuf.params = gpu.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  }
-  const entries = [
-    { binding: 0, resource: { buffer: gpuBuf64.pos } },
-    { binding: 1, resource: { buffer: gpuBuf64.vel } },
-    { binding: 2, resource: { buffer: gpuBuf64.mf } },
-    { binding: 3, resource: { buffer: gpuBuf64.accel } },
-    { binding: 4, resource: { buffer: gpuBuf.params } },
-  ];
-  gpuBuf64.bindInit     = gpu.device.createBindGroup({ layout: gpu.initPipe64.getBindGroupLayout(0),     entries });
-  gpuBuf64.bindPosition = gpu.device.createBindGroup({ layout: gpu.positionPipe64.getBindGroupLayout(0), entries });
-  gpuBuf64.bindVelocity = gpu.device.createBindGroup({ layout: gpu.velocityPipe64.getBindGroupLayout(0), entries });
-  gpuBuf64.N = N;
 }
 
 const YOSHIDA_W1_F = 1 / (2 - Math.cbrt(2));
@@ -3774,87 +3532,6 @@ async function advanceGPU(dtYears) {
   gpuBuf.read.unmap();
 }
 
-// df64-Variante: identische Yoshida-Schleife, aber pos/vel als Double-Float
-// (hi, lo). Massive Koerper rechnen df64, Asteroiden f32 (im Shader per
-// Flag entschieden). Packing: jeder JS-Double x -> hi=fround(x), lo=x-hi.
-async function advanceGPU64(dtYears) {
-  const N = bodies.length;
-  if (N === 0) return;
-  const refs = bodies.slice();
-  ensureGpuBuffers64(N);
-  const posArr = new Float32Array(N * 4);
-  const velArr = new Float32Array(N * 4);
-  const mfArr  = new Float32Array(N * 2);
-  for (let i = 0; i < N; i++) {
-    const b = refs[i];
-    const xhi = Math.fround(b.x), yhi = Math.fround(b.y);
-    const vxhi = Math.fround(b.vx), vyhi = Math.fround(b.vy);
-    posArr[i*4+0] = xhi;  posArr[i*4+1] = Math.fround(b.x - xhi);
-    posArr[i*4+2] = yhi;  posArr[i*4+3] = Math.fround(b.y - yhi);
-    velArr[i*4+0] = vxhi; velArr[i*4+1] = Math.fround(b.vx - vxhi);
-    velArr[i*4+2] = vyhi; velArr[i*4+3] = Math.fround(b.vy - vyhi);
-    mfArr[i*2+0] = b.mass;
-    mfArr[i*2+1] = (b.visible ? 1 : 0) | (b.isAsteroid ? 2 : 0);
-  }
-  gpu.device.queue.writeBuffer(gpuBuf64.pos, 0, posArr.buffer);
-  gpu.device.queue.writeBuffer(gpuBuf64.vel, 0, velArr.buffer);
-  gpu.device.queue.writeBuffer(gpuBuf64.mf,  0, mfArr.buffer);
-
-  const subDt = MAX_SUB_DT_YEARS;
-  let steps = Math.max(1, Math.ceil(dtYears / subDt));
-  let dtPer;
-  if (steps > MAX_SUB_STEPS_PER_FRAME) { steps = MAX_SUB_STEPS_PER_FRAME; dtPer = subDt; }
-  else { dtPer = dtYears / steps; }
-  const wDts = [YOSHIDA_W1_F * dtPer, YOSHIDA_W0_F * dtPer, YOSHIDA_W1_F * dtPer];
-  const groups = Math.ceil(N / 64);
-
-  let enc = gpu.device.createCommandEncoder();
-  writeGpuParams(N, 0, 1e-6, 0);
-  let pass = enc.beginComputePass();
-  pass.setPipeline(gpu.initPipe64);
-  pass.setBindGroup(0, gpuBuf64.bindInit);
-  pass.dispatchWorkgroups(groups);
-  pass.end();
-  gpu.device.queue.submit([enc.finish()]);
-
-  for (let s = 0; s < steps; s++) {
-    for (const wDt of wDts) {
-      writeGpuParams(N, 0, 1e-6, wDt);
-      enc = gpu.device.createCommandEncoder();
-      pass = enc.beginComputePass();
-      pass.setPipeline(gpu.positionPipe64);
-      pass.setBindGroup(0, gpuBuf64.bindPosition);
-      pass.dispatchWorkgroups(groups);
-      pass.end();
-      pass = enc.beginComputePass();
-      pass.setPipeline(gpu.velocityPipe64);
-      pass.setBindGroup(0, gpuBuf64.bindVelocity);
-      pass.dispatchWorkgroups(groups);
-      pass.end();
-      gpu.device.queue.submit([enc.finish()]);
-    }
-  }
-
-  enc = gpu.device.createCommandEncoder();
-  enc.copyBufferToBuffer(gpuBuf64.pos, 0, gpuBuf64.read, 0, N * 16);
-  enc.copyBufferToBuffer(gpuBuf64.vel, 0, gpuBuf64.read, N * 16, N * 16);
-  gpu.device.queue.submit([enc.finish()]);
-  await gpuBuf64.read.mapAsync(GPUMapMode.READ);
-  const mapped = gpuBuf64.read.getMappedRange();
-  const posOut = new Float32Array(mapped, 0, N * 4);
-  const velOut = new Float32Array(mapped, N * 16, N * 4);
-  const live = new Set(bodies);
-  for (let i = 0; i < N; i++) {
-    const b = refs[i];
-    if (!live.has(b)) continue;
-    b.x  = posOut[i*4+0] + posOut[i*4+1];
-    b.y  = posOut[i*4+2] + posOut[i*4+3];
-    b.vx = velOut[i*4+0] + velOut[i*4+1];
-    b.vy = velOut[i*4+2] + velOut[i*4+3];
-  }
-  gpuBuf64.read.unmap();
-}
-
 function writeGpuParams(N, _pad, soft, dtSub) {
   const buf = new ArrayBuffer(32);
   const u32 = new Uint32Array(buf);
@@ -3871,7 +3548,7 @@ function writeGpuParams(N, _pad, soft, dtSub) {
 }
 
 // Init beim Page-Load.
-initWebGPU().then(g => { gpu = g; gpuInitDone = true; if (typeof updateGpu64ErrorBanner === 'function') updateGpu64ErrorBanner(); });
+initWebGPU().then(g => { gpu = g; });
 
 // ============================================================
 //  KOLLISIONEN
@@ -4663,9 +4340,6 @@ function onScenarioChange(name) {
     if (raw) { try { restoreState(JSON.parse(raw)); } catch (e) {} }
     currentScenario = name;
   }
-  // Engine pro Szenario wiederherstellen (Default: Butterfly -> gpu64, sonst
-  // worker). currentScenario ist hier bereits gesetzt (loadScenario bzw. oben).
-  applyEngine(engineForScenario(name), false);
   document.getElementById('scenario-select').value = name;
   document.getElementById('mob-scenario-select').value = name;
   // Leeres System startet pausiert — zum Bauen per Klick.
@@ -4970,64 +4644,34 @@ chkSync.forEach(([desk, mob, varName]) => {
   if (saved !== null) toggle(saved === '1', false);
 });
 
-// Physik-Engine: Hauptthread / WebWorker / WebGPU (f32) / WebGPU fp64 (df64)
-// schliessen sich gegenseitig aus -> native Radio-Gruppe. mode: 'cpu' |
-// 'worker' | 'gpu' | 'gpu64'. Desktop- und Mobile-Gruppe (name="engine" /
-// "engine-mob") werden gespiegelt. Die Wahl wird PRO SZENARIO persistiert
-// (sim_engine_<szenario>): jedes Szenario merkt sich seinen eigenen
-// Berechnungsmodus — Butterfly z.B. df64-GPU, der Guertel f32-GPU.
+// Physik-Engine: Hauptthread / WebWorker / WebGPU schliessen sich
+// gegenseitig aus -> native Radio-Gruppe statt Checkbox + manuellem
+// Ausschluss. mode: 'cpu' | 'worker' | 'gpu'. Desktop- und Mobile-Gruppe
+// (name="engine" / "engine-mob") werden gespiegelt.
 function applyEngine(mode, persist) {
   useWorker = (mode === 'worker');
   useGPU    = (mode === 'gpu');
-  useGPU64  = (mode === 'gpu64');
   for (const prefix of ['rad', 'mob-rad']) {
     const el = document.getElementById(prefix + '-' + mode);
     if (el) el.checked = true;
   }
   if (persist) {
-    try { localStorage.setItem('sim_engine_' + currentScenario, mode); } catch (e) {}
-  }
-  updateGpu64ErrorBanner();
-}
-// Zeigt ein sichtbares Banner, wenn gpu64 gewaehlt ist, der df64-Pfad aber
-// nicht verfuegbar ist (WGSL-Compile-Fehler, kein Adapter, kein WebGPU). So
-// ist der Fehler ohne DevTools-Konsole sichtbar. Laeuft dann auf CPU-f64.
-function updateGpu64ErrorBanner() {
-  const el = document.getElementById('gpu64-error');
-  if (!el) return;
-  if (!gpuInitDone) { el.classList.remove('show'); return; }  // Init noch nicht fertig
-  const unavailable = !gpu || !gpu.initPipe64;
-  if (useGPU64 && unavailable) {
-    let why = gpu64Error
-      || (!navigator.gpu ? 'WebGPU vom Browser nicht unterstützt.'
-          : (!gpu ? 'Kein GPU-Adapter / WebGPU-Init fehlgeschlagen.'
-             : 'df64-Shader nicht kompiliert.'));
-    el.textContent = '⚠ WebGPU fp64 (gpu64) nicht aktiv — Fallback auf CPU-f64.\n' + why;
-    el.classList.add('show');
-  } else {
-    el.classList.remove('show');
+    try { localStorage.setItem('sim_engine', mode); } catch (e) {}
   }
 }
-['rad-cpu', 'rad-worker', 'rad-gpu', 'rad-gpu64',
- 'mob-rad-cpu', 'mob-rad-worker', 'mob-rad-gpu', 'mob-rad-gpu64']
+['rad-cpu', 'rad-worker', 'rad-gpu', 'mob-rad-cpu', 'mob-rad-worker', 'mob-rad-gpu']
   .forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', function() {
       if (this.checked) applyEngine(this.value, true);
     });
   });
-// Default-Engine eines Szenarios ohne gespeicherten Wert: Butterfly
-// (gpu64-Flag) -> df64-GPU; alle anderen -> Worker (f64, sicher).
-function defaultEngineFor(name) {
-  const sc = SCENARIOS[name];
-  return (sc && sc.gpu64) ? 'gpu64' : 'worker';
-}
-// Gemerkte Engine eines Szenarios, sonst dessen Default.
-function engineForScenario(name) {
-  let saved = null;
-  try { saved = localStorage.getItem('sim_engine_' + name); } catch (e) {}
-  return saved || defaultEngineFor(name);
-}
+// Persistierten Modus wiederherstellen, sonst Default aus DEFAULTS ableiten.
+(() => {
+  let mode = DEFAULTS.useWorker ? 'worker' : (DEFAULTS.useGPU ? 'gpu' : 'cpu');
+  try { const s = localStorage.getItem('sim_engine'); if (s) mode = s; } catch (e) {}
+  applyEngine(mode, false);
+})();
 
 // Buttons
 function setPaused(p) {
