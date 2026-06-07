@@ -73,18 +73,35 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 /* Eingabefeld mit noch nicht uebernommener Aenderung */
 .pending { border-color: #ddaa44 !important; background: #2e2818 !important; }
 
-#collision-badge {
+/* Badge-Zeile oben rechts: rechtsbuendig, waechst nach links.
+   Reihenfolge im DOM = links->rechts: Kollisionen, dann Koerperzahl. */
+#badge-row {
   position: absolute; top: 12px; right: 48px; z-index: 18;
+  display: flex; flex-direction: row; align-items: center; gap: 8px;
+  pointer-events: none;
+}
+#collision-badge {
   background: rgba(120,30,30,0.85); color: #ffbb88;
   border: 1px solid #aa4444;
   padding: 4px 10px; border-radius: 4px;
   font-size: 12px; font-weight: bold;
   font-family: 'Segoe UI', monospace;
   display: none;
-  pointer-events: none;
   -webkit-user-select: none; user-select: none;
 }
 #collision-badge.show { display: inline-block; }
+
+#body-count-badge {
+  background: rgba(20,40,70,0.85); color: #bcd6ff;
+  border: 1px solid #3a5f8a;
+  padding: 4px 10px; border-radius: 4px;
+  font-size: 12px; font-weight: bold;
+  font-family: 'Segoe UI', monospace;
+  display: none;
+  -webkit-user-select: none; user-select: none;
+}
+#body-count-badge.show { display: inline-block; }
+#body-count-badge span { color: #7af; }
 
 #help-toggle {
   position: absolute; top: 8px; right: 8px; z-index: 20;
@@ -511,7 +528,10 @@ input[type=range] {
 
 <div id="toggle-sidebar" data-i18n-title="tt.toggle-sidebar">&#9664;</div>
 
-<div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><!-- &nbsp;|&nbsp; Bounces: <span id="bounce-count">0</span> --></div>
+<div id="badge-row">
+  <div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><!-- &nbsp;|&nbsp; Bounces: <span id="bounce-count">0</span> --></div>
+  <div id="body-count-badge" data-i18n-title="tt.bodycount"></div>
+</div>
 
 <div id="help-toggle" data-i18n-title="tt.help">&#x1F4A1;</div>
 <div id="info-panel" data-i18n-html="help.body">
@@ -842,6 +862,7 @@ const I18N = {
     'tt.fab-clear-pert': 'Alle Rogues löschen',
     'tt.fab-clear-clouds': 'Alle Wolken löschen',
     'tt.collisions': 'Zähler echter Kollisions-Ereignisse (Berührung Planet × Planet oder Planet × Asteroid)',
+    'tt.bodycount': 'Anzahl sichtbarer Körper gesamt, dann nach Typ: 🕳️ schwarze Löcher, ☀️ Sonnen, 🪐 feste Körper, 🪨 Asteroiden. Typen ohne Vorkommen werden ausgeblendet.',
     'badge.collisions': 'Kollisionen',
     'lbl.ast-ast': 'Asteroid × Asteroid Kollisionen',
     'tt.ast-ast': 'Prüft auch Asteroid × Asteroid auf direkte Kollisionen. Bei vielen Bodies (>2000) merklich teurer pro Frame; default aus.',
@@ -1015,6 +1036,7 @@ const I18N = {
     'tt.fab-clear-pert': 'Clear all rogues',
     'tt.fab-clear-clouds': 'Clear all clouds',
     'tt.collisions': 'Counter of real collision events (contact planet × planet or planet × asteroid)',
+    'tt.bodycount': 'Total visible bodies, then by type: 🕳️ black holes, ☀️ suns, 🪐 solid bodies, 🪨 asteroids. Types with none are hidden.',
     'badge.collisions': 'Collisions',
     'lbl.ast-ast': 'Asteroid × asteroid collisions',
     'tt.ast-ast': 'Also tests asteroid × asteroid for direct collisions. Noticeably more expensive per frame with many bodies (>2000); default off.',
@@ -5174,11 +5196,16 @@ function updateStats() {
   // Planeten/Sterne/Rogues \u2014 O(M^2) mit M ~ 10 statt O(N^2) mit N ~ 1400.
   const planets = [];
   let activeCount = 0;
+  let bhN = 0, sunN = 0, solidN = 0, astN = 0;
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible) continue;
     activeCount++;
-    if (!b.isAsteroid) planets.push(b);
+    if (b.isAsteroid) { astN++; continue; }
+    planets.push(b);
+    if (b.isBlackHole) bhN++;
+    else if (b.isStar) sunN++;
+    else solidN++;
   }
   let ke = 0;
   for (let i = 0; i < planets.length; i++) {
@@ -5206,6 +5233,24 @@ function updateStats() {
     `${t('stats.te')}: <span>${fmtDExp(totalE, 2)}</span>`;
   document.getElementById('stats').innerHTML = html;
   document.getElementById('mob-stats').innerHTML = html;
+
+  // Body-Count-Badge oben rechts: Gesamtzahl + Typen in der Reihenfolge
+  // schwarze Loecher, Sonnen, feste Koerper, Asteroiden. Nullwerte weg.
+  const bcEl = document.getElementById('body-count-badge');
+  if (bcEl) {
+    if (activeCount > 0) {
+      const parts = [];
+      if (bhN)    parts.push('\u{1F573}️ ' + bhN);   // schwarze Loecher
+      if (sunN)   parts.push('☀️ ' + sunN);     // Sonnen
+      if (solidN) parts.push('\u{1FA90} ' + solidN);      // feste Koerper
+      if (astN)   parts.push('\u{1FAA8} ' + astN);        // Asteroiden
+      bcEl.innerHTML = '<span>' + t('stats.bodies') + ': ' + activeCount + '</span>'
+        + (parts.length ? '&nbsp;&nbsp;' + parts.join('&nbsp; ') : '');
+      bcEl.classList.add('show');
+    } else {
+      bcEl.classList.remove('show');
+    }
+  }
 }
 
 // --- Keyboard ---
