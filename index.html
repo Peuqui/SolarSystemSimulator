@@ -484,6 +484,12 @@ input[type=range] {
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
+  <label data-i18n-title="tt.ast-escape">
+    <input type="checkbox" id="chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span>
+  </label>
+  <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;">
+    <input type="checkbox" id="chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">↗ markieren</span>
+  </label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
   <label><span data-i18n="lbl.inject-mass">Masse</span> <span class="val" id="p-mass-val">1,0 M⊕</span></label>
@@ -633,6 +639,8 @@ input[type=range] {
   <label data-i18n-title="tt.gpu"><input type="radio" name="engine-mob" id="mob-rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
   <label data-i18n-title="tt.hybrid"><input type="radio" name="engine-mob" id="mob-rad-hybrid" value="hybrid"> <span data-i18n="lbl.worldhybrid">Hybrid (Körper f64 + Asteroiden GPU)</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
+  <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
+  <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">↗ markieren</span></label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
   <label><span data-i18n="lbl.inject-mass">Masse</span> <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
@@ -711,6 +719,8 @@ const DEFAULTS = {
   useWorker: true,      // Physik im WebWorker
   useGPU: false,        // Physik via WebGPU
   astAstCollisions: false, // Asteroid x Asteroid Kollisionen
+  astEscape: false,        // Asteroiden-Fluchterkennung (escapeScore berechnen -> aufraeumbar)
+  astEscapeMark: false,    // erkannte Flucht-Asteroiden auch markieren (↗)
   // --- Inject (Rogue / Wolke benutzen teilweise dieselben Slider) ---
   injectMass: 3,        // log10(M⊕) — 3 → 1000 Erdmassen
   injectSpeed: 1.477,   // log10(km/s) — 1.477 → 30 km/s
@@ -866,6 +876,10 @@ const I18N = {
     'badge.collisions': 'Kollisionen',
     'lbl.ast-ast': 'Asteroid × Asteroid Kollisionen',
     'tt.ast-ast': 'Prüft auch Asteroid × Asteroid auf direkte Kollisionen. Bei vielen Bodies (>2000) merklich teurer pro Frame; default aus.',
+    'lbl.ast-escape': 'Asteroiden-Fluchterkennung',
+    'tt.ast-escape': 'Erkennt, ob Asteroiden auf Fluchtkurs sind (billiger Bahnenergie-Test). Macht hyperbolisch weggeschleuderte Asteroiden über »Flüchtende entfernen« aufräumbar. Bei sehr vielen Asteroiden etwas teurer pro Frame; default aus.',
+    'lbl.ast-escape-mark': '↗ markieren',
+    'tt.ast-escape-mark': 'Zeichnet das ↗ an erkannte Flucht-Asteroiden (nur wenn Erkennung an). Bei dichten Wolken optisch unruhig.',
     'tt.lock': 'Fokus aufheben',
     'tt.body-mass': 'Masse in Erdmassen',
     'tt.body-vel': 'Geschwindigkeit in km/s',
@@ -1040,6 +1054,10 @@ const I18N = {
     'badge.collisions': 'Collisions',
     'lbl.ast-ast': 'Asteroid × asteroid collisions',
     'tt.ast-ast': 'Also tests asteroid × asteroid for direct collisions. Noticeably more expensive per frame with many bodies (>2000); default off.',
+    'lbl.ast-escape': 'Asteroid escape detection',
+    'tt.ast-escape': 'Detects whether asteroids are on an escape trajectory (cheap orbital-energy test). Lets hyperbolically ejected asteroids be cleaned up via "Remove escaping". Slightly more expensive per frame with very many asteroids; default off.',
+    'lbl.ast-escape-mark': '↗ mark',
+    'tt.ast-escape-mark': 'Draws the ↗ on detected escaping asteroids (only if detection is on). Can look busy with dense clouds.',
     'tt.lock': 'Release focus',
     'tt.body-mass': 'Mass in Earth masses',
     'tt.body-vel': 'Speed in km/s',
@@ -2221,10 +2239,24 @@ function updateBoundState() {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible) { b.unbound = false; b.escapeScore = 0; continue; }
-    // Asteroiden bekommen keinen Fluchtkurs-Check: sie sind massearm
-    // und visuell irrelevant fuer die ↗-Markierung. Spart bei N=50.000
-    // die zweite teure O(N)-Schleife mit sqrt + Mathe pro Body.
-    if (b.isAsteroid) { b.unbound = false; b.escapeScore = 0; continue; }
+    // Asteroiden-Fluchterkennung optional (Toggle astEscape). Aus = der
+    // alte schnelle Pfad (kein Check). An = BILLIGER O(1)-Check: da die
+    // Asteroidenmasse vernachlaessigbar ist, kein Massen-Abzug pro Body —
+    // einfach gegen den fixen System-Schwerpunkt (SM/Mt) pruefen.
+    if (b.isAsteroid) {
+      if (!astEscape) { b.unbound = false; b.escapeScore = 0; continue; }
+      const acmx = SMx/Mt, acmy = SMy/Mt, acmvx = SMvx/Mt, acmvy = SMvy/Mt;
+      const advx = b.vx - acmvx, advy = b.vy - acmvy;
+      const adx = b.x - acmx, ady = b.y - acmy;
+      const ar = Math.sqrt(adx*adx + ady*ady + 1e-12);
+      const aeps = 0.5 * (advx*advx + advy*advy) - G_AU * Mt / ar;
+      const aesc = aeps > 0 && ar > ESCAPE_MARK_AU;
+      const asc = aesc ? Math.min(30, (b.escapeScore||0)+1) : Math.max(0, (b.escapeScore||0)-1);
+      b.escapeScore = asc;
+      if (asc >= 25) b.unbound = true;
+      else if (asc <= 5) b.unbound = false;
+      continue;
+    }
     const isRogue = pertSet ? pertSet.has(b) : false;
     // Bahnenergie-Pruefung gegen den jeweils aktiven Schwerpunkt
     // (Hauptsystem bei Toggle an, Gesamt bei Toggle aus) — auch fuer
@@ -2796,16 +2828,19 @@ function draw() {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible) continue;
-    if (b.isAsteroid && !b.unbound && b !== focusBody) continue;
+    // Flucht-Asteroid nur dann einzeln (mit ↗) zeichnen, wenn Markierung an;
+    // sonst normal gebatcht — Erkennung laeuft trotzdem (fuer Aufraeumen).
+    if (b.isAsteroid && !(b.unbound && astEscapeMark) && b !== focusBody) continue;
     const [sx, sy] = worldToScreen(b.x, b.y);
     if (b.isAsteroid) {
       // Nur Marker, kein erneutes Zeichnen des Body-Punkts (ist schon da).
       if (b.unbound) {
-        const ph = (Math.sin(performance.now() / 160) + 1) / 2;
+        // Dezenter Flucht-Marker: kleiner Ring, schwaches Pulsieren.
+        const ph = (Math.sin(performance.now() / 200) + 1) / 2;
         ctx.beginPath();
-        ctx.strokeStyle = `rgba(255,90,90,${(0.25 + 0.7 * ph).toFixed(3)})`;
-        ctx.lineWidth = 2;
-        ctx.arc(sx, sy, 6 + ph * 6, 0, Math.PI*2);
+        ctx.strokeStyle = `rgba(255,90,90,${(0.30 + 0.30 * ph).toFixed(3)})`;
+        ctx.lineWidth = 1.2;
+        ctx.arc(sx, sy, 3 + ph * 1.5, 0, Math.PI*2);
         ctx.stroke();
       }
       if (b === focusBody) {
@@ -3326,6 +3361,8 @@ async function advanceAsync(dtYears) {
 var useGPU = DEFAULTS.useGPU;        // Toggle (default aus — experimentell)
 var useHybrid = false;               // Hybrid: massive Koerper Worker-f64, Asteroiden GPU-f32
 var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
+var astEscape = DEFAULTS.astEscape;                // Toggle Asteroiden-Fluchterkennung
+var astEscapeMark = DEFAULTS.astEscapeMark;        // Toggle ↗-Markierung der Flucht-Asteroiden
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
 
@@ -4679,6 +4716,8 @@ const chkSync = [
   ['chk-baryctr', 'mob-chk-baryctr', 'lockBarycenter'],
   ['chk-bary-no-rogue', 'mob-chk-bary-no-rogue', 'excludeRoguesFromBary'],
   ['chk-ast-ast', 'mob-chk-ast-ast', 'astAstCollisions'],
+  ['chk-ast-escape', 'mob-chk-ast-escape', 'astEscape'],
+  ['chk-ast-escape-mark', 'mob-chk-ast-escape-mark', 'astEscapeMark'],
 ];
 chkSync.forEach(([desk, mob, varName]) => {
   const toggle = (val, persist) => {
@@ -5796,6 +5835,8 @@ function applyDefaults() {
     ['chk-baryctr',        'lockBarycenter',        DEFAULTS.lockBarycenter],
     ['chk-bary-no-rogue',  'excludeRoguesFromBary', DEFAULTS.excludeRoguesFromBary],
     ['chk-ast-ast',        'astAstCollisions',      DEFAULTS.astAstCollisions],
+    ['chk-ast-escape',     'astEscape',             DEFAULTS.astEscape],
+    ['chk-ast-escape-mark','astEscapeMark',         DEFAULTS.astEscapeMark],
   ];
   for (const [stem, varName, val] of chkDefs) {
     let saved = null;
@@ -5866,6 +5907,22 @@ setLang(currentLang);
 // wenn kein WebGL verfuegbar). Muss NACH resize() laufen, damit das
 // ast-canvas die korrekte Aufloesung bekommt.
 initAsteroidGL();
+
+// Sub-Toggle "↗ markieren" nur aktiv, wenn die Asteroiden-Fluchterkennung an
+// ist (sonst gibt es nichts zu markieren). Spiegelt Desktop + Mobile.
+(function () {
+  function syncAstEscapeMarkEnabled() {
+    for (const id of ['chk-ast-escape-mark', 'mob-chk-ast-escape-mark']) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = !astEscape;
+    }
+  }
+  for (const id of ['chk-ast-escape', 'mob-chk-ast-escape']) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', syncAstEscapeMarkEnabled);
+  }
+  syncAstEscapeMarkEnabled();
+})();
 
 simLoop();
 
