@@ -499,7 +499,7 @@ input[type=range] {
     <input type="checkbox" id="chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span>
   </label>
   <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;">
-    <input type="checkbox" id="chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">↗ markieren</span>
+    <input type="checkbox" id="chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">Flüchtende markieren</span>
   </label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
@@ -657,7 +657,7 @@ input[type=range] {
   <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;"><input type="checkbox" id="mob-chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
-  <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">↗ markieren</span></label>
+  <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">Flüchtende markieren</span></label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
   <label><span data-i18n="lbl.inject-mass">Masse</span> <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
@@ -884,7 +884,7 @@ const I18N = {
     'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
     'tt.density': 'Asteroiden pro AE² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.',
     'tt.jitter': 'Zufällige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.',
-    'tt.clear-escaping': 'Entfernt alle Körper mit ↗-Markierung',
+    'tt.clear-escaping': 'Entfernt alle erkannten Flüchtenden',
     'tt.toggle-sidebar': 'Sidebar ein/ausblenden',
     'tt.help': 'Steuerung anzeigen',
     'tt.menu': 'Einstellungen',
@@ -899,8 +899,8 @@ const I18N = {
     'tt.ast-ast': 'Prüft auch Asteroid × Asteroid auf direkte Kollisionen. Bei vielen Bodies (>2000) merklich teurer pro Frame; default aus.',
     'lbl.ast-escape': 'Asteroiden-Fluchterkennung',
     'tt.ast-escape': 'Erkennt, ob Asteroiden auf Fluchtkurs sind (billiger Bahnenergie-Test). Macht hyperbolisch weggeschleuderte Asteroiden über »Flüchtende entfernen« aufräumbar. Bei sehr vielen Asteroiden etwas teurer pro Frame; default aus.',
-    'lbl.ast-escape-mark': '↗ markieren',
-    'tt.ast-escape-mark': 'Zeichnet das ↗ an erkannte Flucht-Asteroiden (nur wenn Erkennung an). Bei dichten Wolken optisch unruhig.',
+    'lbl.ast-escape-mark': 'Flüchtende markieren',
+    'tt.ast-escape-mark': 'Markiert erkannte Flucht-Asteroiden mit einem pulsierenden roten Ring (nur wenn Erkennung an). Bei dichten Wolken optisch unruhig.',
     'tt.lock': 'Fokus aufheben',
     'tt.body-mass': 'Masse in Erdmassen',
     'tt.body-vel': 'Geschwindigkeit in km/s',
@@ -995,9 +995,9 @@ const I18N = {
       '<h3>Asteroiden-Fluchterkennung</h3>' +
       'Erkennt ungebundene Asteroiden auf Fluchtkurs. Erst dann lassen sie sich per ' +
       '„Flüchtende entfernen" (<span class="ico">↗</span>) gezielt aufräumen.<br>' +
-      '<h3><span class="ico">↗</span> markieren</h3>' +
-      'Markiert die erkannten Flüchtenden mit einem kleinen ↗. Nur wirksam, wenn die ' +
-      'Fluchterkennung an ist.',
+      '<h3>Flüchtende markieren</h3>' +
+      'Markiert die erkannten Flüchtenden mit einem pulsierenden roten Ring. Nur ' +
+      'wirksam, wenn die Fluchterkennung an ist.',
   },
   en: {
     'sec.scenario': '🌌 Scenario',
@@ -1093,7 +1093,7 @@ const I18N = {
     'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
     'tt.density': 'Asteroids per AU² — the effective cloud size derives from count/density.',
     'tt.jitter': 'Random scatter in velocity (±%) AND direction (±°). 0 = perfectly parallel.',
-    'tt.clear-escaping': 'Removes all bodies with ↗ marker',
+    'tt.clear-escaping': 'Removes all detected escapers',
     'tt.toggle-sidebar': 'Show/hide sidebar',
     'tt.help': 'Show controls',
     'tt.menu': 'Settings',
@@ -1108,8 +1108,8 @@ const I18N = {
     'tt.ast-ast': 'Also tests asteroid × asteroid for direct collisions. Noticeably more expensive per frame with many bodies (>2000); default off.',
     'lbl.ast-escape': 'Asteroid escape detection',
     'tt.ast-escape': 'Detects whether asteroids are on an escape trajectory (cheap orbital-energy test). Lets hyperbolically ejected asteroids be cleaned up via "Remove escaping". Slightly more expensive per frame with very many asteroids; default off.',
-    'lbl.ast-escape-mark': '↗ mark',
-    'tt.ast-escape-mark': 'Draws the ↗ on detected escaping asteroids (only if detection is on). Can look busy with dense clouds.',
+    'lbl.ast-escape-mark': 'Mark escaping',
+    'tt.ast-escape-mark': 'Marks detected escaping asteroids with a pulsing red ring (only if detection is on). Can look busy with dense clouds.',
     'tt.lock': 'Release focus',
     'tt.body-mass': 'Mass in Earth masses',
     'tt.body-vel': 'Speed in km/s',
@@ -1200,8 +1200,8 @@ const I18N = {
       '<h3>Asteroid escape detection</h3>' +
       'Detects unbound asteroids on an escape trajectory. Only then can they be cleared ' +
       'via “Remove escaping” (<span class="ico">↗</span>).<br>' +
-      '<h3><span class="ico">↗</span> mark</h3>' +
-      'Marks the detected escapers with a small ↗. Only active when escape detection is on.',
+      '<h3>Mark escaping</h3>' +
+      'Marks the detected escapers with a pulsing red ring. Only active when escape detection is on.',
   }
 };
 
@@ -2908,7 +2908,7 @@ function draw() {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible) continue;
-    // Flucht-Asteroid nur dann einzeln (mit ↗) zeichnen, wenn Markierung an;
+    // Flucht-Asteroid nur dann einzeln (mit rotem Ring) zeichnen, wenn Markierung an;
     // sonst normal gebatcht — Erkennung laeuft trotzdem (fuer Aufraeumen).
     if (b.isAsteroid && !(b.unbound && astEscapeMark) && b !== focusBody) continue;
     const [sx, sy] = worldToScreen(b.x, b.y);
@@ -3014,7 +3014,7 @@ function draw() {
     // im Pre-Pass behandelt und springen mit continue aus dieser Schleife).
     ctx.fillStyle = b.unbound ? '#ff6a6a' : b.color + 'dd';
     ctx.font = '11px monospace';
-    ctx.fillText(b.unbound ? b.name + ' ⇗' : b.name, sx + b.radius + 5, sy + 4);
+    ctx.fillText(b.name, sx + b.radius + 5, sy + 4);
   }
 
   // Kollisions-Explosionen: pro Treffer eine kleine, helle, gefuellte
@@ -3475,7 +3475,7 @@ var useGPU = DEFAULTS.useGPU;        // Toggle (default aus — experimentell)
 var useHybrid = false;               // Hybrid: massive Koerper Worker-f64, Asteroiden GPU-f32
 var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
 var astEscape = DEFAULTS.astEscape;                // Toggle Asteroiden-Fluchterkennung
-var astEscapeMark = DEFAULTS.astEscapeMark;        // Toggle ↗-Markierung der Flucht-Asteroiden
+var astEscapeMark = DEFAULTS.astEscapeMark;        // Toggle Ring-Markierung der Flucht-Asteroiden
 var hybridNearWorker = DEFAULTS.hybridNearWorker;  // Toggle: nahe Asteroiden im Hybrid auf den Worker
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
@@ -6062,7 +6062,7 @@ setLang(currentLang);
 // ast-canvas die korrekte Aufloesung bekommt.
 initAsteroidGL();
 
-// Sub-Toggle "↗ markieren" nur aktiv, wenn die Asteroiden-Fluchterkennung an
+// Sub-Toggle "Flüchtende markieren" nur aktiv, wenn die Asteroiden-Fluchterkennung an
 // ist (sonst gibt es nichts zu markieren). Spiegelt Desktop + Mobile.
 (function () {
   function syncAstEscapeMarkEnabled() {
