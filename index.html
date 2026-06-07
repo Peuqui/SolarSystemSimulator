@@ -112,7 +112,7 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   -webkit-tap-highlight-color: transparent;
 }
 #help-toggle:hover { background: #333; border-color: #555; }
-#info-panel {
+.help-panel {
   position: absolute; top: 48px; right: 8px;
   background: rgba(10,12,20,0.96); border: 1px solid #2a2a3a;
   padding: 14px 18px; font-size: 13px; z-index: 19; color: #ccc;
@@ -124,20 +124,25 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   display: none; line-height: 1.55;
   touch-action: pan-y;   /* vertikales Scrollen im Panel auf Mobile */
 }
-#info-panel.show { display: block; }
-#info-panel span { color: #7af; }
-#info-panel h3 {
+.help-panel.show { display: block; }
+.help-panel span { color: #7af; }
+.help-panel h3 {
   color: #ffd866; font-size: 13px; font-weight: 600;
   margin: 10px 0 4px; border-bottom: 1px solid #333; padding-bottom: 3px;
 }
-#info-panel h3:first-child { margin-top: 0; }
-#info-panel .ico {
+.help-panel h3:first-child { margin-top: 0; }
+.help-panel .ico {
   display: inline-block; min-width: 1.4em; text-align: center;
   color: #ffd866; font-weight: bold;
 }
-#info-panel table { border-collapse: collapse; margin: 2px 0; }
-#info-panel td { padding: 2px 8px 2px 0; vertical-align: top; }
-#info-panel td:first-child { color: #ffd866; white-space: nowrap; }
+.help-panel table { border-collapse: collapse; margin: 2px 0; }
+.help-panel td { padding: 2px 8px 2px 0; vertical-align: top; }
+.help-panel td:first-child { color: #ffd866; white-space: nowrap; }
+.help-ico {
+  flex: 0 0 auto; font-size: 15px; line-height: 1; cursor: pointer;
+  user-select: none; opacity: 0.85; -webkit-tap-highlight-color: transparent;
+}
+.help-ico:hover { opacity: 1; }
 
 #perturber-info {
   position: absolute; top: 10px; right: 10px;
@@ -468,7 +473,10 @@ input[type=range] {
   <label data-i18n-title="tt.bary-no-rogue">
     <input type="checkbox" id="chk-bary-no-rogue" checked> <span data-i18n="lbl.exclude-rogues-bary">Rogues bei Schwerpunkt ignorieren</span>
   </label>
-  <label data-i18n="lbl.engine" style="margin-top:6px; color:#7af;">Physik-Engine</label>
+  <div style="display:flex; align-items:center; gap:6px; margin-top:6px;">
+    <label data-i18n="lbl.engine" style="color:#7af;">Physik-Engine</label>
+    <span id="engine-help-icon" class="help-ico" data-i18n-title="tt.engine-help">&#x1F4A1;</span>
+  </div>
   <label data-i18n-title="tt.engine-cpu">
     <input type="radio" name="engine" id="rad-cpu" value="cpu"> <span data-i18n="lbl.engine-cpu">Hauptthread (CPU)</span>
   </label>
@@ -543,7 +551,7 @@ input[type=range] {
 </div>
 
 <div id="help-toggle" data-i18n-title="tt.help">&#x1F4A1;</div>
-<div id="info-panel" data-i18n-html="help.body">
+<div id="info-panel" class="help-panel" data-i18n-html="help.body">
   Mausrad: Zoom &nbsp;|&nbsp; Rechts-/Mittelklick: Verschieben<br>
   Linksklick auf Leerraum: Rogue-Position w&auml;hlen<br>
   Klick+Ziehen: Geschwindigkeitsvektor setzen<br>
@@ -554,6 +562,8 @@ input[type=range] {
   <span style="color:#7af;">Einheiten:</span> M&#x2295; = Erdmasse (5,97&#x2009;&middot;&#x2009;10<sup>24</sup>&nbsp;kg) &nbsp;|&nbsp;
   M&#x2299; = Sonnenmasse (1,99&#x2009;&middot;&#x2009;10<sup>30</sup>&nbsp;kg, &#x2248;&nbsp;333.000&nbsp;M&#x2295;)
 </div>
+
+<div id="engine-info-panel" class="help-panel" data-i18n-html="help.engine"></div>
 
 <div id="perturber-info"></div>
 
@@ -636,7 +646,10 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-logzoom" checked> <span data-i18n="lbl.logzoom">Log-Zoom</span></label>
   <label><input type="checkbox" id="mob-chk-baryctr" checked> <span data-i18n="lbl.centerbary">Schwerpunkt zentrieren</span></label>
   <label data-i18n-title="tt.bary-no-rogue"><input type="checkbox" id="mob-chk-bary-no-rogue" checked> <span data-i18n="lbl.exclude-rogues-bary">Rogues bei Schwerpunkt ignorieren</span></label>
-  <label data-i18n="lbl.engine" style="margin-top:6px; color:#7af;">Physik-Engine</label>
+  <div style="display:flex; align-items:center; gap:6px; margin-top:6px;">
+    <label data-i18n="lbl.engine" style="color:#7af;">Physik-Engine</label>
+    <span id="mob-engine-help-icon" class="help-ico" data-i18n-title="tt.engine-help">&#x1F4A1;</span>
+  </div>
   <label data-i18n-title="tt.engine-cpu"><input type="radio" name="engine-mob" id="mob-rad-cpu" value="cpu"> <span data-i18n="lbl.engine-cpu">Hauptthread (CPU)</span></label>
   <label data-i18n-title="tt.worker"><input type="radio" name="engine-mob" id="mob-rad-worker" value="worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span></label>
   <label data-i18n-title="tt.gpu"><input type="radio" name="engine-mob" id="mob-rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
@@ -867,6 +880,7 @@ const I18N = {
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
     'tt.hybrid-near': 'Nur im Hybrid: Asteroiden, die einem schweren Körper zu nahe/schnell begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen f64-adaptiv im Worker statt grob auf der GPU. Präzise, kostet aber Tempo, wenn sehr viele Asteroiden gleichzeitig nahe sind. Aus = alle Asteroiden grob auf der GPU (schnell).',
+    'tt.engine-help': 'Erklärung der Engine-Modi und Asteroiden-Optionen',
     'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
     'tt.density': 'Asteroiden pro AE² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.',
     'tt.jitter': 'Zufällige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.',
@@ -957,6 +971,33 @@ const I18N = {
       'M⊕ = Erdmasse (5,97 · 10<sup>24</sup>&nbsp;kg)<br>' +
       'M☉ = Sonnenmasse (1,99 · 10<sup>30</sup>&nbsp;kg, ≈ 333.000&nbsp;M⊕)<br>' +
       'AE = Astronomische Einheit (1,496 · 10<sup>11</sup>&nbsp;m, Erde–Sonne)',
+    'help.engine':
+      '<h3>Physik-Engine</h3>' +
+      '<table>' +
+        '<tr><td>Hauptthread</td><td>Alles im Browser-Hauptthread, f64. Einfachster Pfad, bei wenigen Körpern völlig ausreichend.</td></tr>' +
+        '<tr><td>WebWorker</td><td>Physik auf separatem Thread, f64. Flüssiger bei vielen Körpern, die Oberfläche bleibt reaktiv.</td></tr>' +
+        '<tr><td>WebGPU</td><td>Physik als Compute-Shader auf der GPU, f32. Sehr schnell bei vielen Asteroiden, aber geringere Genauigkeit.</td></tr>' +
+        '<tr><td>Hybrid</td><td>Massive Körper f64 im Worker (stabil für fragile Systeme), Asteroiden f32 als Testteilchen auf der GPU (schnell). Braucht WebGPU.</td></tr>' +
+      '</table>' +
+      '<h3>Enge Begegnungen präzise</h3>' +
+      'Nur im Hybrid. Asteroiden, die einem schweren Körper zu nahe oder zu schnell ' +
+      'begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen ' +
+      'f64-adaptiv im Worker statt grob auf der GPU — so werden enge Bahnen korrekt ' +
+      'aufgelöst. Kostet Tempo, wenn sehr viele Asteroiden gleichzeitig nah sind. ' +
+      'Aus = alle Asteroiden grob auf der GPU. Massive Körper untereinander sind ' +
+      'immer f64.<br>' +
+      '<h3>Asteroid &times; Asteroid Kollisionen</h3>' +
+      'Asteroiden prallen wie Kugeln unterschiedlicher Masse voneinander ab ' +
+      '(<span style="color:#3080ff">schwerer</span> blau, ' +
+      '<span style="color:#ff3030">leichter</span> rot). Sie verschmelzen oder ' +
+      'zerbersten <b>nicht</b> und ziehen sich untereinander <b>nicht</b> gravitativ ' +
+      'an — das passiert nur beim Treffer auf Planet oder Stern.<br>' +
+      '<h3>Asteroiden-Fluchterkennung</h3>' +
+      'Erkennt ungebundene Asteroiden auf Fluchtkurs. Erst dann lassen sie sich per ' +
+      '„Flüchtende entfernen" (<span class="ico">↗</span>) gezielt aufräumen.<br>' +
+      '<h3><span class="ico">↗</span> markieren</h3>' +
+      'Markiert die erkannten Flüchtenden mit einem kleinen ↗. Nur wirksam, wenn die ' +
+      'Fluchterkennung an ist.',
   },
   en: {
     'sec.scenario': '🌌 Scenario',
@@ -1048,6 +1089,7 @@ const I18N = {
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
     'tt.hybrid-near': 'Hybrid only: asteroids whose encounter with a massive body is too close/fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the worker instead of coarsely on the GPU. Precise, but costs speed when very many asteroids are close at once. Off = all asteroids run coarsely on the GPU (fast).',
+    'tt.engine-help': 'Explanation of the engine modes and asteroid options',
     'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
     'tt.density': 'Asteroids per AU² — the effective cloud size derives from count/density.',
     'tt.jitter': 'Random scatter in velocity (±%) AND direction (±°). 0 = perfectly parallel.',
@@ -1135,6 +1177,31 @@ const I18N = {
       'M⊕ = Earth mass (5.97 · 10<sup>24</sup>&nbsp;kg)<br>' +
       'M☉ = solar mass (1.99 · 10<sup>30</sup>&nbsp;kg, ≈ 333,000&nbsp;M⊕)<br>' +
       'AU = astronomical unit (1.496 · 10<sup>11</sup>&nbsp;m, Earth–Sun)',
+    'help.engine':
+      '<h3>Physics engine</h3>' +
+      '<table>' +
+        '<tr><td>Main thread</td><td>Everything on the browser main thread, f64. Simplest path, perfectly fine with few bodies.</td></tr>' +
+        '<tr><td>WebWorker</td><td>Physics on a separate thread, f64. Smoother with many bodies, the UI stays responsive.</td></tr>' +
+        '<tr><td>WebGPU</td><td>Physics as a compute shader on the GPU, f32. Very fast with many asteroids, but lower precision.</td></tr>' +
+        '<tr><td>Hybrid</td><td>Massive bodies f64 on the worker (stable for fragile systems), asteroids f32 as test particles on the GPU (fast). Needs WebGPU.</td></tr>' +
+      '</table>' +
+      '<h3>Precise close encounters</h3>' +
+      'Hybrid only. Asteroids whose encounter with a massive body is too close or too ' +
+      'fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the ' +
+      'worker instead of coarsely on the GPU — so tight orbits resolve correctly. ' +
+      'Costs speed when very many asteroids are close at once. Off = all asteroids run ' +
+      'coarsely on the GPU. Massive bodies among themselves are always f64.<br>' +
+      '<h3>Asteroid &times; asteroid collisions</h3>' +
+      'Asteroids bounce off each other like balls of different mass ' +
+      '(<span style="color:#3080ff">heavier</span> blue, ' +
+      '<span style="color:#ff3030">lighter</span> red). They do <b>not</b> merge or ' +
+      'shatter and do <b>not</b> attract each other gravitationally — that only happens ' +
+      'when hitting a planet or star.<br>' +
+      '<h3>Asteroid escape detection</h3>' +
+      'Detects unbound asteroids on an escape trajectory. Only then can they be cleared ' +
+      'via “Remove escaping” (<span class="ico">↗</span>).<br>' +
+      '<h3><span class="ico">↗</span> mark</h3>' +
+      'Marks the detected escapers with a small ↗. Only active when escape detection is on.',
   }
 };
 
@@ -5823,27 +5890,39 @@ canvas.addEventListener('touchcancel', function(e) {
   dragging = false;
 }, { passive: false });
 
-// --- Help-Popover (Glühbirne oben rechts) ---
+// --- Help-Popover (Glühbirne oben rechts + Engine-? in der Sidebar) ---
+// Mehrere Toggle->Panel-Paare; die Engine-Erklaerung hat ein Icon je fuer
+// Desktop und Mobile, die dasselbe Panel oeffnen. Panels schliessen sich
+// gegenseitig aus (sitzen an derselben Stelle).
 (function() {
-  const helpToggle = document.getElementById('help-toggle');
-  const infoPanel  = document.getElementById('info-panel');
-  if (!helpToggle || !infoPanel) return;
-  const isTouchDevice = matchMedia('(hover: none)').matches;
+  const pairs = [
+    ['help-toggle',          'info-panel'],
+    ['engine-help-icon',     'engine-info-panel'],
+    ['mob-engine-help-icon', 'engine-info-panel'],
+  ].map(([tg, pn]) => [document.getElementById(tg), document.getElementById(pn)])
+   .filter(([tg, pn]) => tg && pn);
+  const panels  = [...new Set(pairs.map(([, pn]) => pn))];
+  const toggles = pairs.map(([tg]) => tg);
 
-  // Klick-to-toggle fuer Desktop UND Touch — beim Hover schliesst sich
-  // das Panel zu schnell wieder (Luecke zwischen Toggle und Panel, kein
-  // Scrollen moeglich). Klicken oeffnet, erneuter Klick auf Toggle oder
-  // Klick ausserhalb schliesst.
-  helpToggle.addEventListener('click', function(e) {
-    e.stopPropagation();
-    infoPanel.classList.toggle('show');
+  // Klick-to-toggle fuer Desktop UND Touch — beim Hover schliesst sich das
+  // Panel zu schnell wieder. Klicken oeffnet (und schliesst die anderen),
+  // erneuter Klick auf den Toggle oder Klick ausserhalb schliesst.
+  pairs.forEach(([toggle, panel]) => {
+    toggle.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const willShow = !panel.classList.contains('show');
+      panels.forEach(p => p.classList.remove('show'));
+      if (willShow) panel.classList.add('show');
+    });
   });
   function closeIfOutside(e) {
-    if (!infoPanel.classList.contains('show')) return;
     const t = e.target;
-    if (t !== helpToggle && !infoPanel.contains(t)) {
-      infoPanel.classList.remove('show');
-    }
+    if (toggles.includes(t)) return;
+    panels.forEach(panel => {
+      if (panel.classList.contains('show') && !panel.contains(t)) {
+        panel.classList.remove('show');
+      }
+    });
   }
   document.addEventListener('click', closeIfOutside);
   // Touch-Pfad zusaetzlich, weil das Canvas seine touchstart-Events mit
