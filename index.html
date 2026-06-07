@@ -86,6 +86,17 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 }
 #collision-badge.show { display: inline-block; }
 
+#gpu64-error {
+  position: fixed; top: 0; left: 50%; transform: translateX(-50%);
+  max-width: 92vw; z-index: 100; display: none;
+  background: #3a0d0d; color: #ffb3b3; border: 1px solid #a44; border-top: none;
+  border-radius: 0 0 6px 6px; padding: 8px 14px;
+  font-size: 12px; font-family: monospace; line-height: 1.4;
+  white-space: pre-wrap; word-break: break-word;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+}
+#gpu64-error.show { display: block; }
+
 #help-toggle {
   position: absolute; top: 8px; right: 8px; z-index: 20;
   width: 32px; height: 32px; display: flex; align-items: center;
@@ -187,8 +198,8 @@ body.is-mobile #mobile-controls { left: 10px; }
    Desktop bleibt kompakt. max-width angehoben, damit die Steuer-Reihe trotz
    groesserer Buttons in einer Zeile bleibt. */
 body.is-mobile #mobile-controls button,
-body.is-mobile #mobile-actions button { width: 54px; height: 54px; font-size: 21px; }
-body.is-mobile #mobile-controls { max-width: 320px; }
+body.is-mobile #mobile-actions button { width: 65px; height: 65px; font-size: 26px; }
+body.is-mobile #mobile-controls { max-width: 380px; }
 
 /* Floating-Inject-Button — unten mittig, auf Desktop UND Mobile sichtbar.
    Prominent platziert weil "Rogue injizieren" die Hauptinteraktion
@@ -510,6 +521,7 @@ input[type=range] {
 <div id="toggle-sidebar" data-i18n-title="tt.toggle-sidebar">&#9664;</div>
 
 <div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><!-- &nbsp;|&nbsp; Bounces: <span id="bounce-count">0</span> --></div>
+<div id="gpu64-error"></div>
 
 <div id="help-toggle" data-i18n-title="tt.help">&#x1F4A1;</div>
 <div id="info-panel" data-i18n-html="help.body">
@@ -3262,7 +3274,7 @@ async function advanceAsync(dtYears) {
   // Engine wird pro Szenario gewaehlt/gemerkt (siehe engineForScenario);
   // hier nur noch nach den aktiven Flags routen. gpu64/gpu fallen auf den
   // CPU-Pfad zurueck, falls WebGPU nicht verfuegbar ist (gpu === null).
-  if (useGPU64 && gpu) {
+  if (useGPU64 && gpu && gpu.initPipe64) {
     await advanceGPU64(dtYears);
   } else if (useGPU && gpu) {
     await advanceGPU(dtYears);
@@ -3286,6 +3298,8 @@ async function advanceAsync(dtYears) {
 // ============================================================
 var useGPU = DEFAULTS.useGPU;        // Toggle (default aus — experimentell)
 var useGPU64 = false;                // WebGPU mit emulierter fp64 (df64) fuer massive Koerper
+let gpu64Error = null;               // WGSL-Compile-/Pipeline-Fehler des df64-Moduls (fuer sichtbares Banner)
+let gpuInitDone = false;             // true sobald initWebGPU aufgeloest ist (Banner erst dann zeigen)
 var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
@@ -3382,11 +3396,11 @@ fn velocityStep(@builtin(global_invocation_id) gid: vec3u) {
 // ------------------------------------------------------------------
 //  df64-Pfad ("WebGPU fp64 (Koerper)"): WebGPU/WGSL kennt nur f32, daher
 //  wird f64 per Double-Float emuliert — jede Koordinate als Paar (hi, lo)
-//  zweier f32, mit kompensierter Arithmetik (Two-Sum/Two-Prod). MIXED
-//  precision: massive Koerper (Planeten/Sterne/Choreografie) rechnen df64
-//  (Positions-/Velocity-Akkumulation), Asteroiden bleiben f32 (rein
-//  visuell, Drift unsichtbar). Da massive Koerper wenige sind, kostet das
-//  kaum mehr als f32, gibt aber den empfindlichen Bahnen f64-Praezision.
+//  zweier f32, mit kompensierter Arithmetik (Two-Sum/Two-Prod). Koerper x
+//  Koerper rechnet KOMPLETT df64 (Differenz, r^2, sqrt, 1/r^3, Kraft,
+//  Positions-/Velocity-Akkumulation) — sonst limitiert die f32-Kraft die
+//  Genauigkeit. Sobald ein Asteroid beteiligt ist, reicht f32 (tiny/visuell),
+//  daher kostet ein Gürtel kaum mehr als der reine f32-Modus.
 //  pos/vel werden als vec4f = (x.hi, x.lo, y.hi, y.lo) abgelegt.
 const WGSL_NBODY64 = `
 struct Params {
@@ -3395,13 +3409,23 @@ struct Params {
 @group(0) @binding(0) var<storage, read_write> pos: array<vec4f>; // x.hi,x.lo,y.hi,y.lo
 @group(0) @binding(1) var<storage, read_write> vel: array<vec4f>; // vx.hi,vx.lo,vy.hi,vy.lo
 @group(0) @binding(2) var<storage, read>       mf:  array<vec2f>; // mass, flags
-@group(0) @binding(3) var<storage, read_write> acc: array<vec2f>; // ax, ay (f32)
+@group(0) @binding(3) var<storage, read_write> acc: array<vec4f>; // ax.hi,ax.lo,ay.hi,ay.lo (df64)
 @group(0) @binding(4) var<uniform> p: Params;
 
 // --- Double-Float-Primitiven (a > |b|: quick; sonst two) ---
 fn quick_two_sum(a: f32, b: f32) -> vec2f { let s = a + b; let e = b - (s - a); return vec2f(s, e); }
 fn two_sum(a: f32, b: f32) -> vec2f { let s = a + b; let v = s - a; let e = (a - (s - v)) + (b - v); return vec2f(s, e); }
-fn two_prod(a: f32, b: f32) -> vec2f { let pp = a * b; let e = fma(a, b, -pp); return vec2f(pp, e); }
+// Produkt-Fehler via Dekker-Splitting (KEIN fma — manche GPUs/SwiftShader
+// lowern fma zu mul+add mit zwei Rundungen, dann waere der Fehlerterm 0 und
+// df_mul kollabierte zu f32). Split-Konstante 2^12+1 fuer f32 (24-bit Mantisse).
+fn df_split(a: f32) -> vec2f { let c = 4097.0 * a; let hi = c - (c - a); return vec2f(hi, a - hi); }
+fn two_prod(a: f32, b: f32) -> vec2f {
+  let p = a * b;
+  let aa = df_split(a);
+  let bb = df_split(b);
+  let e = ((aa.x * bb.x - p) + aa.x * bb.y + aa.y * bb.x) + aa.y * bb.y;
+  return vec2f(p, e);
+}
 fn df_add(a: vec2f, b: vec2f) -> vec2f {
   var s = two_sum(a.x, b.x);
   let t = two_sum(a.y, b.y);
@@ -3412,50 +3436,73 @@ fn df_add(a: vec2f, b: vec2f) -> vec2f {
   return s;
 }
 fn df_neg(a: vec2f) -> vec2f { return vec2f(-a.x, -a.y); }
+fn df_sub(a: vec2f, b: vec2f) -> vec2f { return df_add(a, vec2f(-b.x, -b.y)); }
+fn df_from(a: f32) -> vec2f { return vec2f(a, 0.0); }
 fn df_mul(a: vec2f, b: vec2f) -> vec2f {
   var pp = two_prod(a.x, b.x);
   pp.y = pp.y + (a.x * b.y + a.y * b.x);
   pp = quick_two_sum(pp.x, pp.y);
   return pp;
 }
+// 1/b per einem Newton-Schritt aus dem f32-Startwert (~24 -> ~48 bit).
+fn df_recip(b: vec2f) -> vec2f {
+  let x = 1.0 / b.x;
+  let r = df_add(vec2f(1.0, 0.0), df_neg(df_mul(b, vec2f(x, 0.0))));  // 1 - b*x (klein)
+  return df_add(vec2f(x, 0.0), df_mul(vec2f(x, 0.0), r));             // x*(2 - b*x)
+}
+// sqrt(a) per einem Newton-Schritt: ax = sqrt(a.hi)-Naeherung, Korrektur in df.
+fn df_sqrt(a: vec2f) -> vec2f {
+  if (a.x <= 0.0) { return vec2f(0.0, 0.0); }
+  let x = inverseSqrt(a.x);
+  let ax = a.x * x;                    // ~sqrt(a)
+  let s = two_prod(ax, ax);           // ax^2 in df
+  let e = (a.x - s.x) + (a.y - s.y);  // a - ax^2 (klein)
+  return quick_two_sum(ax, e * x * 0.5);
+}
 
-// Beschleunigung von Koerper i. Differenzen df64-genau, wenn i ein massiver
-// Koerper ist (verhindert Auslöschung); fuer Asteroiden reicht f32. Die
-// Kraft-Magnitude (r^2, r, 1/r^3) bleibt f32 — der dominante Fehler steckt
-// in der Bahn-Akkumulation, nicht im einzelnen Kraftbetrag.
-fn accel_i(i: u32) -> vec2f {
+// Beschleunigung von Koerper i als df64 (Rueckgabe vec4f = ax(hi,lo),ay(hi,lo)).
+// Koerper x Koerper: KOMPLETT df64 (Differenz, r^2, sqrt, 1/r^3, Akkumulation)
+// — bei den Choreografien sind die Koordinaten klein, der limitierende Fehler
+// ist die Kraft, nicht die Auslöschung. Sobald ein Asteroid beteiligt ist,
+// reicht f32 (Asteroiden sind tiny/visuell) -> billig.
+fn accel_i(i: u32) -> vec4f {
   let flagsI = u32(mf[i].y);
-  if ((flagsI & 1u) == 0u) { return vec2f(0.0); }
+  if ((flagsI & 1u) == 0u) { return vec4f(0.0); }
   let astI = (flagsI & 2u) != 0u;
   let xi = pos[i].xy;
   let yi = pos[i].zw;
   let xif = xi.x + xi.y;
   let yif = yi.x + yi.y;
-  var a = vec2f(0.0);
+  var ax = vec2f(0.0);
+  var ay = vec2f(0.0);
   let N = p.N; let G = p.G; let soft = p.soft;
+  let softdf = vec2f(soft, 0.0);
   for (var j: u32 = 0u; j < N; j = j + 1u) {
     if (j == i) { continue; }
     let flagsJ = u32(mf[j].y);
     if ((flagsJ & 1u) == 0u) { continue; }
     let astJ = (flagsJ & 2u) != 0u;
     if (astI && astJ) { continue; }
-    var dxf: f32;
-    var dyf: f32;
-    if (astI) {
-      dxf = (pos[j].x + pos[j].y) - xif;
-      dyf = (pos[j].z + pos[j].w) - yif;
+    if (astI || astJ) {
+      // mind. ein Asteroid -> f32, Beitrag in den df-Akkumulator
+      let dxf = (pos[j].x + pos[j].y) - xif;
+      let dyf = (pos[j].z + pos[j].w) - yif;
+      let r2 = dxf*dxf + dyf*dyf + soft;
+      let f = G * mf[j].x / (r2 * sqrt(r2));
+      ax = df_add(ax, vec2f(f * dxf, 0.0));
+      ay = df_add(ay, vec2f(f * dyf, 0.0));
     } else {
-      let dx = df_add(pos[j].xy, df_neg(xi));
-      let dy = df_add(pos[j].zw, df_neg(yi));
-      dxf = dx.x + dx.y;
-      dyf = dy.x + dy.y;
+      // Koerper x Koerper -> komplett df64
+      let dx = df_sub(pos[j].xy, xi);
+      let dy = df_sub(pos[j].zw, yi);
+      let r2 = df_add(df_add(df_mul(dx, dx), df_mul(dy, dy)), softdf);
+      let invr3 = df_recip(df_mul(r2, df_sqrt(r2)));     // 1 / r^3
+      let fm = df_mul(invr3, vec2f(G * mf[j].x, 0.0));    // G*m / r^3
+      ax = df_add(ax, df_mul(fm, dx));
+      ay = df_add(ay, df_mul(fm, dy));
     }
-    let r2 = dxf*dxf + dyf*dyf + soft;
-    let r = sqrt(r2);
-    let f = G / (r2 * r);
-    a = a + f * mf[j].x * vec2f(dxf, dyf);
   }
-  return a;
+  return vec4f(ax, ay);
 }
 
 @compute @workgroup_size(64)
@@ -3473,15 +3520,16 @@ fn positionStep64(@builtin(global_invocation_id) gid: vec3u) {
   let dt = p.dtSub;
   let oldA = acc[i];
   if (astI) {
-    // Asteroid: reine f32-Integration (nur .hi, .lo = 0)
+    // Asteroid: reine f32-Integration (acc.hi = .x bzw. .z)
     let nx = pos[i].x + vel[i].x * dt + 0.5 * oldA.x * dt * dt;
-    let ny = pos[i].z + vel[i].z * dt + 0.5 * oldA.y * dt * dt;
+    let ny = pos[i].z + vel[i].z * dt + 0.5 * oldA.z * dt * dt;
     pos[i] = vec4f(nx, 0.0, ny, 0.0);
   } else {
-    // Massiver Koerper: df64. pos += vel*dt + 0.5*a*dt^2
+    // Massiver Koerper: df64. pos += vel*dt + 0.5*a*dt^2 (acc als df: xy / zw)
     let dtdf = vec2f(dt, 0.0);
-    let nx = df_add(df_add(pos[i].xy, df_mul(vel[i].xy, dtdf)), vec2f(0.5*oldA.x*dt*dt, 0.0));
-    let ny = df_add(df_add(pos[i].zw, df_mul(vel[i].zw, dtdf)), vec2f(0.5*oldA.y*dt*dt, 0.0));
+    let half = vec2f(0.5 * dt * dt, 0.0);
+    let nx = df_add(df_add(pos[i].xy, df_mul(vel[i].xy, dtdf)), df_mul(oldA.xy, half));
+    let ny = df_add(df_add(pos[i].zw, df_mul(vel[i].zw, dtdf)), df_mul(oldA.zw, half));
     pos[i] = vec4f(nx, ny);
   }
 }
@@ -3497,12 +3545,15 @@ fn velocityStep64(@builtin(global_invocation_id) gid: vec3u) {
   let newA = accel_i(i);
   acc[i] = newA;
   if (astI) {
+    // acc.hi = .x (ax) bzw. .z (ay)
     let nvx = vel[i].x + 0.5 * (oldA.x + newA.x) * dt;
-    let nvy = vel[i].z + 0.5 * (oldA.y + newA.y) * dt;
+    let nvy = vel[i].z + 0.5 * (oldA.z + newA.z) * dt;
     vel[i] = vec4f(nvx, 0.0, nvy, 0.0);
   } else {
-    let nvx = df_add(vel[i].xy, vec2f(0.5*(oldA.x+newA.x)*dt, 0.0));
-    let nvy = df_add(vel[i].zw, vec2f(0.5*(oldA.y+newA.y)*dt, 0.0));
+    // df64: vel += 0.5*(oldA+newA)*dt, acc als df xy/zw
+    let halfdt = vec2f(0.5 * dt, 0.0);
+    let nvx = df_add(vel[i].xy, df_mul(df_add(oldA.xy, newA.xy), halfdt));
+    let nvy = df_add(vel[i].zw, df_mul(df_add(oldA.zw, newA.zw), halfdt));
     vel[i] = vec4f(nvx, nvy);
   }
 }
@@ -3523,16 +3574,35 @@ async function initWebGPU() {
       useGPU = false;
     });
     const module = device.createShaderModule({ code: WGSL_NBODY });
-    const module64 = device.createShaderModule({ code: WGSL_NBODY64 });
     const layout = 'auto';
     const initPipe     = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'initAccel' } });
     const positionPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'positionStep' } });
     const velocityPipe = await device.createComputePipelineAsync({ layout, compute: { module, entryPoint: 'velocityStep' } });
-    // df64-Pipelines (emulierte fp64 fuer massive Koerper).
-    const initPipe64     = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'initAccel64' } });
-    const positionPipe64 = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'positionStep64' } });
-    const velocityPipe64 = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'velocityStep64' } });
     console.log('WebGPU bereit:', adapter.info?.vendor || 'unbekannt', adapter.info?.architecture || '');
+    // df64-Pipelines SEPARAT — ein Compile-Fehler hier darf den f32-Pfad
+    // nicht mitreissen. Compile-Meldungen werden geloggt, damit WGSL-Fehler
+    // sichtbar sind. Schlaegt es fehl -> gpu64 faellt spaeter auf CPU-f64.
+    let initPipe64 = null, positionPipe64 = null, velocityPipe64 = null;
+    try {
+      const module64 = device.createShaderModule({ code: WGSL_NBODY64 });
+      const errs = [];
+      if (module64.getCompilationInfo) {
+        const info = await module64.getCompilationInfo();
+        for (const m of info.messages) {
+          const line = `df64 WGSL ${m.type} Z${m.lineNum}:${m.linePos} — ${m.message}`;
+          console[m.type === 'error' ? 'error' : 'warn'](line);
+          if (m.type === 'error') errs.push(line);
+        }
+      }
+      initPipe64     = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'initAccel64' } });
+      positionPipe64 = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'positionStep64' } });
+      velocityPipe64 = await device.createComputePipelineAsync({ layout, compute: { module: module64, entryPoint: 'velocityStep64' } });
+      console.log('WebGPU df64 (fp64-Modus) bereit.');
+      if (errs.length) gpu64Error = errs.join('\n');
+    } catch (e64) {
+      console.warn('WebGPU df64-Pipeline fehlgeschlagen — gpu64 nicht verfuegbar:', e64);
+      gpu64Error = String(e64 && e64.message || e64);
+    }
     return { device, initPipe, positionPipe, velocityPipe, initPipe64, positionPipe64, velocityPipe64 };
   } catch (e) {
     console.warn('WebGPU init fehlgeschlagen:', e);
@@ -3588,7 +3658,7 @@ function ensureGpuBuffers64(N) {
   gpuBuf64.pos   = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   gpuBuf64.vel   = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   gpuBuf64.mf    = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-  gpuBuf64.accel = gpu.device.createBuffer({ size: N *  8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  gpuBuf64.accel = gpu.device.createBuffer({ size: N * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   gpuBuf64.read  = gpu.device.createBuffer({ size: N * 32, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
   if (!gpuBuf.params) {
     gpuBuf.params = gpu.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -3801,7 +3871,7 @@ function writeGpuParams(N, _pad, soft, dtSub) {
 }
 
 // Init beim Page-Load.
-initWebGPU().then(g => { gpu = g; });
+initWebGPU().then(g => { gpu = g; gpuInitDone = true; if (typeof updateGpu64ErrorBanner === 'function') updateGpu64ErrorBanner(); });
 
 // ============================================================
 //  KOLLISIONEN
@@ -4916,6 +4986,26 @@ function applyEngine(mode, persist) {
   }
   if (persist) {
     try { localStorage.setItem('sim_engine_' + currentScenario, mode); } catch (e) {}
+  }
+  updateGpu64ErrorBanner();
+}
+// Zeigt ein sichtbares Banner, wenn gpu64 gewaehlt ist, der df64-Pfad aber
+// nicht verfuegbar ist (WGSL-Compile-Fehler, kein Adapter, kein WebGPU). So
+// ist der Fehler ohne DevTools-Konsole sichtbar. Laeuft dann auf CPU-f64.
+function updateGpu64ErrorBanner() {
+  const el = document.getElementById('gpu64-error');
+  if (!el) return;
+  if (!gpuInitDone) { el.classList.remove('show'); return; }  // Init noch nicht fertig
+  const unavailable = !gpu || !gpu.initPipe64;
+  if (useGPU64 && unavailable) {
+    let why = gpu64Error
+      || (!navigator.gpu ? 'WebGPU vom Browser nicht unterstützt.'
+          : (!gpu ? 'Kein GPU-Adapter / WebGPU-Init fehlgeschlagen.'
+             : 'df64-Shader nicht kompiliert.'));
+    el.textContent = '⚠ WebGPU fp64 (gpu64) nicht aktiv — Fallback auf CPU-f64.\n' + why;
+    el.classList.add('show');
+  } else {
+    el.classList.remove('show');
   }
 }
 ['rad-cpu', 'rad-worker', 'rad-gpu', 'rad-gpu64',
