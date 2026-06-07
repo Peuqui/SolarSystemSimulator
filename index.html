@@ -481,6 +481,9 @@ input[type=range] {
   <label data-i18n-title="tt.hybrid">
     <input type="radio" name="engine" id="rad-hybrid" value="hybrid"> <span data-i18n="lbl.worldhybrid">Hybrid (Körper f64 + Asteroiden GPU)</span>
   </label>
+  <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;">
+    <input type="checkbox" id="chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span>
+  </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
@@ -511,9 +514,9 @@ input[type=range] {
   <input type="range" autocomplete="off" id="cloud-n" min="5" max="500" step="5" value="50">
   <label data-i18n-title="tt.cloud-mass"><span data-i18n="lbl.cloud-mass">Gesamtmasse (M⊕)</span> <span class="val" id="cloud-mass-val">0,001</span></label>
   <input type="range" autocomplete="off" id="cloud-mass" min="-5" max="2" step="0.05" value="-3">
-  <label data-i18n-title="tt.density"><span data-i18n="lbl.cloud-density-au2">Dichte (1/AU²)</span> <span class="val" id="cloud-density-val">10</span></label>
+  <label data-i18n-title="tt.density"><span data-i18n="lbl.cloud-density-au2">Dichte (1/AE²)</span> <span class="val" id="cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="cloud-density" min="-2" max="5" step="0.05" value="1">
-  <label style="color:#aaa; font-size:11px;"><span data-i18n="lbl.cloud-r">Eff. Radius:</span> <span id="cloud-r-derived">~1,3 AU</span></label>
+  <label style="color:#aaa; font-size:11px;"><span data-i18n="lbl.cloud-r">Eff. Radius:</span> <span id="cloud-r-derived">~1,3 AE</span></label>
   <label data-i18n-title="tt.jitter"><span data-i18n="lbl.cloud-jit">Streuung</span> <span class="val" id="cloud-jit-val">5</span></label>
   <input type="range" autocomplete="off" id="cloud-jit" min="0" max="50" step="0.5" value="5">
   <div>
@@ -638,6 +641,7 @@ input[type=range] {
   <label data-i18n-title="tt.worker"><input type="radio" name="engine-mob" id="mob-rad-worker" value="worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span></label>
   <label data-i18n-title="tt.gpu"><input type="radio" name="engine-mob" id="mob-rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
   <label data-i18n-title="tt.hybrid"><input type="radio" name="engine-mob" id="mob-rad-hybrid" value="hybrid"> <span data-i18n="lbl.worldhybrid">Hybrid (Körper f64 + Asteroiden GPU)</span></label>
+  <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;"><input type="checkbox" id="mob-chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
   <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">↗ markieren</span></label>
@@ -662,9 +666,9 @@ input[type=range] {
   <input type="range" autocomplete="off" id="mob-cloud-n" min="5" max="500" step="5" value="50">
   <label data-i18n-title="tt.cloud-mass"><span data-i18n="lbl.cloud-mass">Gesamtmasse (M⊕)</span> <span class="val" id="mob-cloud-mass-val">0,001</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-mass" min="-5" max="2" step="0.05" value="-3">
-  <label><span data-i18n="lbl.cloud-density-au2">Dichte (1/AU²)</span> <span class="val" id="mob-cloud-density-val">10</span></label>
+  <label><span data-i18n="lbl.cloud-density-au2">Dichte (1/AE²)</span> <span class="val" id="mob-cloud-density-val">10</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-density" min="-2" max="5" step="0.05" value="1">
-  <label style="color:#aaa; font-size:11px;"><span data-i18n="lbl.cloud-r">Eff. Radius:</span> <span id="mob-cloud-r-derived">~1,3 AU</span></label>
+  <label style="color:#aaa; font-size:11px;"><span data-i18n="lbl.cloud-r">Eff. Radius:</span> <span id="mob-cloud-r-derived">~1,3 AE</span></label>
   <label><span data-i18n="lbl.cloud-jit">Streuung</span> <span class="val" id="mob-cloud-jit-val">5</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-jit" min="0" max="50" step="0.5" value="5">
   <div style="margin-top:4px;">
@@ -721,6 +725,7 @@ const DEFAULTS = {
   astAstCollisions: false, // Asteroid x Asteroid Kollisionen
   astEscape: false,        // Asteroiden-Fluchterkennung (escapeScore berechnen -> aufraeumbar)
   astEscapeMark: false,    // erkannte Flucht-Asteroiden auch markieren (↗)
+  hybridNearWorker: true,  // Hybrid: nahe Asteroiden auf den f64-Worker (praezise enge Begegnungen)
   // --- Inject (Rogue / Wolke benutzen teilweise dieselben Slider) ---
   injectMass: 3,        // log10(M⊕) — 3 → 1000 Erdmassen
   injectSpeed: 1.477,   // log10(km/s) — 1.477 → 30 km/s
@@ -842,11 +847,12 @@ const I18N = {
     'lbl.worldworker': 'Physik in WebWorker',
     'lbl.worldgpu': 'Physik via WebGPU',
     'lbl.worldhybrid': 'Hybrid (Körper f64 + Asteroiden GPU)',
+    'lbl.hybrid-near': 'Enge Begegnungen präzise',
     'lbl.inject-mass': 'Masse',
     'lbl.inject-speed': 'Geschwindigkeit (km/s)',
     'lbl.inject-angle': 'Kompass-Kurs (°)',
     'lbl.cloud-count': 'Anzahl',
-    'lbl.cloud-density-au2': 'Dichte (1/AU²)',
+    'lbl.cloud-density-au2': 'Dichte (1/AE²)',
     'lbl.cloud-mass': 'Gesamtmasse (M⊕)',
     'tt.cloud-mass': 'Gesamtmasse der gesamten Wolke in Erdmassen. Wird auf alle Asteroiden gleich verteilt. Default 0,001 M⊕ entspricht der Masse des realen Asteroidengürtels.',
     'lbl.cloud-r': 'Eff. Radius:',
@@ -860,8 +866,9 @@ const I18N = {
     'tt.worker': 'Physik auf separatem Thread (WebWorker) — flüssiger bei vielen Bodies. Bei Problemen ausschalten.',
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
+    'tt.hybrid-near': 'Nur im Hybrid: Asteroiden, die einem schweren Körper zu nahe/schnell begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen f64-adaptiv im Worker statt grob auf der GPU. Präzise, kostet aber Tempo, wenn sehr viele Asteroiden gleichzeitig nahe sind. Aus = alle Asteroiden grob auf der GPU (schnell).',
     'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
-    'tt.density': 'Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.',
+    'tt.density': 'Asteroiden pro AE² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.',
     'tt.jitter': 'Zufällige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.',
     'tt.clear-escaping': 'Entfernt alle Körper mit ↗-Markierung',
     'tt.toggle-sidebar': 'Sidebar ein/ausblenden',
@@ -901,7 +908,8 @@ const I18N = {
     'stats.te': 'Gesamt-E',
     // Canvas labels
     'cv.barycenter': 'Schwerpunkt',
-    'cv.au': 'AU',
+    'cv.au': 'AE',
+    'cv.aujahr': 'AE/J',
     // Misc
     'misc.lang': 'EN',          // Anzeige im DE-Modus
     'misc.lang-title': 'Sprache umschalten — Switch language',
@@ -948,7 +956,7 @@ const I18N = {
       '<h3>Einheiten</h3>' +
       'M⊕ = Erdmasse (5,97 · 10<sup>24</sup>&nbsp;kg)<br>' +
       'M☉ = Sonnenmasse (1,99 · 10<sup>30</sup>&nbsp;kg, ≈ 333.000&nbsp;M⊕)<br>' +
-      'AU = Astronomische Einheit (1,496 · 10<sup>11</sup>&nbsp;m, Erde–Sonne)',
+      'AE = Astronomische Einheit (1,496 · 10<sup>11</sup>&nbsp;m, Erde–Sonne)',
   },
   en: {
     'sec.scenario': '🌌 Scenario',
@@ -1021,6 +1029,7 @@ const I18N = {
     'lbl.engine-cpu': 'Main thread (CPU)',
     'lbl.worldgpu': 'Physics via WebGPU',
     'lbl.worldhybrid': 'Hybrid (bodies f64 + asteroids GPU)',
+    'lbl.hybrid-near': 'Precise close encounters',
     'lbl.inject-mass': 'Mass',
     'lbl.inject-speed': 'Speed (km/s)',
     'lbl.inject-angle': 'Heading (°)',
@@ -1038,6 +1047,7 @@ const I18N = {
     'tt.worker': 'Physics on a separate thread (WebWorker) — smoother with many bodies. Disable if problems occur.',
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
+    'tt.hybrid-near': 'Hybrid only: asteroids whose encounter with a massive body is too close/fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the worker instead of coarsely on the GPU. Precise, but costs speed when very many asteroids are close at once. Off = all asteroids run coarsely on the GPU (fast).',
     'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
     'tt.density': 'Asteroids per AU² — the effective cloud size derives from count/density.',
     'tt.jitter': 'Random scatter in velocity (±%) AND direction (±°). 0 = perfectly parallel.',
@@ -1078,6 +1088,7 @@ const I18N = {
     'stats.te': 'Total E',
     'cv.barycenter': 'Barycenter',
     'cv.au': 'AU',
+    'cv.aujahr': 'AU/yr',
     'misc.lang': 'DE',          // Anzeige im EN-Modus
     'misc.lang-title': 'Sprache umschalten — Switch language',
     'misc.menu': 'Menu',
@@ -1163,6 +1174,8 @@ function setLang(lang) {
   try { localStorage.setItem('sim-lang', lang); } catch (e) {}
   document.documentElement.lang = lang;
   applyI18n();
+  // Dynamisch erzeugte Einheiten-Labels (nicht via data-i18n) nachziehen.
+  if (typeof updateCloudDerived === 'function') updateCloudDerived();
 }
 
 const G_SI = 6.674e-11;
@@ -2571,7 +2584,7 @@ function draw() {
       ctx.moveTo(tx, oy - 5); ctx.lineTo(tx, oy + 5);
       ctx.moveTo(ox - 5, ty); ctx.lineTo(ox + 5, ty);
       ctx.stroke();
-      const lbl = fmtDE(v, 0) + ' AU';
+      const lbl = fmtDE(v, 0) + ' ' + t('cv.au');
       if (tx > 20 && tx < W - 50) ctx.fillText(lbl, tx + 4, oy + 14);
       if (ty > 15 && ty < H - 5)  ctx.fillText(lbl, ox + 8, ty - 3);
     }
@@ -2607,7 +2620,7 @@ function draw() {
         ctx.stroke();
         if (rPix - lastLabelR >= 16) {
           ctx.fillStyle = '#667';
-          ctx.fillText(a + ' AU', scx + rPix*DIAG + 3, scy - rPix*DIAG - 3);
+          ctx.fillText(a + ' ' + t('cv.au'), scx + rPix*DIAG + 3, scy - rPix*DIAG - 3);
           lastLabelR = rPix;
         }
       }
@@ -3315,15 +3328,48 @@ function advanceWorker(dtYears, list) {
 // Hybrid: massive Koerper (Planeten/Sterne/Choreografie) auf dem Worker in
 // f64 — fragile Systeme bleiben stabil. Asteroiden (Guertel/Wolken) als
 // Testteilchen auf der GPU in f32 — schnell, im Feld der massiven Koerper.
-// Testteilchen-Modell: Asteroiden spueren die massiven Koerper, aber nicht
-// sich gegenseitig und wirken nicht auf die massiven zurueck (~1e-9, irrelevant).
+//
+// Asteroiden, die einem schweren Koerper NAHE kommen, laufen aber ebenfalls
+// auf dem Worker: die GPU hat einen festen Sub-Step und kann enge/schnelle
+// Bahnen (Asteroid dicht am Schwarzen Loch, schneller Vorbeiflug) nicht
+// aufloesen — und adaptive Substeps auf der GPU bedeuten hunderte serielle
+// Dispatches (Slideshow). "Nah" = die noetige adaptive Schrittweite waere
+// feiner als der feste GPU-Step. Der Worker rechnet die paar nahen Koerper
+// f64-adaptiv billig; der ferne Schwarm bleibt schnell auf der GPU.
 async function advanceHybrid(dtYears) {
   if (!gpu) { await advanceWorker(dtYears); return; }   // kein GPU -> alles Worker
-  const massive = bodies.filter(b => !b.isAsteroid);
-  // 1) Massive Koerper f64 auf dem Worker (nur untereinander).
-  await advanceWorker(dtYears, massive);
-  // 2) Asteroiden f32 auf der GPU im Feld der jetzt aktualisierten Koerper.
-  if (bodies.some(b => b.isAsteroid)) await advanceGPU(dtYears, true);
+  const massive = [];
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (b.visible && !b.isAsteroid) massive.push(b);
+  }
+  // Effektiver GPU-Sub-Step dieses Frames (wie in advanceGPU berechnet).
+  const gpuStep = dtYears / Math.max(1, Math.ceil(dtYears / MAX_SUB_DT_YEARS));
+  // Partition: Asteroiden mit zu enger/schneller Begegnung -> Worker.
+  const workerList = massive.slice();
+  let anyFar = false;
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.isAsteroid) continue;
+    if (!b.visible) { b._workerHandled = false; continue; }
+    let near = false;
+    if (hybridNearWorker) {
+      for (let k = 0; k < massive.length; k++) {
+        const m = massive[k];
+        const dx = m.x - b.x, dy = m.y - b.y;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
+        const dvx = m.vx - b.vx, dvy = m.vy - b.vy;
+        const vrel = Math.sqrt(dvx*dvx + dvy*dvy);
+        if (vrel > 1e-9 && (dist / vrel) / 20 < gpuStep) { near = true; break; }
+      }
+    }
+    b._workerHandled = near;
+    if (near) workerList.push(b); else anyFar = true;
+  }
+  // 1) Worker (f64, adaptiv): massive Koerper + nahe Asteroiden.
+  await advanceWorker(dtYears, workerList);
+  // 2) GPU (f32): die fernen Asteroiden (astOnly ueberspringt _workerHandled).
+  if (anyFar) await advanceGPU(dtYears, true);
 }
 
 // async-Variante: macht Physik im Worker, danach Kollisionen + Trails im Main.
@@ -3363,6 +3409,7 @@ var useHybrid = false;               // Hybrid: massive Koerper Worker-f64, Aste
 var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
 var astEscape = DEFAULTS.astEscape;                // Toggle Asteroiden-Fluchterkennung
 var astEscapeMark = DEFAULTS.astEscapeMark;        // Toggle ↗-Markierung der Flucht-Asteroiden
+var hybridNearWorker = DEFAULTS.hybridNearWorker;  // Toggle: nahe Asteroiden im Hybrid auf den Worker
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
 
@@ -3434,7 +3481,7 @@ fn positionStep(@builtin(global_invocation_id) gid: vec3u) {
   let flagsI = u32(bi.w);
   if ((flagsI & 1u) == 0u) { return; }
   // Hybrid: nur Asteroiden bewegen, massive Koerper bleiben fix (vom Worker).
-  if (p.astOnly != 0u && (flagsI & 2u) == 0u) { return; }
+  if (p.astOnly != 0u && ((flagsI & 2u) == 0u || (flagsI & 4u) != 0u)) { return; }
   let dt = p.dtSub;
   let oldAx = acc[i];
   let pos = bi.xy + vel[i] * dt + 0.5 * oldAx * dt * dt;
@@ -3448,7 +3495,7 @@ fn velocityStep(@builtin(global_invocation_id) gid: vec3u) {
   let bi = state[i];
   let flagsI = u32(bi.w);
   if ((flagsI & 1u) == 0u) { return; }
-  if (p.astOnly != 0u && (flagsI & 2u) == 0u) { return; }
+  if (p.astOnly != 0u && ((flagsI & 2u) == 0u || (flagsI & 4u) != 0u)) { return; }
   let dt = p.dtSub;
   let oldAx = acc[i];               // alte Beschleunigung (Pass A liess sie stehen)
   let newA = computeAccelOne(i);    // jetzt aus DURCHWEG neuen Positionen
@@ -3545,7 +3592,7 @@ async function advanceGPU(dtYears, astOnly) {
     stateArr[i*4 + 0] = b.x;
     stateArr[i*4 + 1] = b.y;
     stateArr[i*4 + 2] = b.mass;
-    stateArr[i*4 + 3] = (b.visible ? 1 : 0) | (b.isAsteroid ? 2 : 0);
+    stateArr[i*4 + 3] = (b.visible ? 1 : 0) | (b.isAsteroid ? 2 : 0) | (b._workerHandled ? 4 : 0);
     velArr[i*2 + 0] = b.vx;
     velArr[i*2 + 1] = b.vy;
   }
@@ -3619,7 +3666,8 @@ async function advanceGPU(dtYears, astOnly) {
   for (let i = 0; i < N; i++) {
     const b = refs[i];
     if (!live.has(b)) continue;
-    if (astOnly && !b.isAsteroid) continue;   // Hybrid: massive Koerper kommen vom Worker
+    // Hybrid: massive Koerper UND nahe Asteroiden kommen vom Worker (f64).
+    if (astOnly && (!b.isAsteroid || b._workerHandled)) continue;
     b.x  = stateOut[i*4 + 0];
     b.y  = stateOut[i*4 + 1];
     b.vx = velOut[i*2 + 0];
@@ -4516,7 +4564,7 @@ function updateCloudDerived() {
   const N = parseInt(document.getElementById('cloud-n').value, 10);
   const density = Math.pow(10, parseFloat(document.getElementById('cloud-density').value));
   const R = Math.sqrt(N / (Math.PI * density));
-  const txt = '~' + fmtDE(R, R < 10 ? 1 : 0) + ' AU';
+  const txt = '~' + fmtDE(R, R < 10 ? 1 : 0) + ' ' + t('cv.au');
   document.getElementById('cloud-r-derived').textContent = txt;
   document.getElementById('mob-cloud-r-derived').textContent = txt;
 }
@@ -4722,6 +4770,7 @@ const chkSync = [
   ['chk-ast-ast', 'mob-chk-ast-ast', 'astAstCollisions'],
   ['chk-ast-escape', 'mob-chk-ast-escape', 'astEscape'],
   ['chk-ast-escape-mark', 'mob-chk-ast-escape-mark', 'astEscapeMark'],
+  ['chk-hybrid-near', 'mob-chk-hybrid-near', 'hybridNearWorker'],
 ];
 chkSync.forEach(([desk, mob, varName]) => {
   const toggle = (val, persist) => {
@@ -4768,6 +4817,11 @@ function applyEngine(mode, persist) {
   for (const prefix of ['rad', 'mob-rad']) {
     const el = document.getElementById(prefix + '-' + mode);
     if (el) el.checked = true;
+  }
+  // "Enge Begegnungen präzise" ist nur im Hybrid-Modus wirksam.
+  for (const id of ['chk-hybrid-near', 'mob-chk-hybrid-near']) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !useHybrid;
   }
   if (persist) {
     try { localStorage.setItem('sim_engine', mode); } catch (e) {}
@@ -5231,8 +5285,8 @@ function updatePerturberList() {
     if (perturbers.length === 0) { div.textContent = ''; return; }
     div.innerHTML = perturbers.map(p =>
       `\u25CF ${p.name}: ${fmtMassWithSun(p.mass * M_SUN / M_EARTH)}<br>` +
-      `  Pos: (${fmtDE(p.x, 3)}, ${fmtDE(p.y, 3)}) AU<br>` +
-      `  v: (${fmtDE(p.vx, 4)}, ${fmtDE(p.vy, 4)}) AU/J`
+      `  Pos: (${fmtDE(p.x, 3)}, ${fmtDE(p.y, 3)}) ${t('cv.au')}<br>` +
+      `  v: (${fmtDE(p.vx, 4)}, ${fmtDE(p.vy, 4)}) ${t('cv.aujahr')}`
     ).join('<br>');
   });
 }
@@ -5857,6 +5911,7 @@ function applyDefaults() {
     ['chk-ast-ast',        'astAstCollisions',      DEFAULTS.astAstCollisions],
     ['chk-ast-escape',     'astEscape',             DEFAULTS.astEscape],
     ['chk-ast-escape-mark','astEscapeMark',         DEFAULTS.astEscapeMark],
+    ['chk-hybrid-near',    'hybridNearWorker',      DEFAULTS.hybridNearWorker],
   ];
   for (const [stem, varName, val] of chkDefs) {
     let saved = null;
