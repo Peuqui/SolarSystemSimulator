@@ -3120,39 +3120,6 @@ function adaptiveSubDt() {
   return Math.max(dt, MAX_SUB_DT_YEARS / 1000);  // Untergrenze gegen Einfrieren
 }
 
-// Adaptiver Sub-Step fuer den GPU-Pfad. Anders als adaptiveSubDt() (CPU)
-// werden hier auch Asteroid×Massiv-Begegnungen einbezogen — sonst zerlegt
-// der feste GPU-Schritt enge/schnelle Bahnen (z.B. Asteroiden dicht um ein
-// Schwarzes Loch: pro 0,5-Tage-Schritt ~80° Bahn -> Energiedrift, trudeln
-// auf weite langsame Orbits). Asteroid×Asteroid bleibt aussen vor (zu teuer,
-// physikalisch vernachlaessigbar). Die GPU rechnet die Mehrschritte billig.
-function gpuAdaptiveSubDt() {
-  let dt = MAX_SUB_DT_YEARS;
-  const massive = [];
-  for (let i = 0; i < bodies.length; i++) {
-    const b = bodies[i];
-    if (b.visible && !b.isAsteroid) massive.push(b);
-  }
-  if (massive.length === 0) return dt;
-  for (let i = 0; i < bodies.length; i++) {
-    const b = bodies[i];
-    if (!b.visible) continue;
-    for (let k = 0; k < massive.length; k++) {
-      const m = massive[k];
-      if (m === b) continue;
-      const dx = m.x - b.x, dy = m.y - b.y;
-      const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
-      const dvx = m.vx - b.vx, dvy = m.vy - b.vy;
-      const vrel = Math.sqrt(dvx*dvx + dvy*dvy);
-      if (vrel > 1e-9) {
-        const tEnc = dist / vrel;
-        if (tEnc / 20 < dt) dt = tEnc / 20;
-      }
-    }
-  }
-  return Math.max(dt, MAX_SUB_DT_YEARS / 1000);
-}
-
 // Bahnspur-Intervall (Sim-Tage). Adaptiv: ~120 Punkte pro Umlauf des
 // SCHNELLSTEN Koerpers — so bleiben die Spuren auch bei sehr schnellen
 // Planeten (z.B. TRAPPIST-1, Umlauf ~1,5 Tage) rund statt eckig.
@@ -3585,9 +3552,12 @@ async function advanceGPU(dtYears, astOnly) {
   gpu.device.queue.writeBuffer(gpuBuf.state, 0, stateArr.buffer);
   gpu.device.queue.writeBuffer(gpuBuf.vel,   0, velArr.buffer);
 
-  // Adaptiver Sub-Step (beruecksichtigt Asteroid×Massiv) — sonst zerlegt der
-  // feste Schritt enge Bahnen um massereiche Koerper (z.B. Schwarzes Loch).
-  const subDt = gpuAdaptiveSubDt();
+  // Fixer Sub-Step: MAX_SUB_DT_YEARS. (Kein adaptiver Schritt auf der GPU —
+  // die GPU parallelisiert ueber Koerper, serialisiert aber die Substeps als
+  // einzelne Dispatches. Adaptive Verkleinerung -> hunderte serielle
+  // Dispatches/Frame -> GPU saturiert. Enge Asteroid-Massiv-Bahnen bleiben
+  // damit grob; das gehoert auf einen anderen Loesungsweg, nicht hierher.)
+  const subDt = MAX_SUB_DT_YEARS;
   // Sub-Step-Decke wie CPU/Worker: ueber MAX_SUB_STEPS_PER_FRAME wird der
   // Rest des Frames verworfen (dtPer bleibt = subDt), damit niedrige
   // Verlangsamung x hoher Zeitschritt den GPU-Frame nicht einfrieren laesst.
