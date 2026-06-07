@@ -403,7 +403,7 @@ input[type=range] {
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage/Schritt)</span> <span class="val" id="dt-val">1</span></label>
   <input type="range" autocomplete="off"id="dt-slider" min="0.1" max="50" step="0.1" value="1">
   <label><span data-i18n="lbl.slowdown">Verlangsamung</span> <span class="val" id="slow-val">1.0×</span></label>
-  <input type="range" autocomplete="off"id="slow-slider" min="-1" max="2" step="0.05" value="0">
+  <input type="range" autocomplete="off"id="slow-slider" min="-2" max="2" step="0.05" value="0">
   <div style="margin-top:6px">
     <button id="btn-pause" data-i18n="btn.pause">&#x23F8; Pause</button>
     <button id="btn-step" data-i18n="btn.step">&#x23ED; Schritt</button>
@@ -576,7 +576,7 @@ input[type=range] {
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage)</span> <span class="val" id="mob-dt-val">1</span></label>
   <input type="range" autocomplete="off"id="mob-dt-slider" min="0.1" max="50" step="0.1" value="1">
   <label><span data-i18n="lbl.slowdown">Verlangsamung</span> <span class="val" id="mob-slow-val">1.0×</span></label>
-  <input type="range" autocomplete="off"id="mob-slow-slider" min="-1" max="2" step="0.05" value="0">
+  <input type="range" autocomplete="off"id="mob-slow-slider" min="-2" max="2" step="0.05" value="0">
 
   <h2 data-i18n="sec.view">&#x1F52D; Anzeige</h2>
   <label><span data-i18n="lbl.zoom">Zoom</span> <span class="val" id="mob-zoom-val">0.35</span></label>
@@ -1118,6 +1118,12 @@ const KM_S_TO_AU_YR = (1000 / AU) * (365.25 * DAY);
 
 // Maximaler Sub-Zeitschritt (Jahre) — haelt die innerste Bahn glatt
 const MAX_SUB_DT_YEARS = 0.5 / 365.25;
+// Obergrenze fuer Integrations-Sub-Steps pro Frame. Bei sehr niedriger
+// Verlangsamung (= sehr schnell) kombiniert mit hohem Zeitschritt wuerde die
+// Sub-Step-Zahl ins Extreme gehen und den Frame einfrieren. Ueber dieser
+// Decke wird der Rest des Frames verworfen — die Sim laeuft dann so schnell
+// wie die Rechenleistung erlaubt. Gilt einheitlich fuer CPU, Worker und GPU.
+const MAX_SUB_STEPS_PER_FRAME = 100000;
 
 // Ab dieser Masse (Sonnenmassen) gilt ein Koerper als Stern — die
 // Mindestmasse fuer Wasserstoff-Fusion liegt bei ~0.08 M_sonne.
@@ -3061,7 +3067,7 @@ function computeTrailInterval() {
 
 function advance(dtYears) {
   let remaining = dtYears, guard = 0;
-  while (remaining > 1e-12 && guard++ < 100000) {
+  while (remaining > 1e-12 && guard++ < MAX_SUB_STEPS_PER_FRAME) {
     const subDt = Math.min(remaining, adaptiveSubDt());
     step(subDt);
     handleCollisions(subDt);
@@ -3159,7 +3165,7 @@ function createPhysWorker() {
       N = X.length;
       let remaining = d.dt, guard = 0;
       computeAccel();
-      while (remaining > 1e-12 && guard++ < 100000) {
+      while (remaining > 1e-12 && guard++ < ${MAX_SUB_STEPS_PER_FRAME}) {
         const sub = Math.min(remaining, adaptDt());
         step(sub);
         remaining -= sub;
@@ -3440,8 +3446,17 @@ async function advanceGPU(dtYears) {
 
   // Fixer Sub-Step (kein adaptiveSubDt auf GPU): MAX_SUB_DT_YEARS.
   const subDt = MAX_SUB_DT_YEARS;
-  const steps = Math.max(1, Math.ceil(dtYears / subDt));
-  const dtPer = dtYears / steps;
+  // Sub-Step-Decke wie CPU/Worker: ueber MAX_SUB_STEPS_PER_FRAME wird der
+  // Rest des Frames verworfen (dtPer bleibt = subDt), damit niedrige
+  // Verlangsamung x hoher Zeitschritt den GPU-Frame nicht einfrieren laesst.
+  let steps = Math.max(1, Math.ceil(dtYears / subDt));
+  let dtPer;
+  if (steps > MAX_SUB_STEPS_PER_FRAME) {
+    steps = MAX_SUB_STEPS_PER_FRAME;
+    dtPer = subDt;
+  } else {
+    dtPer = dtYears / steps;
+  }
   const wDts = [YOSHIDA_W1_F * dtPer, YOSHIDA_W0_F * dtPer, YOSHIDA_W1_F * dtPer];
 
   // initAccel einmal
