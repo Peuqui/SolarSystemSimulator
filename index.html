@@ -187,8 +187,10 @@ body.is-mobile #mobile-controls { left: 10px; }
    Desktop bleibt kompakt. max-width angehoben, damit die Steuer-Reihe trotz
    groesserer Buttons in einer Zeile bleibt. */
 body.is-mobile #mobile-controls button,
-body.is-mobile #mobile-actions button { width: 54px; height: 54px; font-size: 21px; }
-body.is-mobile #mobile-controls { max-width: 320px; }
+body.is-mobile #mobile-actions button { width: 65px; height: 65px; font-size: 26px; }
+body.is-mobile #mobile-controls { max-width: 380px; }
+/* Inject-FAB auf Mobile gleich gross + gleiche Hoehe wie die Button-Reihen. */
+body.is-mobile #float-inject { width: 65px; height: 65px; font-size: 26px; bottom: 46px; }
 
 /* Floating-Inject-Button — unten mittig, auf Desktop UND Mobile sichtbar.
    Prominent platziert weil "Rogue injizieren" die Hauptinteraktion
@@ -459,6 +461,9 @@ input[type=range] {
   <label data-i18n-title="tt.gpu">
     <input type="radio" name="engine" id="rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span>
   </label>
+  <label data-i18n-title="tt.hybrid">
+    <input type="radio" name="engine" id="rad-hybrid" value="hybrid"> <span data-i18n="lbl.worldhybrid">Hybrid (Körper f64 + Asteroiden GPU)</span>
+  </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
@@ -606,6 +611,7 @@ input[type=range] {
   <label data-i18n-title="tt.engine-cpu"><input type="radio" name="engine-mob" id="mob-rad-cpu" value="cpu"> <span data-i18n="lbl.engine-cpu">Hauptthread (CPU)</span></label>
   <label data-i18n-title="tt.worker"><input type="radio" name="engine-mob" id="mob-rad-worker" value="worker" checked> <span data-i18n="lbl.worldworker">Physik in WebWorker</span></label>
   <label data-i18n-title="tt.gpu"><input type="radio" name="engine-mob" id="mob-rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
+  <label data-i18n-title="tt.hybrid"><input type="radio" name="engine-mob" id="mob-rad-hybrid" value="hybrid"> <span data-i18n="lbl.worldhybrid">Hybrid (Körper f64 + Asteroiden GPU)</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
@@ -805,6 +811,7 @@ const I18N = {
     'lbl.engine-cpu': 'Hauptthread (CPU)',
     'lbl.worldworker': 'Physik in WebWorker',
     'lbl.worldgpu': 'Physik via WebGPU',
+    'lbl.worldhybrid': 'Hybrid (Körper f64 + Asteroiden GPU)',
     'lbl.inject-mass': 'Masse',
     'lbl.inject-speed': 'Geschwindigkeit (km/s)',
     'lbl.inject-angle': 'Kompass-Kurs (°)',
@@ -822,6 +829,7 @@ const I18N = {
     'tt.engine-cpu': 'Physik im Haupt-Thread (kein Worker, keine GPU). Einfachster Pfad, bei wenigen Körpern völlig ausreichend.',
     'tt.worker': 'Physik auf separatem Thread (WebWorker) — flüssiger bei vielen Bodies. Bei Problemen ausschalten.',
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
+    'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
     'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
     'tt.density': 'Asteroiden pro AU² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.',
     'tt.jitter': 'Zufällige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.',
@@ -977,6 +985,7 @@ const I18N = {
     'lbl.engine': 'Physics engine',
     'lbl.engine-cpu': 'Main thread (CPU)',
     'lbl.worldgpu': 'Physics via WebGPU',
+    'lbl.worldhybrid': 'Hybrid (bodies f64 + asteroids GPU)',
     'lbl.inject-mass': 'Mass',
     'lbl.inject-speed': 'Speed (km/s)',
     'lbl.inject-angle': 'Heading (°)',
@@ -993,6 +1002,7 @@ const I18N = {
     'tt.engine-cpu': 'Physics on the main thread (no worker, no GPU). Simplest path, perfectly fine for few bodies.',
     'tt.worker': 'Physics on a separate thread (WebWorker) — smoother with many bodies. Disable if problems occur.',
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
+    'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
     'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
     'tt.density': 'Asteroids per AU² — the effective cloud size derives from count/density.',
     'tt.jitter': 'Random scatter in velocity (±%) AND direction (±°). 0 = perfectly parallel.',
@@ -3216,11 +3226,13 @@ function createPhysWorker() {
 // in einen TypeError laufen laesst.
 let workerInflightRefs = null;
 
-function advanceWorker(dtYears) {
+function advanceWorker(dtYears, list) {
   return new Promise((resolve) => {
     if (workerBusy) { resolve(); return; }
     if (!physWorker) physWorker = createPhysWorker();
-    const N = bodies.length;
+    // Optionaler Subset (Hybrid: nur massive Koerper) — sonst alle Bodies.
+    const src = list || bodies;
+    const N = src.length;
     const x = new Float64Array(N), y = new Float64Array(N);
     const vx = new Float64Array(N), vy = new Float64Array(N);
     const ax = new Float64Array(N), ay = new Float64Array(N);
@@ -3228,19 +3240,33 @@ function advanceWorker(dtYears) {
     const visible = new Uint8Array(N);
     const isAst = new Uint8Array(N);
     for (let i = 0; i < N; i++) {
-      const b = bodies[i];
+      const b = src[i];
       x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
       ax[i] = b.ax; ay[i] = b.ay;
       mass[i] = b.mass;
       visible[i] = b.visible ? 1 : 0;
       isAst[i] = b.isAsteroid ? 1 : 0;
     }
-    workerInflightRefs = bodies.slice();
+    workerInflightRefs = src.slice();
     workerBusy = true;
     workerResolver = resolve;
     physWorker.postMessage({ x, y, vx, vy, ax, ay, mass, visible, isAst, dt: dtYears },
       [x.buffer, y.buffer, vx.buffer, vy.buffer, ax.buffer, ay.buffer, mass.buffer, visible.buffer, isAst.buffer]);
   });
+}
+
+// Hybrid: massive Koerper (Planeten/Sterne/Choreografie) auf dem Worker in
+// f64 — fragile Systeme bleiben stabil. Asteroiden (Guertel/Wolken) als
+// Testteilchen auf der GPU in f32 — schnell, im Feld der massiven Koerper.
+// Testteilchen-Modell: Asteroiden spueren die massiven Koerper, aber nicht
+// sich gegenseitig und wirken nicht auf die massiven zurueck (~1e-9, irrelevant).
+async function advanceHybrid(dtYears) {
+  if (!gpu) { await advanceWorker(dtYears); return; }   // kein GPU -> alles Worker
+  const massive = bodies.filter(b => !b.isAsteroid);
+  // 1) Massive Koerper f64 auf dem Worker (nur untereinander).
+  await advanceWorker(dtYears, massive);
+  // 2) Asteroiden f32 auf der GPU im Feld der jetzt aktualisierten Koerper.
+  if (bodies.some(b => b.isAsteroid)) await advanceGPU(dtYears, true);
 }
 
 // async-Variante: macht Physik im Worker, danach Kollisionen + Trails im Main.
@@ -3253,7 +3279,9 @@ async function advanceAsync(dtYears) {
   // Szenarien aktiv, wo f32 unkritisch ist und die GPU echten Speed bringt.
   const sc = SCENARIOS[currentScenario];
   const needF64 = !!(sc && sc.precise);
-  if (useGPU && gpu && !needF64) {
+  if (useHybrid) {
+    await advanceHybrid(dtYears);
+  } else if (useGPU && gpu && !needF64) {
     await advanceGPU(dtYears);
   } else if (useWorker) {
     await advanceWorker(dtYears);
@@ -3274,6 +3302,7 @@ async function advanceAsync(dtYears) {
 //  pro Frame. Bei N >> 1000 deutlich schneller als CPU/Worker.
 // ============================================================
 var useGPU = DEFAULTS.useGPU;        // Toggle (default aus — experimentell)
+var useHybrid = false;               // Hybrid: massive Koerper Worker-f64, Asteroiden GPU-f32
 var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
@@ -3287,7 +3316,7 @@ struct Params {
   dtSub: f32,
   yW1: f32,
   yW0: f32,
-  _pad: f32,
+  astOnly: u32,   // 1 = nur Asteroiden integrieren (Hybrid-Modus), massive Koerper fix
 }
 @group(0) @binding(0) var<storage, read_write> state: array<vec4f>; // x, y, mass, flags
 @group(0) @binding(1) var<storage, read_write> vel:   array<vec2f>;
@@ -3345,6 +3374,8 @@ fn positionStep(@builtin(global_invocation_id) gid: vec3u) {
   let bi = state[i];
   let flagsI = u32(bi.w);
   if ((flagsI & 1u) == 0u) { return; }
+  // Hybrid: nur Asteroiden bewegen, massive Koerper bleiben fix (vom Worker).
+  if (p.astOnly != 0u && (flagsI & 2u) == 0u) { return; }
   let dt = p.dtSub;
   let oldAx = acc[i];
   let pos = bi.xy + vel[i] * dt + 0.5 * oldAx * dt * dt;
@@ -3358,6 +3389,7 @@ fn velocityStep(@builtin(global_invocation_id) gid: vec3u) {
   let bi = state[i];
   let flagsI = u32(bi.w);
   if ((flagsI & 1u) == 0u) { return; }
+  if (p.astOnly != 0u && (flagsI & 2u) == 0u) { return; }
   let dt = p.dtSub;
   let oldAx = acc[i];               // alte Beschleunigung (Pass A liess sie stehen)
   let newA = computeAccelOne(i);    // jetzt aus DURCHWEG neuen Positionen
@@ -3437,7 +3469,7 @@ function ensureGpuBuffers(N) {
 const YOSHIDA_W1_F = 1 / (2 - Math.cbrt(2));
 const YOSHIDA_W0_F = -Math.cbrt(2) / (2 - Math.cbrt(2));
 
-async function advanceGPU(dtYears) {
+async function advanceGPU(dtYears, astOnly) {
   const N = bodies.length;
   if (N === 0) return;
   // Snapshot der Body-Referenzen — beim Readback wird per identischer
@@ -3478,8 +3510,8 @@ async function advanceGPU(dtYears) {
 
   // initAccel einmal
   let enc = gpu.device.createCommandEncoder();
-  // Params: N, _, G, soft, dtSub, w1, w0
-  writeGpuParams(N, 0, 1e-6, 0);
+  // Params: N, _, G, soft, dtSub, w1, w0, astOnly
+  writeGpuParams(N, 0, 1e-6, 0, astOnly);
   let pass = enc.beginComputePass();
   pass.setPipeline(gpu.initPipe);
   pass.setBindGroup(0, gpuBuf.bindInit);
@@ -3493,7 +3525,7 @@ async function advanceGPU(dtYears) {
   const groups = Math.ceil(N / 64);
   for (let s = 0; s < steps; s++) {
     for (const wDt of wDts) {
-      writeGpuParams(N, 0, 1e-6, wDt);
+      writeGpuParams(N, 0, 1e-6, wDt, astOnly);
       enc = gpu.device.createCommandEncoder();
       // Pass A: nur neue Positionen schreiben.
       pass = enc.beginComputePass();
@@ -3524,6 +3556,7 @@ async function advanceGPU(dtYears) {
   for (let i = 0; i < N; i++) {
     const b = refs[i];
     if (!live.has(b)) continue;
+    if (astOnly && !b.isAsteroid) continue;   // Hybrid: massive Koerper kommen vom Worker
     b.x  = stateOut[i*4 + 0];
     b.y  = stateOut[i*4 + 1];
     b.vx = velOut[i*2 + 0];
@@ -3532,7 +3565,7 @@ async function advanceGPU(dtYears) {
   gpuBuf.read.unmap();
 }
 
-function writeGpuParams(N, _pad, soft, dtSub) {
+function writeGpuParams(N, _pad, soft, dtSub, astOnly) {
   const buf = new ArrayBuffer(32);
   const u32 = new Uint32Array(buf);
   const f32 = new Float32Array(buf);
@@ -3543,7 +3576,7 @@ function writeGpuParams(N, _pad, soft, dtSub) {
   f32[4] = dtSub;
   f32[5] = YOSHIDA_W1_F;
   f32[6] = YOSHIDA_W0_F;
-  f32[7] = 0;
+  u32[7] = astOnly ? 1 : 0;
   gpu.device.queue.writeBuffer(gpuBuf.params, 0, buf);
 }
 
@@ -4644,13 +4677,14 @@ chkSync.forEach(([desk, mob, varName]) => {
   if (saved !== null) toggle(saved === '1', false);
 });
 
-// Physik-Engine: Hauptthread / WebWorker / WebGPU schliessen sich
-// gegenseitig aus -> native Radio-Gruppe statt Checkbox + manuellem
-// Ausschluss. mode: 'cpu' | 'worker' | 'gpu'. Desktop- und Mobile-Gruppe
-// (name="engine" / "engine-mob") werden gespiegelt.
+// Physik-Engine: Hauptthread / WebWorker / WebGPU / Hybrid schliessen sich
+// gegenseitig aus -> native Radio-Gruppe. mode: 'cpu' | 'worker' | 'gpu' |
+// 'hybrid'. Hybrid = massive Koerper Worker-f64 + Asteroiden GPU-f32.
+// Desktop- und Mobile-Gruppe (name="engine" / "engine-mob") werden gespiegelt.
 function applyEngine(mode, persist) {
   useWorker = (mode === 'worker');
   useGPU    = (mode === 'gpu');
+  useHybrid = (mode === 'hybrid');
   for (const prefix of ['rad', 'mob-rad']) {
     const el = document.getElementById(prefix + '-' + mode);
     if (el) el.checked = true;
@@ -4659,7 +4693,8 @@ function applyEngine(mode, persist) {
     try { localStorage.setItem('sim_engine', mode); } catch (e) {}
   }
 }
-['rad-cpu', 'rad-worker', 'rad-gpu', 'mob-rad-cpu', 'mob-rad-worker', 'mob-rad-gpu']
+['rad-cpu', 'rad-worker', 'rad-gpu', 'rad-hybrid',
+ 'mob-rad-cpu', 'mob-rad-worker', 'mob-rad-gpu', 'mob-rad-hybrid']
   .forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', function() {
