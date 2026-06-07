@@ -4726,6 +4726,21 @@ chkSync.forEach(([desk, mob, varName]) => {
     document.getElementById(mob).checked = val;
     // Log-Zoom braucht einen anderen Kamera-Zoom — Szenario-Wert neu setzen.
     if (varName === 'useLogZoom') fitZoomToSystem(true);   // smooth
+    // "Schwerpunkt zentrieren" aktivieren hebt einen aktiven Fokus-Body auf
+    // (wie Escape) — sonst ueberstimmt der Fokus-Zweig in simLoop die
+    // Zentrierung und der Toggle scheint wirkungslos. Zusaetzlich Kamera
+    // DIREKT auf den Schwerpunkt setzen, damit kein langer Transit-Pause
+    // entsteht (distPx>50 wuerde die Physik bis zum Heranfahren pausieren).
+    if (persist && varName === 'lockBarycenter' && val) {
+      focusBody = null;
+      const [bx, by] = barycenter();
+      if (useLogZoom) {
+        const r = Math.hypot(bx, by), ang = Math.atan2(by, bx), rLog = logTransform(r);
+        cam.cx = rLog * Math.cos(ang); cam.cy = rLog * Math.sin(ang);
+      } else {
+        cam.cx = bx; cam.cy = by;
+      }
+    }
     if (persist) {
       try { localStorage.setItem('sim_' + varName, val ? '1' : '0'); } catch (e) {}
     }
@@ -5435,7 +5450,7 @@ canvas.addEventListener('mouseup', function(e) {
     // zuruecknehmen, damit der nicht stehen bleibt.
     if (dist < 5) {
       const hit = bodyAtScreen(e.clientX, e.clientY);
-      if (hit) { focusBody = hit; injectMarked = false; }
+      if (hit) { focusBody = hit; injectMarked = false; releaseBarycenterLock(); }
     }
     dragging = false;
   }
@@ -5670,6 +5685,7 @@ canvas.addEventListener('touchend', function(e) {
       const hit = bodyAtScreen(t.clientX, t.clientY - 20, 35);
       focusBody = hit;
       injectMarked = false;
+      if (hit) releaseBarycenterLock();
       if (hit && navigator.vibrate) navigator.vibrate(10);
     }
     touchState = 'idle';
