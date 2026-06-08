@@ -6157,15 +6157,34 @@ initAsteroidGL();
 simLoop();
 
 // --- GitHub-Stars im Footer (nutzt GitHub-API ohne Token, ungetrackt) ---
+// Ergebnis wird 1 Tag in localStorage gecacht: ein frischer Wert wird direkt
+// angezeigt OHNE Request — so leakt nicht jeder Reload die Besucher-IP an die
+// GitHub-API, und das 60/h-Rate-Limit wird nicht unnoetig angekratzt.
 (async function loadStars() {
+  const CACHE_KEY = 'sim_gh_stars';
+  const TTL_MS = 24 * 60 * 60 * 1000;   // 1x pro Tag neu holen
+  const el = document.getElementById('gh-stars');
+  if (!el) return;
+  const show = (n) => {
+    el.textContent = n.toLocaleString('de-DE');
+    el.parentElement.style.display = 'inline-flex';
+  };
+  // 1) Frischer Cache-Wert -> anzeigen, kein Request.
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+    if (c && typeof c.n === 'number' && (Date.now() - c.t) < TTL_MS) {
+      show(c.n);
+      return;
+    }
+  } catch (e) { /* korrupter Cache -> ignorieren, neu holen */ }
+  // 2) Sonst einmal von der GitHub-API holen und cachen.
   try {
     const r = await fetch('https://api.github.com/repos/Peuqui/SolarSystemSimulator');
     if (!r.ok) return;
     const d = await r.json();
-    const el = document.getElementById('gh-stars');
-    if (el && typeof d.stargazers_count === 'number') {
-      el.textContent = d.stargazers_count.toLocaleString('de-DE');
-      el.parentElement.style.display = 'inline-flex';
+    if (typeof d.stargazers_count === 'number') {
+      show(d.stargazers_count);
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ n: d.stargazers_count, t: Date.now() })); } catch (e) {}
     }
   } catch (e) { /* offline / Rate-Limit -> Badge bleibt verborgen */ }
 })();
@@ -6189,6 +6208,6 @@ simLoop();
 
 <!-- GoatCounter (privacy-friendly analytics) -->
 <script data-goatcounter="https://peuqui.goatcounter.com/count"
-        async src="//gc.zgo.at/count.js"></script>
+        async src="https://gc.zgo.at/count.js"></script>
 </body>
 </html>
