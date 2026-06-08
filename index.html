@@ -3911,17 +3911,86 @@ function shatter(a, b) {
 // Zellgroesse = 2x max(realR) — bei Sonne ~5e-3 AU.
 const COLL_CELL_AU = 0.01;
 const INV_COLL_CELL = 1 / COLL_CELL_AU;
-// Numerischer Hash statt String — spart bei N=1400 Asteroiden pro Frame
-// die String-Allocation und macht Map-Lookups deutlich schneller. Offset
-// + Multiplikator halten den Schluessel im JS-Safe-Int-Bereich (< 2^53).
-const HASH_OFF = 1e6;
-const HASH_MUL = 2e6;
-const _astCellMap = new Map();
-// Pool fuer Cell-Arrays — bei 50.000 Asteroiden in der Wolke entstehen
-// jedes Frame ~10.000 Cell-Arrays. Ohne Pool wuerden sie nach
-// Map.clear() vom GC eingesammelt; mit Pool werden sie recycelt und
-// die Minor-GC-Spitzen verschwinden.
-const _astCellArrayPool = [];
+// Asteroid-Grid als Counting-Sort-Bucket-Cell-List (statt JS-Map). Pro Frame
+// werden die Asteroiden per Zell-Hash in 2er-Potenz-Buckets einsortiert —
+// alles in typed arrays, ein einziger O(N)-Aufbau. Ein Zell-Lookup ist dann
+// ein direkter Bucket-Range-Scan + Zell-Filter. Vorteil gegenueber Map.get:
+// LEERE Zellen (der Normalfall in der Schild-Box bei verteilten Wolken) sind
+// trivial (start==end), waehrend Map.get(missing) jedes Mal voll hasht.
+// Messung: bei 10k verteilten Asteroiden ~2x schneller, dicht gleichauf.
+let _agItems = new Int32Array(0);   // Body-Indizes, nach Bucket sortiert
+let _agCx    = new Int32Array(0);   // Zell-x parallel zu _agItems (Filter)
+let _agCy    = new Int32Array(0);   // Zell-y parallel
+let _agStart = new Int32Array(2);   // Bucket-Start-Offsets (Laenge B+1)
+let _agCount = new Int32Array(0);   // Bucket-Zaehler / Schreib-Cursor
+let _agMask  = 0;                    // B-1 (B = 2er-Potenz >= 2*N_ast)
+
+// Zell-Hash: zwei grosse Primzahlen, int32-Multiplikation (Math.imul) + XOR.
+// Determinismus + Streuung ueber B Buckets genuegt; die echte Zell-
+// Zugehoerigkeit wird beim Lookup ueber _agCx/_agCy exakt nachgeprueft.
+function _cellHash(cx, cy) {
+  return (Math.imul(cx, 73856093) ^ Math.imul(cy, 19349663)) & _agMask;
+}
+
+// Baut das Grid neu auf und liefert die hoechste Asteroid-Geschwindigkeit
+// dieses Frames (fuer die dynamische Cell-Range in Phase 3/4).
+function buildAstGrid() {
+  let n = 0, maxV2 = 0;
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.visible || !b.isAsteroid) continue;
+    n++;
+    const v2 = b.vx*b.vx + b.vy*b.vy;
+    if (v2 > maxV2) maxV2 = v2;
+  }
+  // Bucket-Anzahl als 2er-Potenz >= 2n (mind. 16) — _agMask MUSS vor
+  // _cellHash gesetzt sein.
+  let B = 16;
+  while (B < n * 2) B <<= 1;
+  _agMask = B - 1;
+  if (_agStart.length < B + 1) { _agStart = new Int32Array(B + 1); _agCount = new Int32Array(B); }
+  else _agCount.fill(0, 0, B);
+  if (_agItems.length < n) { _agItems = new Int32Array(n); _agCx = new Int32Array(n); _agCy = new Int32Array(n); }
+  // Pass 1: Buckets zaehlen (Hash inline — Hotpfad).
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.visible || !b.isAsteroid) continue;
+    const cx = Math.floor(b.x * INV_COLL_CELL);
+    const cy = Math.floor(b.y * INV_COLL_CELL);
+    _agCount[(Math.imul(cx, 73856093) ^ Math.imul(cy, 19349663)) & _agMask]++;
+  }
+  // Praefixsumme -> Start-Offsets; _agCount wird danach zum Schreib-Cursor.
+  let acc = 0;
+  for (let k = 0; k < B; k++) { _agStart[k] = acc; acc += _agCount[k]; _agCount[k] = _agStart[k]; }
+  _agStart[B] = acc;
+  // Pass 2: einsortieren.
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (!b.visible || !b.isAsteroid) continue;
+    const cx = Math.floor(b.x * INV_COLL_CELL);
+    const cy = Math.floor(b.y * INV_COLL_CELL);
+    const pos = _agCount[(Math.imul(cx, 73856093) ^ Math.imul(cy, 19349663)) & _agMask]++;
+    _agItems[pos] = i; _agCx[pos] = cx; _agCy[pos] = cy;
+  }
+  return Math.sqrt(maxV2);
+}
+
+// Scannt die Asteroiden in Zelle (cx,cy) und testet jeden gegen `other`.
+// minSeq >= 0: nur Asteroiden mit _astSeq > minSeq (Paar-Einmal-Filter in
+// Phase 4); minSeq < 0: alle. Returnt true bei struktureller Aenderung des
+// bodies-Arrays — der Aufrufer MUSS dann abbrechen. Der Schild-Hotpfad in
+// handleCollisions hat denselben Scan inline.
+function _scanAstCell(cx, cy, other, minSeq, dtFrame) {
+  const bucket = _cellHash(cx, cy);
+  const end = _agStart[bucket + 1];
+  for (let idx = _agStart[bucket]; idx < end; idx++) {
+    if (_agCx[idx] !== cx || _agCy[idx] !== cy) continue;
+    const b = bodies[_agItems[idx]];
+    if (minSeq >= 0 && b._astSeq <= minSeq) continue;
+    if (_tryCollide(other, b, dtFrame)) return true;
+  }
+  return false;
+}
 
 // Resolve eine einzelne Kollision (geometrische Beruehrung).
 // Returnt true wenn ein Merge/Shatter ausgeloest wurde (bodies-Array geaendert).
@@ -4232,33 +4301,9 @@ function handleCollisions(dtFrame) {
       if (_tryCollide(planets[i], planets[j], dtFrame)) return;
     }
   }
-  // Phase 2: Asteroiden in Hash-Grid einsortieren (O(N_ast)) und gleich
-  // die hoechste Asteroid-Geschwindigkeit dieses Frames mitnehmen — wird
-  // in Phase 3 fuer die dynamische Cell-Range benoetigt.
-  // Cell-Arrays aus dem letzten Frame ins Pool zurueckgeben, dann Map
-  // leeren. So entstehen keine GC-belastenden neuen Arrays jedes Frame.
-  for (const arr of _astCellMap.values()) {
-    arr.length = 0;
-    _astCellArrayPool.push(arr);
-  }
-  _astCellMap.clear();
-  let maxAstSpeedSq = 0;
-  for (let i = 0; i < bodies.length; i++) {
-    const b = bodies[i];
-    if (!b.visible || !b.isAsteroid) continue;
-    const cx = Math.floor(b.x * INV_COLL_CELL);
-    const cy = Math.floor(b.y * INV_COLL_CELL);
-    const k = (cx + HASH_OFF) * HASH_MUL + (cy + HASH_OFF);
-    let cell = _astCellMap.get(k);
-    if (!cell) {
-      cell = _astCellArrayPool.length > 0 ? _astCellArrayPool.pop() : [];
-      _astCellMap.set(k, cell);
-    }
-    cell.push(b);
-    const v2 = b.vx*b.vx + b.vy*b.vy;
-    if (v2 > maxAstSpeedSq) maxAstSpeedSq = v2;
-  }
-  const maxAstSpeed = Math.sqrt(maxAstSpeedSq);
+  // Phase 2: Asteroiden ins Grid einsortieren (Counting-Sort, O(N_ast)) und
+  // die hoechste Asteroid-Geschwindigkeit dieses Frames zurueckbekommen.
+  const maxAstSpeed = buildAstGrid();
   // Phase 3: pro Planet eine DYNAMISCHE Nachbarschaft im Asteroid-Grid.
   // Reichweite skaliert mit (vPlanet + vAstMax) * dtFrame — sodass auch
   // weit voneinander entfernte Bahn-Schnittpunkte erfasst werden und CCD
@@ -4266,19 +4311,14 @@ function handleCollisions(dtFrame) {
   // (= 17x17 Lookups) damit extreme dt nicht in die Performance einbrechen.
   for (let pi = 0; pi < planets.length; pi++) {
     const p = planets[pi];
-    const cx = Math.floor(p.x * INV_COLL_CELL);
-    const cy = Math.floor(p.y * INV_COLL_CELL);
+    const pcx = Math.floor(p.x * INV_COLL_CELL);
+    const pcy = Math.floor(p.y * INV_COLL_CELL);
     const vP = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
     const sweepAU = (vP + maxAstSpeed) * dtFrame;
     const range = Math.min(8, Math.max(1, Math.ceil(sweepAU * INV_COLL_CELL) + 1));
     for (let dx = -range; dx <= range; dx++) {
-      const kx = (cx + dx + HASH_OFF) * HASH_MUL;
       for (let dy = -range; dy <= range; dy++) {
-        const cell = _astCellMap.get(kx + (cy + dy + HASH_OFF));
-        if (!cell) continue;
-        for (let ai = 0; ai < cell.length; ai++) {
-          if (_tryCollide(p, cell[ai], dtFrame)) return;
-        }
+        if (_scanAstCell(pcx + dx, pcy + dy, p, -1, dtFrame)) return;
       }
     }
   }
@@ -4302,27 +4342,25 @@ function handleCollisions(dtFrame) {
     const useShield = sweepCells > 1.5;
     if (useShield) {
       // Dynamisches Schild: pro Asteroid Bahn-Bounding-Box absuchen.
+      // Bucket-Scan + Hash inline (Hotpfad — bis ~640k Zell-Lookups/Frame;
+      // leere Zellen sind hier trivial start==end statt Map.get-Miss).
       for (let i = 0; i < bodies.length; i++) {
         const a = bodies[i];
         if (!a.visible || !a.isAsteroid) continue;
         const aSeq = a._astSeq;
         const endX = a.x + a.vx * dtFrame;
         const endY = a.y + a.vy * dtFrame;
-        const minCxRaw = Math.floor(Math.min(a.x, endX) * INV_COLL_CELL) - 1;
-        const maxCxRaw = Math.floor(Math.max(a.x, endX) * INV_COLL_CELL) + 1;
-        const minCyRaw = Math.floor(Math.min(a.y, endY) * INV_COLL_CELL) - 1;
-        const maxCyRaw = Math.floor(Math.max(a.y, endY) * INV_COLL_CELL) + 1;
-        const minCx = minCxRaw;
-        const maxCx = Math.min(maxCxRaw, minCxRaw + 8);
-        const minCy = minCyRaw;
-        const maxCy = Math.min(maxCyRaw, minCyRaw + 8);
+        const minCx = Math.floor(Math.min(a.x, endX) * INV_COLL_CELL) - 1;
+        const maxCx = Math.min(Math.floor(Math.max(a.x, endX) * INV_COLL_CELL) + 1, minCx + 8);
+        const minCy = Math.floor(Math.min(a.y, endY) * INV_COLL_CELL) - 1;
+        const maxCy = Math.min(Math.floor(Math.max(a.y, endY) * INV_COLL_CELL) + 1, minCy + 8);
         for (let cx = minCx; cx <= maxCx; cx++) {
-          const kx = (cx + HASH_OFF) * HASH_MUL;
           for (let cy = minCy; cy <= maxCy; cy++) {
-            const cell = _astCellMap.get(kx + (cy + HASH_OFF));
-            if (!cell) continue;
-            for (let ai = 0; ai < cell.length; ai++) {
-              const b = cell[ai];
+            const bucket = (Math.imul(cx, 73856093) ^ Math.imul(cy, 19349663)) & _agMask;
+            const end = _agStart[bucket + 1];
+            for (let idx = _agStart[bucket]; idx < end; idx++) {
+              if (_agCx[idx] !== cx || _agCy[idx] !== cy) continue;
+              const b = bodies[_agItems[idx]];
               if (b._astSeq <= aSeq) continue;
               if (_tryCollide(a, b, dtFrame)) return;
             }
@@ -4330,43 +4368,19 @@ function handleCollisions(dtFrame) {
         }
       }
     } else {
-      // Forward-only: 5 "vordere" Zellen (own + E, NE, N, NW), jedes
-      // Paar landet genau einmal. Eigene Zelle braucht den Filter.
+      // Forward-only: own (seq-Filter) + E, NE, N, NW (vorwaerts), jedes
+      // Paar landet genau einmal.
       for (let i = 0; i < bodies.length; i++) {
         const a = bodies[i];
         if (!a.visible || !a.isAsteroid) continue;
-        const cx = Math.floor(a.x * INV_COLL_CELL);
-        const cy = Math.floor(a.y * INV_COLL_CELL);
+        const acx = Math.floor(a.x * INV_COLL_CELL);
+        const acy = Math.floor(a.y * INV_COLL_CELL);
         const aSeq = a._astSeq;
-        const kxOwn = (cx + HASH_OFF) * HASH_MUL;
-        const kxE   = (cx + 1 + HASH_OFF) * HASH_MUL;
-        const kxNW  = (cx - 1 + HASH_OFF) * HASH_MUL;
-        const ky    = cy + HASH_OFF;
-        const kyN   = cy + 1 + HASH_OFF;
-        let cell = _astCellMap.get(kxOwn + ky);
-        if (cell) {
-          for (let ai = 0; ai < cell.length; ai++) {
-            const b = cell[ai];
-            if (b._astSeq <= aSeq) continue;
-            if (_tryCollide(a, b, dtFrame)) return;
-          }
-        }
-        cell = _astCellMap.get(kxE + ky);
-        if (cell) for (let ai = 0; ai < cell.length; ai++) {
-          if (_tryCollide(a, cell[ai], dtFrame)) return;
-        }
-        cell = _astCellMap.get(kxE + kyN);
-        if (cell) for (let ai = 0; ai < cell.length; ai++) {
-          if (_tryCollide(a, cell[ai], dtFrame)) return;
-        }
-        cell = _astCellMap.get(kxOwn + kyN);
-        if (cell) for (let ai = 0; ai < cell.length; ai++) {
-          if (_tryCollide(a, cell[ai], dtFrame)) return;
-        }
-        cell = _astCellMap.get(kxNW + kyN);
-        if (cell) for (let ai = 0; ai < cell.length; ai++) {
-          if (_tryCollide(a, cell[ai], dtFrame)) return;
-        }
+        if (_scanAstCell(acx,     acy,     a, aSeq, dtFrame)) return;
+        if (_scanAstCell(acx + 1, acy,     a, -1,   dtFrame)) return;
+        if (_scanAstCell(acx + 1, acy + 1, a, -1,   dtFrame)) return;
+        if (_scanAstCell(acx,     acy + 1, a, -1,   dtFrame)) return;
+        if (_scanAstCell(acx - 1, acy + 1, a, -1,   dtFrame)) return;
       }
     }
   }
