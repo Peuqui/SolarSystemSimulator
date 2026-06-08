@@ -1408,6 +1408,12 @@ function fmtDExp(v, digits) {
 
 // Geschwindigkeits-Anzeige: 1 Nachkommastelle unter 10 km/s,
 // sonst ganzzahlig mit Tausenderpunkten.
+// Inject-Geschwindigkeit aus dem Slider-Wert (log: 10^v). Der linke Anschlag
+// (v <= -1) bedeutet 0 km/s — ruhend injizieren; eine reine Log-Skala
+// erreicht die 0 sonst nie.
+function injectSpeedKmS(v) {
+  return v <= -1 ? 0 : Math.pow(10, v);
+}
 function fmtSpeed(kmS) {
   return fmtDE(kmS, kmS < 10 ? 1 : 0);
 }
@@ -3148,7 +3154,7 @@ function draw() {
       pvx = dragDx; pvy = dragDy;
       kmS = Math.min(3000, dragDist / 2);
     } else {
-      kmS = Math.pow(10, parseFloat(document.getElementById('p-speed').value));
+      kmS = injectSpeedKmS(parseFloat(document.getElementById('p-speed').value));
       // Kompass-Konvention: 0=N (oben), 90=O (rechts), im Uhrzeigersinn.
       // Canvas-Y zeigt nach unten, daher cos negiert.
       const ang = parseFloat(document.getElementById('p-angle').value) * Math.PI / 180;
@@ -4669,7 +4675,7 @@ document.getElementById('p-mass').addEventListener('input', function() {
   document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(Math.pow(10, parseFloat(this.value)));
 });
 document.getElementById('p-speed').addEventListener('input', function() {
-  const kmS = Math.pow(10, parseFloat(this.value));
+  const kmS = injectSpeedKmS(parseFloat(this.value));
   document.getElementById('p-speed-val').textContent = fmtSpeed(kmS);
   document.getElementById('mob-p-speed').value = this.value;
   document.getElementById('mob-p-speed-val').textContent = fmtSpeed(kmS);
@@ -4703,7 +4709,7 @@ document.getElementById('mob-p-mass').addEventListener('input', function() {
   document.getElementById('p-mass-val').textContent = fmtMassWithSun(Math.pow(10, parseFloat(this.value)));
 });
 document.getElementById('mob-p-speed').addEventListener('input', function() {
-  const kmS = Math.pow(10, parseFloat(this.value));
+  const kmS = injectSpeedKmS(parseFloat(this.value));
   document.getElementById('mob-p-speed-val').textContent = fmtSpeed(kmS);
   document.getElementById('p-speed').value = this.value;
   document.getElementById('p-speed-val').textContent = fmtSpeed(kmS);
@@ -4900,7 +4906,7 @@ function applyInjectAngle(deg) {
 // auf HTML-Default zuruecksetzen und Anzeigen synchronisieren.
 function initInjectControls() {
   const m = Math.pow(10, DEFAULTS.injectMass);
-  const v = Math.pow(10, DEFAULTS.injectSpeed);
+  const v = injectSpeedKmS(DEFAULTS.injectSpeed);
   document.getElementById('p-mass').value = DEFAULTS.injectMass;
   document.getElementById('mob-p-mass').value = DEFAULTS.injectMass;
   document.getElementById('p-mass-val').textContent = fmtMassWithSun(m);
@@ -5238,7 +5244,7 @@ function doInject() {
   const massEarth = Math.pow(10, massExp);
   const massSun = massEarth * M_EARTH / M_SUN;
 
-  const speedKmS = Math.pow(10, parseFloat(document.getElementById('p-speed').value));
+  const speedKmS = injectSpeedKmS(parseFloat(document.getElementById('p-speed').value));
   const angleDeg = parseFloat(document.getElementById('p-angle').value);
   // Kompass-Konvention: 0=N, 90=O, 180=S, 270=W (im Uhrzeigersinn).
   // Welt-Y zeigt nach unten (wie Canvas), also Norden = negatives vy.
@@ -5295,7 +5301,7 @@ function doInjectCloud() {
   // Rogue eine Wolke mit ~3 Jupitermassen erzeugte (Sonne wanderte!).
   const massExp = parseFloat(document.getElementById('cloud-mass').value);
   const totalMassEarth = Math.pow(10, massExp);
-  const speedKmS = Math.pow(10, parseFloat(document.getElementById('p-speed').value));
+  const speedKmS = injectSpeedKmS(parseFloat(document.getElementById('p-speed').value));
   const angleDeg = parseFloat(document.getElementById('p-angle').value);
   const angleRad = angleDeg * Math.PI / 180;
   const speedAU = speedKmS * KM_S_TO_AU_YR;
