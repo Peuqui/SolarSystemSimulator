@@ -3029,6 +3029,9 @@ function draw() {
       const f = collisionFlashes[i];
       const t = (now - f.t) / COLLISION_FLASH_MS;   // 0..1
       if (t >= 1) { collisionFlashes.splice(i, 1); continue; }
+      // An ein Objekt geheftete Flashes wandern mit dessen Live-Position mit
+      // (bei entferntem Body friert die letzte Position ein — kein Crash).
+      if (f.track) { f.x = f.track.x; f.y = f.track.y; }
       const [sx, sy] = worldToScreen(f.x, f.y);
       const targetR = Math.max(14, Math.min(28, f.scale * cam.zoom * 80 * 6));
       const r = targetR * Math.min(1, t / 0.35);
@@ -3884,6 +3887,11 @@ function _absorb(small, big) {
 // neu auslosed.
 const COLOR_REVERT_MS = 5000;   // nach Bounce: 5 s rot/cyan, dann zurueck
 const BOUNCE_FLASH_MS = 2000;   // Ring-Flash-Dauer um gebouncten Asteroid
+// Restitutionskoeffizient fuer Asteroid-Bounce. e=1 waere perfekt elastisch
+// (Faktor 2 im Impuls -> bis 3x Slingshot bei Massendifferenz). Asteroiden
+// gehen bei echten Stoessen kaputt -> ein Teil der Energie ist weg, also
+// e < 1 (teilelastisch). e=0 waere perfekt plastisch (kleben, kein Abprall).
+const BOUNCE_RESTITUTION = 0.6;
 function _bounce(a, b, tContact) {
   // Stoßnormale entlang der Verbindungslinie der Massenmittelpunkte
   // (echte Physik fuer Kugel-Stoss). Slingshot wirkt ENTLANG der Normale —
@@ -3908,12 +3916,14 @@ function _bounce(a, b, tContact) {
   nx *= inv; ny *= inv;
   const dvx = b.vx - a.vx, dvy = b.vy - a.vy;
   const vRel = dvx * nx + dvy * ny;
-  // Massen-aware elastische Kollision (Slingshot bei Massendifferenz):
-  // J = -2·vRel·μ_red, leichter Asteroid wird in Richtung des schweren
+  // Massen-aware teilelastische Kollision (Slingshot bei Massendifferenz):
+  // J = -(1+e)·vRel·μ_red, leichter Asteroid wird in Richtung des schweren
   // Bewegungsvektors mit erhoehter Geschwindigkeit weggeschleudert
   // (Tennisball-auf-Basketball-Effekt). Schwerer bleibt fast unveraendert.
+  // e = BOUNCE_RESTITUTION < 1 daempft den Effekt (Asteroiden sind nicht
+  // perfekt elastisch — sie wuerden real zerbrechen).
   if (vRel < 0) {
-    const J = -2 * vRel / (1 / a.mass + 1 / b.mass);
+    const J = -(1 + BOUNCE_RESTITUTION) * vRel / (1 / a.mass + 1 / b.mass);
     const Jx = J * nx, Jy = J * ny;
     a.vx -= Jx / a.mass;  a.vy -= Jy / a.mass;
     b.vx += Jx / b.mass;  b.vy += Jy / b.mass;
@@ -3984,12 +3994,10 @@ function _tryCollide(a, b, dtFrame) {
   // Wird unten zur Rueck-Extrapolation der Flash-Position benutzt —
   // sonst wuerde der Visual am Frame-End-Mittelpunkt sitzen, nicht dort
   // wo die Bodies sich physikalisch beruehrt haben.
-  let tCollision = 0;
-  // Erst-Kontakt-Zeit (<= 0) speziell fuer die Bounce-Aufloesung. Anders
-  // als tCollision (= Mittelpunkt des Ueberlapp-Intervalls, fuer den Flash)
-  // ist das der Moment, in dem die Bodies sich GERADE beruehren und sich
-  // nachweislich annaehern. Beim Mittelpunkt waere vRel entlang der Normalen
-  // ~0 (tiefster Ueberlapp) -> Impuls ~0. 0 = statischer Hit (Default).
+  // Erst-Kontakt-Zeit (<= 0) fuer die Bounce-Aufloesung: der Moment, in dem
+  // die Bodies sich GERADE beruehren und sich nachweislich annaehern. (Beim
+  // tiefsten Ueberlapp waere vRel entlang der Normalen ~0 -> Impuls ~0.)
+  // 0 = statischer Hit (Default).
   let tContact = 0;
   // Phase 2: Continuous Collision Detection — falls die Bodies in
   // diesem Frame mit hoher Relativ-Geschwindigkeit aneinander
@@ -4034,10 +4042,6 @@ function _tryCollide(a, b, dtFrame) {
         // Treffer im letzten Frame.
         if (tEnter <= 0 && tExit >= -dtFrame) {
           hit = true;
-          // Beste Zeitabschaetzung: Mitte des sichtbaren Treffer-Intervalls
-          // (auf [-dtFrame, 0] geclippt) — Flash sitzt dann auf der Bahn-
-          // Beruehrung statt am End-Mittelpunkt.
-          tCollision = 0.5 * (Math.max(tEnter, -dtFrame) + Math.min(tExit, 0));
           // Erst-Kontakt ins Frame-Fenster geclippt — dort naehern sich die
           // Bodies an (vRel < 0), unabhaengig davon ob sie am Frame-Ende
           // laengst aneinander vorbeigeflogen sind.
@@ -4050,15 +4054,13 @@ function _tryCollide(a, b, dtFrame) {
   const vImp = Math.hypot(b.vx-a.vx, b.vy-a.vy);
   const vEsc = Math.sqrt(2 * G_AU * (a.mass + b.mass) / touch);
   const blackHoleInvolved = a.isBlackHole || b.isBlackHole;
-  // Mittelpunkt fuer das Flash-Visual — auf den Kollisions-Zeitpunkt
-  // rueckwaerts-extrapoliert. Bei statischem Hit ist tCollision = 0,
-  // also gleichbedeutend mit dem alten 0.5*(a.x+b.x). Bei CCD-Hit liegt
-  // tCollision irgendwo in [-dtFrame, 0] — der Flash sitzt dann dort,
-  // wo die Bodies sich physikalisch beruehrt haben statt am
-  // Frame-End-Mittelpunkt (sonst Verschiebung nach hinten relativ zur
-  // Asteroid-Bewegungsrichtung).
-  const flashX = 0.5 * ((a.x + a.vx * tCollision) + (b.x + b.vx * tCollision));
-  const flashY = 0.5 * ((a.y + a.vy * tCollision) + (b.y + b.vy * tCollision));
+  // Flash-Position wird NACH der Auflösung gesetzt — und zwar auf das
+  // resultierende Objekt (verschmolzener/schluckender Koerper bzw. der
+  // Schwerpunkt der Beteiligten). So sitzt die Explosion synchron zum
+  // gerenderten Frame "am Objekt" statt am rueckwaerts-extrapolierten
+  // Kontaktpunkt, der beim async-Pfad (Kollisionscheck nur 1x/Frame) ein
+  // ganzes Frame hinter der aktuellen Objektposition liegen kann.
+  let flashX = 0, flashY = 0, flashTrack = null;
   // Reichweite des Rings skaliert grob mit dem groesseren der beiden
   // Koerper, damit ein Planet-Asteroid-Treffer sichtbar groesser blitzt
   // als ein Asteroid-Asteroid-Streifer.
@@ -4103,10 +4105,26 @@ function _tryCollide(a, b, dtFrame) {
       ' vImp=' + vImp.toFixed(2) + ' vEsc=' + vEsc.toFixed(2) +
       ' -> ' + path);
   }
-  if (path === 'bounce')      _bounce(a, b, tContact);
-  else if (path === 'absorb') _absorb(aIsAst ? a : b, aIsAst ? b : a);
-  else if (path === 'merge')  merge(a, b);
-  else                        shatter(a, b);
+  // Flash ans resultierende Objekt heften: er folgt im Render dessen
+  // Live-Position, sitzt also synchron zum Frame "am Objekt" und wandert
+  // waehrend seiner ~1,1 s Lebensdauer mit. Bei bounce dem schwereren der
+  // beiden, bei shatter kein Objekt -> zentrale Detonation am Schwerpunkt.
+  if (path === 'bounce') {
+    _bounce(a, b, tContact);
+    flashTrack = a.mass >= b.mass ? a : b;
+  } else if (path === 'absorb') {
+    flashTrack = aIsAst ? b : a;                               // grosser bleibt
+    _absorb(aIsAst ? a : b, flashTrack);
+  } else if (path === 'merge') {
+    flashTrack = a.mass >= b.mass ? a : b;                     // schwererer bleibt
+    merge(a, b);                                               // setzt neue Position
+  } else {
+    const mt = a.mass + b.mass;                                // Fragment-Schwerpunkt
+    flashX = (a.mass*a.x + b.mass*b.x) / mt;
+    flashY = (a.mass*a.y + b.mass*b.y) / mt;
+    shatter(a, b);
+  }
+  if (flashTrack) { flashX = flashTrack.x; flashY = flashTrack.y; }
   // computeAccelerations + updatePerturberList nur, wenn der Massen-/
   // Bahn-Mittelpunkt sich tatsaechlich geaendert hat. Bei _bounce
   // (nur Velocity-Tausch, Massen + Positionen unveraendert) und _absorb
@@ -4118,6 +4136,7 @@ function _tryCollide(a, b, dtFrame) {
     x: flashX, y: flashY, scale: flashScale,
     t: performance.now(),
     asteroid: aIsAst || bIsAst,
+    track: flashTrack,   // folgt der Live-Position; null bei shatter
   });
   totalCollisions++;
   const countEl = document.getElementById('collision-count');
