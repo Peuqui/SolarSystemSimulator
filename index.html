@@ -431,11 +431,11 @@ input[type=range] {
     <label class="belt-config" data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="belt-kb-val">600</span></label>
     <input class="belt-config" type="range" autocomplete="off" id="belt-kb-slider" min="0" max="4.7" step="0.02" value="2.78">
   </details>
-  <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
+  <h2 style="display:flex; align-items:center; gap:6px;"><span data-i18n="sec.time">&#x2699; Zeitsteuerung</span><span id="time-help-icon" class="help-ico" data-i18n-title="tt.time-help">&#x1F4A1;</span></h2>
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage/Schritt)</span> <span class="val" id="dt-val">1</span></label>
   <input type="range" autocomplete="off"id="dt-slider" min="0.1" max="50" step="0.1" value="1">
   <label><span data-i18n="lbl.slowdown">Verlangsamung</span> <span class="val" id="slow-val">1.0×</span></label>
-  <input type="range" autocomplete="off"id="slow-slider" min="-2" max="2" step="0.05" value="0">
+  <input type="range" autocomplete="off"id="slow-slider" min="-1.3" max="2" step="0.05" value="0">
   <div style="margin-top:6px">
     <button id="btn-pause" data-i18n="btn.pause">&#x23F8; Pause</button>
     <button id="btn-step" data-i18n="btn.step">&#x23ED; Schritt</button>
@@ -565,6 +565,8 @@ input[type=range] {
 
 <div id="engine-info-panel" class="help-panel" data-i18n-html="help.engine"></div>
 
+<div id="time-info-panel" class="help-panel" data-i18n-html="help.time"></div>
+
 <div id="perturber-info"></div>
 
 <!-- Mobile Controls (visible on small screens) -->
@@ -625,11 +627,11 @@ input[type=range] {
     <label class="belt-config" data-i18n-title="tt.belt"><span data-i18n="lbl.belt-kb">Kuipergürtel</span> <span class="val" id="mob-belt-kb-val">600</span></label>
     <input class="belt-config" type="range" autocomplete="off" id="mob-belt-kb-slider" min="0" max="4.7" step="0.02" value="2.78">
   </details>
-  <h2 data-i18n="sec.time">&#x2699; Zeitsteuerung</h2>
+  <h2 style="display:flex; align-items:center; gap:6px;"><span data-i18n="sec.time">&#x2699; Zeitsteuerung</span><span id="mob-time-help-icon" class="help-ico" data-i18n-title="tt.time-help">&#x1F4A1;</span></h2>
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage)</span> <span class="val" id="mob-dt-val">1</span></label>
   <input type="range" autocomplete="off"id="mob-dt-slider" min="0.1" max="50" step="0.1" value="1">
   <label><span data-i18n="lbl.slowdown">Verlangsamung</span> <span class="val" id="mob-slow-val">1.0×</span></label>
-  <input type="range" autocomplete="off"id="mob-slow-slider" min="-2" max="2" step="0.05" value="0">
+  <input type="range" autocomplete="off"id="mob-slow-slider" min="-1.3" max="2" step="0.05" value="0">
 
   <h2 data-i18n="sec.view">&#x1F52D; Anzeige</h2>
   <label><span data-i18n="lbl.zoom">Zoom</span> <span class="val" id="mob-zoom-val">0.35</span></label>
@@ -881,6 +883,7 @@ const I18N = {
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
     'tt.hybrid-near': 'Nur im Hybrid: Asteroiden, die einem schweren Körper zu nahe/schnell begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen f64-adaptiv im Worker statt grob auf der GPU. Präzise, kostet aber Tempo, wenn sehr viele Asteroiden gleichzeitig nahe sind. Aus = alle Asteroiden grob auf der GPU (schnell).',
     'tt.engine-help': 'Erklärung der Engine-Modi und Asteroiden-Optionen',
+    'tt.time-help': 'Erklärung von Zeitschritt und Verlangsamung',
     'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
     'tt.density': 'Asteroiden pro AE² — die effektive Wolkengröße ergibt sich aus Anzahl/Dichte.',
     'tt.jitter': 'Zufällige Streuung in Geschwindigkeit (±%) UND Richtung (±°). 0 = perfekt parallel.',
@@ -998,6 +1001,26 @@ const I18N = {
       '<h3>Flüchtende markieren</h3>' +
       'Markiert die erkannten Flüchtenden mit einem pulsierenden roten Ring. Nur ' +
       'wirksam, wenn die Fluchterkennung an ist.',
+    'help.time':
+      '<h3>Zeitschritt (Tage/Schritt)</h3>' +
+      'Wie viele Sim-Tage die Physik pro Bild voranschreitet — der Basis-Takt. ' +
+      'Größer = die Simulation läuft schneller (und rechnet pro Bild mehr). Pro ' +
+      'Szenario sinnvoll vorbelegt (Sonnensystem 1 Tag, TRAPPIST-1 0,1 Tag für die ' +
+      'engen, schnellen Bahnen).<br>' +
+      '<h3>Verlangsamung</h3>' +
+      'Ein Multiplikator obendrauf, der den Schritt <i>teilt</i>: 1× unverändert, ' +
+      '10× zehnmal langsamer (flüssiger bei schnellen Systemen), 0,05× zwanzigmal ' +
+      'schneller. So änderst du das Tempo, ohne den Zeitschritt selbst anzufassen.<br>' +
+      '<h3>Warum die Bahnen genau bleiben, aber eckig aussehen</h3>' +
+      'Das sind zwei verschiedene Dinge. Die <b>Physik</b> zerlegt jeden Schritt ' +
+      'intern in feine Substeps (≤ 0,5 Tage) — die Körper landen also immer auf der ' +
+      'korrekten Bahn, egal wie schnell es läuft. Die <b>gezeichnete Linie</b> (Trail) ' +
+      'wird aber nur <b>einmal pro Bild</b> abgetastet und verbindet diese Punkte ' +
+      'geradlinig. Bei großem Schritt (kleiner Verlangsamung) liegen die Punkte weit ' +
+      'auseinander → die Linie wirkt eckig, obwohl die Bahn exakt ist. Mehr ' +
+      'Verlangsamung = mehr Abtastpunkte = glattere Linie, nicht genauere Physik. ' +
+      '(Wie Fotos einer Kurvenfahrt: alle 100 m ergibt ein Vieleck, alle 10 m eine ' +
+      'glatte Kurve — gefahren wurde dieselbe Kurve.)',
   },
   en: {
     'sec.scenario': '🌌 Scenario',
@@ -1090,6 +1113,7 @@ const I18N = {
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
     'tt.hybrid-near': 'Hybrid only: asteroids whose encounter with a massive body is too close/fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the worker instead of coarsely on the GPU. Precise, but costs speed when very many asteroids are close at once. Off = all asteroids run coarsely on the GPU (fast).',
     'tt.engine-help': 'Explanation of the engine modes and asteroid options',
+    'tt.time-help': 'Explanation of time step and slowdown',
     'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
     'tt.density': 'Asteroids per AU² — the effective cloud size derives from count/density.',
     'tt.jitter': 'Random scatter in velocity (±%) AND direction (±°). 0 = perfectly parallel.',
@@ -1202,6 +1226,24 @@ const I18N = {
       'via “Remove escaping” (<span class="ico">↗</span>).<br>' +
       '<h3>Mark escaping</h3>' +
       'Marks the detected escapers with a pulsing red ring. Only active when escape detection is on.',
+    'help.time':
+      '<h3>Time step (days/step)</h3>' +
+      'How many sim-days the physics advances per frame — the base rate. Larger = the ' +
+      'simulation runs faster (and computes more per frame). Pre-set per scenario ' +
+      '(Solar System 1 day, TRAPPIST-1 0.1 day for the tight, fast orbits).<br>' +
+      '<h3>Slowdown</h3>' +
+      'A multiplier on top that <i>divides</i> the step: 1× unchanged, 10× ten times ' +
+      'slower (smoother for fast systems), 0.05× twenty times faster. Lets you change ' +
+      'the pace without touching the time step itself.<br>' +
+      '<h3>Why the orbits stay accurate but look jagged</h3>' +
+      'Two different things. The <b>physics</b> splits each step into fine substeps ' +
+      '(≤ 0.5 days) internally — so the bodies always land on the correct orbit, no ' +
+      'matter how fast it runs. But the <b>drawn line</b> (trail) is sampled only ' +
+      '<b>once per frame</b> and connects those points with straight segments. With a ' +
+      'large step (low slowdown) the points are far apart → the line looks jagged even ' +
+      'though the orbit is exact. More slowdown = more sample points = smoother line, ' +
+      'not more accurate physics. (Like photographing a curve: every 100 m gives a ' +
+      'polygon, every 10 m a smooth curve — the same curve was driven.)',
   }
 };
 
@@ -2806,8 +2848,21 @@ function draw() {
         ctx.beginPath();
         for (let s = 0; s < segs.length; s++) {
           const j = segs[s];
-          ctx.moveTo(sxs[j-1], sys[j-1]);
-          ctx.lineTo(sxs[j],   sys[j]);
+          const x1 = sxs[j-1], y1 = sys[j-1];
+          const x2 = sxs[j],   y2 = sys[j];
+          // Catmull-Rom-Glaettung: das Segment P1->P2 als kubische Bezier, die
+          // durch beide Punkte laeuft, mit Tangenten aus den Nachbarpunkten P0
+          // und P3 (an den Trail-Enden faellt die Tangente auf den Endpunkt
+          // zurueck). So wirken die Bahnen rund statt eckig, auch wenn pro Bild
+          // (= grosser Schritt / kleine Verlangsamung) nur wenige Punkte
+          // aufgezeichnet wurden — ohne zusaetzliche Physik-Daten.
+          const x0 = j >= 2 ? sxs[j-2] : x1, y0 = j >= 2 ? sys[j-2] : y1;
+          const x3 = j + 1 < tn ? sxs[j+1] : x2, y3 = j + 1 < tn ? sys[j+1] : y2;
+          ctx.moveTo(x1, y1);
+          ctx.bezierCurveTo(
+            x1 + (x2 - x0) / 6, y1 + (y2 - y0) / 6,
+            x2 - (x3 - x1) / 6, y2 - (y3 - y1) / 6,
+            x2, y2);
         }
         ctx.stroke();
       }
@@ -5918,6 +5973,8 @@ canvas.addEventListener('touchcancel', function(e) {
     ['help-toggle',          'info-panel'],
     ['engine-help-icon',     'engine-info-panel'],
     ['mob-engine-help-icon', 'engine-info-panel'],
+    ['time-help-icon',       'time-info-panel'],
+    ['mob-time-help-icon',   'time-info-panel'],
   ].map(([tg, pn]) => [document.getElementById(tg), document.getElementById(pn)])
    .filter(([tg, pn]) => tg && pn);
   const panels  = [...new Set(pairs.map(([, pn]) => pn))];
