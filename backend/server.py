@@ -29,6 +29,7 @@ import asyncio
 import logging
 import struct
 
+import cupy as cp
 import numpy as np
 import websockets
 
@@ -74,6 +75,16 @@ class FilmSession:
         self.vis = np.array(visible, dtype=np.uint8, copy=True)
         self.real_r = np.array(real_r, dtype=np.float64, copy=True)
         self.is_ast = np.array(is_ast, dtype=np.uint8, copy=True) != 0
+        # GPU-Spiegel fuer die Kollisionserkennung — die Positionsdaten
+        # liegen nach jedem Step ohnehin im residenten out_f32-Puffer;
+        # die (M,N)-Masken rechnen auf der Karte, nur Treffer-Indizes
+        # (fast immer leer) kommen zum Host.
+        with cp.cuda.Device(sim.device):
+            self._g_vis = cp.asarray(self.vis)
+            self._g_mass = cp.asarray(self.mass.astype(np.float32))
+            self._g_rr = cp.asarray(self.real_r.astype(np.float32))
+            self._g_ast = cp.asarray(self.is_ast)
+            self._g_prev = None
         self._mass_f32 = self.mass.astype("<f4").tobytes()
         self._vis_pad = self.vis.tobytes() + b"\x00" * ((-self.n) % 4)
         self.collisions = 0
@@ -108,14 +119,17 @@ class FilmSession:
                 if self.head - self.last_req_t > self.lookahead_days:
                     await asyncio.sleep(0.05)
                     continue
-                out = await asyncio.to_thread(self.sim.step, self.state, dt_years)
-                # Kollisionen (massive x alle) auf dem frischen Sample —
-                # schluckt auch die "Sonnentaucher", die sonst numerisch
-                # katapultiert wuerden (kein adaptiver Substep f. Asteroiden)
-                self._detect_and_merge(out)
-                sample = out.tobytes() + self._mass_f32 + self._vis_pad
+                sample = await asyncio.to_thread(self._produce_one, dt_years)
                 self.samples.append(sample)
                 self.bytes += len(sample)
+                # GIL-Luft fuer den Event-Loop: mit komfortablem Polster
+                # vor dem Player kurz durchatmen, damit Batch-Anfragen
+                # sofort beantwortet werden (sonst Stand-und-Sprung beim
+                # Client trotz produzierender GPU). Beim Aufholen: Vollgas.
+                if self.head - self.last_req_t > 30 * self.raster_days:
+                    await asyncio.sleep(0.004)
+                else:
+                    await asyncio.sleep(0)
                 if self.bytes > self.MAX_BYTES and len(self.samples) > self.MIN_KEEP:
                     # Eviction-Schutz: nie ueber (Playhead - Vorlauf) hinaus
                     # loeschen — Position und Rueckspul-Marge des Zuschauers
@@ -141,112 +155,132 @@ class FilmSession:
             self.task.cancel()
 
     def _detect_and_merge(self, sample: np.ndarray) -> None:
-        """Kollisionen erkennen (Abstand < Summe der echten Radien,
-        massive x alle) und impulserhaltend verschmelzen: der schwerere
-        Koerper ueberlebt (Schwerpunkt-Position/-Geschwindigkeit, Massen
-        addiert, Radius volumenadditiv), der leichtere wird deaktiviert
-        (Masse 0, unsichtbar). Wirkt direkt auf den residenten f64-Zustand
-        UND die Host-Spiegel — kuenftige Samples zeigen den Merge, aeltere
+        """Kollisionen (massive x alle, Swept + ballistische Prognose) und
+        Numerik-Waechter — komplett auf der GPU: die Positionsdaten liegen
+        nach jedem Step ohnehin im residenten out_f32-Puffer, nur Treffer-
+        Indizes (fast immer leer) kommen zum Host. Merges wirken auf den
+        residenten f64-Zustand UND die Host-/GPU-Spiegel; aeltere Samples
         bleiben unveraendert (rueckspulbar)."""
+        st = self.state
         n = self.n
         x = sample[0:n]
         y = sample[n:2 * n]
         vx = sample[2 * n:3 * n]
         vy = sample[3 * n:4 * n]
-        # Swept-Check, vollstaendig vektorisiert als (M,N)-Matrizen —
-        # die fruehere Python-Schleife pro massivem Koerper kostete bei
-        # 45k Teilchen 100+ ms pro Sample und liess den Producer (und die
-        # GPU) verhungern. Geprueft wird die zurueckgelegte Strecke UND
-        # die ballistische Prognose des naechsten Schritts (Sonnentaucher
-        # werden geschluckt, BEVOR der Integrationsschritt sie numerisch
-        # katapultiert).
-        if self._prev_xy is None:
-            px, py = x, y
-        else:
-            px, py = self._prev_xy
-        m_idx_all = self.state["m_idx_h"]
-        m_alive = m_idx_all[(self.vis[m_idx_all] != 0)
-                            & (self.mass[m_idx_all] > 0)]
+        hit_pairs = []
+        runaway_np = None
+        with cp.cuda.Device(self.sim.device):
+            g = st["out_f32"]
+            gx = g[0:n]
+            gy = g[n:2 * n]
+            gvx = g[2 * n:3 * n]
+            gvy = g[3 * n:4 * n]
+            if self._g_prev is None:
+                px, py = gx, gy
+            else:
+                px, py = self._g_prev[0:n], self._g_prev[n:2 * n]
+            m_idx_all = st["m_idx_h"]
+            m_alive = m_idx_all[(self.vis[m_idx_all] != 0)
+                                & (self.mass[m_idx_all] > 0)]
+            if len(m_alive):
+                gm = cp.asarray(m_alive)
+                cx = gx[gm][:, None]
+                cy = gy[gm][:, None]
+                rsum = self._g_rr[gm][:, None] + self._g_rr[None, :]
+                rsum2 = rsum * rsum
+                alive = self._g_vis != 0
+
+                def seg_hit(p0x, p0y, p1x, p1y):
+                    sx = (p1x - p0x)[None, :]
+                    sy = (p1y - p0y)[None, :]
+                    seg2 = sx * sx + sy * sy
+                    tt = ((cx - p0x[None, :]) * sx +
+                          (cy - p0y[None, :]) * sy) / cp.where(
+                              seg2 > 0, seg2, cp.float32(1.0))
+                    tt = cp.clip(tt, 0.0, 1.0)
+                    ddx = p0x[None, :] + tt * sx - cx
+                    ddy = p0y[None, :] + tt * sy - cy
+                    return ddx * ddx + ddy * ddy <= rsum2
+
+                dt_y = cp.float32(self.raster_days / 365.25)
+                hit2d = (seg_hit(px, py, gx, gy) |
+                         seg_hit(gx, gy, gx + gvx * dt_y, gy + gvy * dt_y)) \
+                    & alive[None, :]
+                hit2d[cp.arange(len(gm)), gm] = False
+                rows, cols = cp.nonzero(hit2d)
+                if rows.size:
+                    hit_pairs = list(zip(cp.asnumpy(rows).tolist(),
+                                         cp.asnumpy(cols).tolist()))
+                # Numerik-Waechter (siehe unten) mit Schwerpunkt der massiven
+                mw = self.mass[m_alive]
+                msum = float(mw.sum())
+                if msum > 0:
+                    bx = float((x[m_alive] * mw).sum() / msum)
+                    by = float((y[m_alive] * mw).sum() / msum)
+                    r = cp.maximum(cp.hypot(gx - cp.float32(bx),
+                                            gy - cp.float32(by)),
+                                   cp.float32(1e-6))
+                    v2 = gvx * gvx + gvy * gvy
+                    vesc2 = cp.float32(2.0 * G_AU * msum) / r
+                    runaway = (v2 > 9.0 * vesc2) & self._g_ast \
+                        & (self._g_vis != 0)
+                    ridx = cp.flatnonzero(runaway)
+                    if ridx.size:
+                        runaway_np = cp.asnumpy(ridx)
+            self._g_prev = g.copy()
         changed = False
-        if len(m_alive):
-            f32 = np.float32
-            cx = x[m_alive].astype(f32)[:, None]
-            cy = y[m_alive].astype(f32)[:, None]
-            rsum = (self.real_r[m_alive][:, None] +
-                    self.real_r[None, :]).astype(f32)
-            rsum2 = rsum * rsum
-            alive = (self.vis != 0)
-
-            def seg_hit(p0x, p0y, p1x, p1y):
-                sx = (p1x - p0x).astype(f32)[None, :]
-                sy = (p1y - p0y).astype(f32)[None, :]
-                seg2 = sx * sx + sy * sy
-                tt = ((cx - p0x.astype(f32)[None, :]) * sx +
-                      (cy - p0y.astype(f32)[None, :]) * sy) / np.where(
-                          seg2 > 0, seg2, 1.0)
-                np.clip(tt, 0.0, 1.0, out=tt)
-                ddx = p0x.astype(f32)[None, :] + tt * sx - cx
-                ddy = p0y.astype(f32)[None, :] + tt * sy - cy
-                return ddx * ddx + ddy * ddy <= rsum2
-
-            dt_y = self.raster_days / 365.25
-            hit2d = (seg_hit(px, py, x, y) |
-                     seg_hit(x, y, x + vx * dt_y, y + vy * dt_y)) \
-                & alive[None, :]
-            # Selbstpaare ausblenden
-            for row, mi in enumerate(m_alive):
-                hit2d[row, mi] = False
-            for row, j in zip(*np.nonzero(hit2d)):
-                mi = int(m_alive[row])
+        for row, j in hit_pairs:
+            mi = int(m_alive[row])
+            j = int(j)
+            if not self.vis[mi] or not self.vis[j] or self.mass[mi] <= 0:
+                continue
+            a, b = (mi, j) if self.mass[mi] >= self.mass[j] else (j, mi)
+            m_a, m_b = self.mass[a], self.mass[b]
+            m_ges = m_a + m_b
+            if m_ges <= 0:
+                continue
+            nx = (x[a] * m_a + x[b] * m_b) / m_ges
+            ny = (y[a] * m_a + y[b] * m_b) / m_ges
+            nvx = (vx[a] * m_a + vx[b] * m_b) / m_ges
+            nvy = (vy[a] * m_a + vy[b] * m_b) / m_ges
+            self.sim.apply_body_state(self.state, a, nx, ny, nvx, nvy, m_ges)
+            self.sim.deactivate_body(self.state, b)
+            self.mass[a] = m_ges
+            self.mass[b] = 0.0
+            self.vis[b] = 0
+            self.real_r[a] = (self.real_r[a] ** 3 +
+                              self.real_r[b] ** 3) ** (1.0 / 3.0)
+            with cp.cuda.Device(self.sim.device):
+                self._g_vis[b] = 0
+                self._g_mass[a] = np.float32(m_ges)
+                self._g_mass[b] = 0
+                self._g_rr[a] = np.float32(self.real_r[a])
+            self.collisions += 1
+            changed = True
+        if runaway_np is not None:
+            for j in runaway_np:
                 j = int(j)
-                if not self.vis[mi] or not self.vis[j]:
+                if not self.vis[j]:
                     continue
-                if self.mass[mi] <= 0:
-                    continue
-                a, b = (mi, j) if self.mass[mi] >= self.mass[j] else (j, mi)
-                m_a, m_b = self.mass[a], self.mass[b]
-                m_ges = m_a + m_b
-                if m_ges <= 0:
-                    continue
-                nx = (x[a] * m_a + x[b] * m_b) / m_ges
-                ny = (y[a] * m_a + y[b] * m_b) / m_ges
-                nvx = (vx[a] * m_a + vx[b] * m_b) / m_ges
-                nvy = (vy[a] * m_a + vy[b] * m_b) / m_ges
-                self.sim.apply_body_state(self.state, a, nx, ny, nvx, nvy,
-                                          m_ges)
-                self.sim.deactivate_body(self.state, b)
-                self.mass[a] = m_ges
-                self.mass[b] = 0.0
-                self.vis[b] = 0
-                self.real_r[a] = (self.real_r[a] ** 3 +
-                                  self.real_r[b] ** 3) ** (1.0 / 3.0)
-                self.collisions += 1
-                changed = True
-
-        # Numerik-Waechter: Asteroiden schneller als 3x lokale Flucht-
-        # geschwindigkeit sind Artefakte eines nicht aufloesbaren
-        # Zentraldurchgangs (legitime Slingshots bleiben weit darunter,
-        # Katapulte liegen 2-3 Groessenordnungen darueber) — als
-        # verschluckt werten, bevor sie als "Teleport" sichtbar werden.
-        m_idx = self.state["m_idx_h"]
-        mw = self.mass[m_idx]
-        if mw.sum() > 0:
-            cx = float((x[m_idx] * mw).sum() / mw.sum())
-            cy = float((y[m_idx] * mw).sum() / mw.sum())
-            r = np.hypot(x - cx, y - cy)
-            v2 = vx * vx + vy * vy
-            vesc2 = 2.0 * G_AU * mw.sum() / np.maximum(r, 1e-6)
-            runaway = (v2 > 9.0 * vesc2) & self.is_ast & (self.vis != 0)
-            for j in np.flatnonzero(runaway):
-                self.sim.deactivate_body(self.state, int(j))
+                self.sim.deactivate_body(self.state, j)
                 self.mass[j] = 0.0
                 self.vis[j] = 0
+                with cp.cuda.Device(self.sim.device):
+                    self._g_vis[j] = 0
+                    self._g_mass[j] = 0
                 self.collisions += 1
                 changed = True
-        self._prev_xy = (x.copy(), y.copy())
         if changed:
             self._mass_f32 = self.mass.astype("<f4").tobytes()
             self._vis_pad = self.vis.tobytes() + b"\x00" * ((-self.n) % 4)
+
+    def _produce_one(self, dt_years: float) -> bytes:
+        """Ein Producer-Schritt komplett im Worker-Thread: Kernel-Step,
+        GPU-Kollisionserkennung, Sample-Zusammenbau — ein Thread-Hop
+        statt drei."""
+        out = self.sim.step(self.state, dt_years)
+        self._detect_and_merge(out)
+        return out.tobytes() + self._mass_f32 + self._vis_pad
 
     def batch(self, t_days: float, spacing_days: float, count: int) -> bytes:
         """Sample-Fenster ab t in gewuenschter Dichte (Videoplayer-Prinzip:

@@ -3765,6 +3765,19 @@ function initCudaBackend(urlIndex = 0) {
       }
       _filmHeadPrev = head;
       _filmHeadPrevMs = nowP;
+      // Alte Anzeigepositionen merken — der Restfehler der Fortschreibung
+      // wird nach dem Wechsel weggeblendet statt sichtbar zu schnappen.
+      if (filmRefs && filmQueue) {
+        if (!_filmOffX || _filmOffX.length !== filmRefs.length) {
+          _filmOffX = new Float32Array(filmRefs.length);
+          _filmOffY = new Float32Array(filmRefs.length);
+        }
+        for (let k = 0; k < filmRefs.length; k++) {
+          _filmOffX[k] = filmRefs[k].x;
+          _filmOffY[k] = filmRefs[k].y;
+        }
+        _filmResync = true;
+      }
       filmQueue = { times, samples, tail, head };
       filmReqBusy = false;
       return;
@@ -3922,6 +3935,9 @@ let filmActive = false;
 let filmReqBusy = false;
 let filmQueue = null;        // { times: Float64Array, samples: [], tail, head }
 let _filmRate = 60;          // aktuelles Playback-Tempo (Tage/s) fuer Batch-Dichte
+let _filmOffX = null;        // Restfehler-Glaettung nach Batch-Wechsel
+let _filmOffY = null;
+let _filmResync = false;
 let _filmHeadRate = 0;       // geschaetzte Producer-Rate (Tage/s) fuer glattes Live-Follow
 let _filmHeadPrev = 0;
 let _filmHeadPrevMs = 0;
@@ -4096,16 +4112,35 @@ function filmApply(t) {
   // begrenzt, dann ersetzt der naechste Batch alles.
   const lastI = q.times.length - 1;
   if (t > q.times[lastI]) {
+    // Kruemmungs-korrigierte Fortschreibung (quadratisch): Beschleunigung
+    // aus den letzten beiden Samples — rein lineares Fortschreiben laesst
+    // Planeten tangential von der Bahn laufen, und der naechste Batch
+    // "zuckt" sie zurueck.
     const s = q.samples[lastI];
-    const dtY = (t - q.times[lastI]) / 365.25;
+    const sp = q.samples[Math.max(0, lastI - 1)];
+    const dtPrevY = lastI > 0
+      ? (q.times[lastI] - q.times[lastI - 1]) / 365.25 : 0;
+    // Fortschreibung hart deckeln: max. 2 Raster UND ~T_min/20 (wie die
+    // Pipeline-Extrapolation). Alles darueber laesst das ganze System
+    // sichtbar tangential "nach aussen pulsen", bis der Batch es
+    // zurueckzieht — lieber kurz stehenbleiben.
+    const maxDays = Math.min(2 * filmRasterDays(), 6 * trailIntervalDays);
+    const dtY = Math.min((t - q.times[lastI]) / 365.25, maxDays / 365.25);
     for (let k = 0; k < n; k++) {
       const b = filmRefs[k];
-      b.vx = s.f[2 * n + k];
-      b.vy = s.f[3 * n + k];
-      b.x = s.f[k] + b.vx * dtY;
-      b.y = s.f[n + k] + b.vy * dtY;
+      const vx1 = s.f[2 * n + k], vy1 = s.f[3 * n + k];
+      let axk = 0, ayk = 0;
+      if (dtPrevY > 0) {
+        axk = (vx1 - sp.f[2 * n + k]) / dtPrevY;
+        ayk = (vy1 - sp.f[3 * n + k]) / dtPrevY;
+      }
+      b.vx = vx1 + axk * dtY;
+      b.vy = vy1 + ayk * dtY;
+      b.x = s.f[k] + vx1 * dtY + 0.5 * axk * dtY * dtY;
+      b.y = s.f[n + k] + vy1 * dtY + 0.5 * ayk * dtY * dtY;
     }
     applyMeta(s);
+    _filmSmooth();
     return;
   }
   // Bracketing-Paar in der Queue suchen (Zeiten aufsteigend)
@@ -4123,6 +4158,33 @@ function filmApply(t) {
     b.vy = s0.f[3 * n + k] + (s1.f[3 * n + k] - s0.f[3 * n + k]) * f;
   }
   applyMeta(s0);
+  _filmSmooth();
+}
+
+// Restfehler nach Batch-Wechsel ueber ~10 Frames wegblenden — die Anzeige
+// gleitet auf die authoritative Bahn, statt sichtbar zu schnappen.
+function _filmSmooth() {
+  if (!_filmOffX || !filmRefs) return;
+  const n = filmRefs.length;
+  if (_filmResync) {
+    _filmResync = false;
+    for (let k = 0; k < n; k++) {
+      _filmOffX[k] -= filmRefs[k].x;   // alt(Anzeige) - neu(authoritativ)
+      _filmOffY[k] -= filmRefs[k].y;
+    }
+  }
+  let aktiv = false;
+  for (let k = 0; k < n; k++) {
+    const ox = _filmOffX[k], oy = _filmOffY[k];
+    if (ox === 0 && oy === 0) continue;
+    if (ox * ox + oy * oy < 1e-12) { _filmOffX[k] = 0; _filmOffY[k] = 0; continue; }
+    filmRefs[k].x += ox;
+    filmRefs[k].y += oy;
+    _filmOffX[k] = ox * 0.75;
+    _filmOffY[k] = oy * 0.75;
+    aktiv = true;
+  }
+  return aktiv;
 }
 
 function filmTick(dtDays, slowFactor, nowMs) {
@@ -4142,26 +4204,26 @@ function filmTick(dtDays, slowFactor, nowMs) {
   // Producer-Rate weiter. Am veralteten Head zu klemmen erzeugt
   // Schub-Ruckeln, sobald man schneller abspielt als produziert wird.
   let kante = Infinity;
-  if (filmQueue) {
-    // Extrapolation auf max. 2 s deckeln — bei einbrechender Producer-
-    // Rate wuerde eine unbegrenzte Prognose die Kante ueberschaetzen und
-    // die naechste Antwort den Playhead sichtbar ZURUECKZIEHEN.
-    const extraS = Math.min((nowMs - _filmHeadPrevMs) / 1000, 2);
-    const headNow = filmQueue.head + (_filmHeadRate > 0
-      ? _filmHeadRate * extraS : 0);
-    kante = Math.max(filmQueue.tail, headNow - 2 * filmRasterDays());
+  if (filmQueue && filmQueue.times.length) {
+    // Der Playhead zeigt NIE etwas Unberechnetes: Deckel ist das letzte
+    // real empfangene Sample (Livestream-Prinzip — man haengt ein
+    // Latenz-Polster hinter der Kante, dafuer ist zwischen zwei echten
+    // Samples immer sauber interpolierbar; kein Fortschreiben, kein
+    // Pulsen). Die GPU produziert ohnehin schneller als 60 fps Anzeige.
+    kante = Math.max(filmQueue.tail,
+                     filmQueue.times[filmQueue.times.length - 1]);
   }
   if (filmLive && filmQueue) {
-    // Der Kante mit Producer-Rate folgen, sanft driften — harter Sprung
-    // nur bei grossem Rueckstand (z. B. nach Tab-Wechsel).
-    if (_filmHeadRate > 0) {
-      filmPlayheadDays += _filmHeadRate * delta / 1000;
-      const drift = kante - filmPlayheadDays;
-      if (Math.abs(drift) > 8 * filmRasterDays()) filmPlayheadDays = kante;
-      else filmPlayheadDays += drift * 0.05;
-    } else {
-      filmPlayheadDays = kante;
-    }
+    // Der Kante mit Producer-Rate folgen — STRIKT MONOTON: laeuft die
+    // (geschaetzte) Rate der echten Kante voraus, bleibt der Playhead
+    // stehen, bis die Kante nachkommt. Nie rueckwaerts schnappen.
+    let next = filmPlayheadDays +
+      (_filmHeadRate > 0 ? _filmHeadRate * delta / 1000 : 0);
+    next = Math.min(next, kante);
+    if (next < filmPlayheadDays) next = filmPlayheadDays;   // stehenbleiben
+    // Grosser Rueckstand (Tab-Wechsel): nach vorn aufholen ist erlaubt
+    if (kante - next > 60 * filmRasterDays()) next = kante;
+    filmPlayheadDays = next;
   } else if (!filmScrubbing) {
     filmPlayheadDays += rate * delta / 1000;
     // Kante eingeholt (Playback schneller als Producer) -> automatisch
@@ -4173,12 +4235,11 @@ function filmTick(dtDays, slowFactor, nowMs) {
     const vorher = simTime;   // Playhead des letzten Frames
     filmPlayheadDays = Math.min(Math.max(filmPlayheadDays, filmQueue.tail),
                                 kante);
-    // Monotonie ausser beim bewussten Scrubben: eine korrigierte (zu
-    // optimistisch extrapolierte) Kante haelt den Playhead an, statt
-    // sichtbar rueckwaerts zu springen — der Producer holt auf.
-    if (!filmScrubbing && filmActive && filmPlayheadDays < vorher &&
-        vorher <= kante + 30 * filmRasterDays()) {
-      filmPlayheadDays = Math.min(vorher, kante + 2 * filmRasterDays());
+    // UNBEDINGTE Monotonie ausser beim bewussten Scrubben: was auch
+    // immer Kanten-Korrektur oder Klemmen ergeben — der Playhead geht
+    // nie sichtbar rueckwaerts, er bleibt schlimmstenfalls stehen.
+    if (!filmScrubbing && filmActive && filmPlayheadDays < vorher) {
+      filmPlayheadDays = vorher;
     }
   }
   simTime = filmPlayheadDays;
