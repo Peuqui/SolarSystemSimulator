@@ -3366,6 +3366,7 @@ function createPhysWorker() {
     const YOSHIDA_W0 = -Math.cbrt(2) / (2 - Math.cbrt(2));
     let X, Y, VX, VY, AX, AY, M, V, A;
     let N = 0;
+    let ASTAD = 0;   // 1 = Asteroiden beeinflussen adaptDt (Hybrid-Modus)
     // Wiederverwendbare Buffer: Index-Liste der massiven Koerper (die
     // Paar-Schleifen laufen nur ueber massive×alle statt alle×alle —
     // Asteroid×Asteroid ist vernachlaessigt) und Scratch fuer die alten
@@ -3449,14 +3450,20 @@ function createPhysWorker() {
     }
     function adaptDt() {
       let dt = MAX_SUB_DT_YEARS;
-      // Auch massive × Asteroid zaehlt hier (anders als im Main-Pfad):
-      // enge Planet-Asteroid-Begegnungen verkleinern den Schritt.
+      // Asteroiden zaehlen fuer die Schrittweite NUR im Hybrid-Modus
+      // (ASTAD=1): dort stehen gezielt ausgewaehlte nahe Asteroiden in
+      // der Worker-Liste, deren enge Begegnungen praezise sein sollen.
+      // Im reinen Worker-Modus gilt der gleiche Trade-off wie im
+      // Main-Pfad: Asteroiden druecken dt nicht — sonst kollabiert der
+      // Zeitschritt bei grossen Wolken dauerhaft (ein Asteroid ist
+      // IMMER irgendwo nah an einem Planeten) und die Sim kriecht.
       collectMassive();
       for (let mi = 0; mi < mCount; mi++) {
         const i = MI[mi];
         const xi = X[i], yi = Y[i];
         for (let j = 0; j < N; j++) {
           if (j === i || !V[j]) continue;
+          if (!ASTAD && A[j]) continue;
           // massive Partner nur einmal pro Paar (ueber die MI-Ordnung)
           if (!A[j] && j < i) continue;
           const dx = X[j]-xi, dy = Y[j]-yi;
@@ -3475,6 +3482,7 @@ function createPhysWorker() {
       const d = e.data;
       X = d.x; Y = d.y; VX = d.vx; VY = d.vy; AX = d.ax; AY = d.ay;
       M = d.mass; V = d.visible; A = d.isAst;
+      ASTAD = d.astAdaptive ? 1 : 0;
       N = X.length;
       if (MI.length < N) {
         MI = new Int32Array(N);
@@ -3562,7 +3570,10 @@ function advanceWorker(dtYears, list) {
     workerInflightRefs = src.slice();
     workerBusy = true;
     workerResolver = resolve;
-    physWorker.postMessage({ x, y, vx, vy, ax, ay, mass, visible, isAst, dt: dtYears },
+    // astAdaptive: nur im Hybrid (explizite Worker-Liste) sollen Asteroiden
+    // die Schrittweite mitbestimmen — siehe adaptDt im Worker.
+    physWorker.postMessage({ x, y, vx, vy, ax, ay, mass, visible, isAst, dt: dtYears,
+                             astAdaptive: !!list },
       [x.buffer, y.buffer, vx.buffer, vy.buffer, ax.buffer, ay.buffer, mass.buffer, visible.buffer, isAst.buffer]);
   });
 }
