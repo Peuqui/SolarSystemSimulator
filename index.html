@@ -447,7 +447,7 @@ input[type=range] {
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage/Schritt)</span> <span class="val" id="dt-val">1</span></label>
   <input type="range" autocomplete="off"id="dt-slider" min="0.1" max="50" step="0.1" value="1">
   <label><span data-i18n="lbl.slowdown">Verlangsamung</span> <span class="val" id="slow-val">1.0×</span></label>
-  <input type="range" autocomplete="off"id="slow-slider" min="-1.3" max="2" step="0.05" value="0">
+  <input type="range" autocomplete="off"id="slow-slider" min="-1.3" max="4" step="0.05" value="0">
   <div style="margin-top:6px">
     <button id="btn-pause" data-i18n="btn.pause">&#x23F8; Pause</button>
     <button id="btn-step" data-i18n="btn.step">&#x23ED; Schritt</button>
@@ -534,7 +534,7 @@ input[type=range] {
 
   <label data-i18n="sec.cloud" style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
   <label><span data-i18n="lbl.cloud-count">Anzahl</span> <span class="val" id="cloud-n-val">50</span></label>
-  <input type="range" autocomplete="off" id="cloud-n" min="5" max="500" step="5" value="50">
+  <input type="range" autocomplete="off" id="cloud-n" min="0.7" max="4" step="0.01" value="1.7">
   <label data-i18n-title="tt.cloud-mass"><span data-i18n="lbl.cloud-mass">Gesamtmasse (M⊕)</span> <span class="val" id="cloud-mass-val">0,001</span></label>
   <input type="range" autocomplete="off" id="cloud-mass" min="-5" max="2" step="0.05" value="-3">
   <label data-i18n-title="tt.density"><span data-i18n="lbl.cloud-density-au2">Dichte (1/AE²)</span> <span class="val" id="cloud-density-val">10</span></label>
@@ -647,7 +647,7 @@ input[type=range] {
   <label><span data-i18n="lbl.dt-step">Zeitschritt (Tage)</span> <span class="val" id="mob-dt-val">1</span></label>
   <input type="range" autocomplete="off"id="mob-dt-slider" min="0.1" max="50" step="0.1" value="1">
   <label><span data-i18n="lbl.slowdown">Verlangsamung</span> <span class="val" id="mob-slow-val">1.0×</span></label>
-  <input type="range" autocomplete="off"id="mob-slow-slider" min="-1.3" max="2" step="0.05" value="0">
+  <input type="range" autocomplete="off"id="mob-slow-slider" min="-1.3" max="4" step="0.05" value="0">
 
   <h2 data-i18n="sec.view">&#x1F52D; Anzeige</h2>
   <label><span data-i18n="lbl.zoom">Zoom</span> <span class="val" id="mob-zoom-val">0.35</span></label>
@@ -695,7 +695,7 @@ input[type=range] {
 
   <label data-i18n="sec.cloud" style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
   <label><span data-i18n="lbl.cloud-count">Anzahl</span> <span class="val" id="mob-cloud-n-val">50</span></label>
-  <input type="range" autocomplete="off" id="mob-cloud-n" min="5" max="500" step="5" value="50">
+  <input type="range" autocomplete="off" id="mob-cloud-n" min="0.7" max="4" step="0.01" value="1.7">
   <label data-i18n-title="tt.cloud-mass"><span data-i18n="lbl.cloud-mass">Gesamtmasse (M⊕)</span> <span class="val" id="mob-cloud-mass-val">0,001</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-mass" min="-5" max="2" step="0.05" value="-3">
   <label><span data-i18n="lbl.cloud-density-au2">Dichte (1/AE²)</span> <span class="val" id="mob-cloud-density-val">10</span></label>
@@ -763,7 +763,7 @@ const DEFAULTS = {
   injectSpeed: 1.477,   // log10(km/s) — 1.477 → 30 km/s
   injectAngle: 270,     // Kompass-Kurs (0=N, 90=O, 180=S, 270=W)
   // --- Wolke (eigene Werte) ---
-  cloudN: 500,
+  cloudN: 2.7,          // log10(Anzahl) — 2,7 → ~500 (Slider bis 4 → 10 000)
   cloudMass: -1,        // log10(M⊕) — -1 → 0,1 Erdmassen
   cloudDensity: 4,      // log10 — 4 → 10.000 Asteroiden/AU²
   cloudJit: 5,          // % Speed-Streuung + ° Richtungs-Streuung
@@ -3668,20 +3668,32 @@ function initCudaBackend(urlIndex = 0) {
     if (status !== 0) {
       console.warn('CUDA-Backend-Fehler:',
         new TextDecoder().decode(new Uint8Array(buf, 8)));
+      _cudaStateStale = true;
       applyEngine('worker', false);
     } else {
       const refs = cudaInflightRefs || [];
-      const n = refs.length;
-      const x  = new Float64Array(buf, 8,          n);
-      const y  = new Float64Array(buf, 8 + 8 * n,  n);
-      const vx = new Float64Array(buf, 8 + 16 * n, n);
-      const vy = new Float64Array(buf, 8 + 24 * n, n);
+      const n = Math.min(refs.length, new Uint32Array(buf, 0, 2)[1]);
+      const x  = new Float32Array(buf, 8,          n);
+      const y  = new Float32Array(buf, 8 + 4 * n,  n);
+      const vx = new Float32Array(buf, 8 + 8 * n,  n);
+      const vy = new Float32Array(buf, 8 + 12 * n, n);
       const live = new Set(bodies);
       for (let i = 0; i < n; i++) {
         const b = refs[i];
         if (!live.has(b)) continue;
         b.x = x[i]; b.y = y[i]; b.vx = vx[i]; b.vy = vy[i];
       }
+      // Frame abschliessen — was advanceAsync fuer synchrone Engines tut,
+      // passiert beim pipelined CUDA-Pfad hier: Kollisionen, Sim-Zeit,
+      // Trails. Mutationen durch Kollisionen erkennt der naechste Send
+      // ueber Laengen-/Revisions-Check und schickt dann einen FULL-Frame.
+      _cudaExtrapDays = 0;   // Extrapolation durch authoritativen Zustand ersetzt
+      handleCollisions(_cudaInflightDt);
+      simTime += _cudaInflightDt * 365.25;
+      recordTrails();
+      _baryDirty = true;
+      _perf.frames++;
+      _perf.physMs += performance.now() - _cudaSentAt;
     }
     cudaInflightRefs = null;
     cudaBusy = false;
@@ -3704,17 +3716,41 @@ function initCudaBackend(urlIndex = 0) {
 }
 initCudaBackend();
 
-// Frame ans CUDA-Backend: kompletter Koerperzustand hin, neue Positionen/
-// Geschwindigkeiten zurueck. Protokoll siehe backend/server.py.
+// Pipelined Frame ans CUDA-Backend: der Zustand lebt f64-resident auf der
+// GPU (server-authoritativ). Normale Frames sind 16-Byte-STEP-Nachrichten;
+// nur nach Mutationen (Kollisionen, Injects, Edits, Engine-Wechsel) geht
+// ein FULL-Frame mit komplettem Zustand hoch. Es wird NICHT auf das
+// Ergebnis gewartet — die Anwendung passiert im onmessage (1 Frame
+// Latenz), dadurch rendert der Browser durchgehend fluessig, waehrend
+// die V100 parallel rechnet.
+var _physRev = 0;              // Mutations-Zaehler, siehe markBodiesMutated()
+function markBodiesMutated() { _physRev++; }
+// Punktuelle Mutationen (Bounces): nur die betroffenen Koerper werden als
+// Delta nachgeschickt (~40 B/Koerper) statt eines kompletten FULL-Uploads
+// (~1 MB bei 25k Koerpern) — sonst wuerden dauerhafte Asteroid-Kollisionen
+// die Remote-Leitung fluten und die GPU verhungern lassen.
+const _pendingDeltaBodies = new Set();
+function markBodyDelta(b) { _pendingDeltaBodies.add(b); }
+let _cudaStateStale = true;    // erzwingt FULL (Start, Engine-Wechsel, Fehler)
+let _cudaSentRev = -1;
+let _cudaSentN = -1;
+let _cudaSentAt = 0;
+let _cudaInflightDt = 0;
+let _cudaExtrapDays = 0;   // visuell extrapolierte Sim-Tage im aktuellen In-Flight-Fenster
+let _extrapPrevMs = 0;     // Zeitbasis der Extrapolation (rAF-Takt)
+
 function advanceCuda(dtYears) {
-  return new Promise((resolve) => {
-    if (cudaBusy || !cudaReady) { resolve(); return; }
-    const src = bodies;
-    const N = src.length;
-    const buf = new ArrayBuffer(16 + N * (5 * 8 + 2));
+  if (cudaBusy || !cudaReady) return;
+  const src = bodies;
+  const N = src.length;
+  const dirty = _cudaStateStale || N !== _cudaSentN || _physRev !== _cudaSentRev;
+  let buf;
+  if (dirty) {
+    buf = new ArrayBuffer(16 + N * (5 * 8 + 2));
     const dv = new DataView(buf);
-    dv.setFloat64(0, dtYears, true);
-    dv.setUint32(8, N, true);
+    dv.setUint32(0, 0, true);            // MSG_FULL
+    dv.setUint32(4, N, true);
+    dv.setFloat64(8, dtYears, true);
     const x    = new Float64Array(buf, 16,           N);
     const y    = new Float64Array(buf, 16 + 8 * N,   N);
     const vx   = new Float64Array(buf, 16 + 16 * N,  N);
@@ -3729,11 +3765,42 @@ function advanceCuda(dtYears) {
       visible[i] = b.visible ? 1 : 0;
       isAst[i] = b.isAsteroid ? 1 : 0;
     }
-    cudaInflightRefs = src.slice();
-    cudaBusy = true;
-    cudaResolver = resolve;
-    cudaSocket.send(buf);
-  });
+    _cudaStateStale = false;
+    _cudaSentN = N;
+    _cudaSentRev = _physRev;
+  } else if (_pendingDeltaBodies.size > 0) {
+    // MSG_DELTA: nur die punktuell mutierten Koerper (Bounces)
+    const entries = [];
+    for (const b of _pendingDeltaBodies) {
+      const idx = src.indexOf(b);
+      if (idx >= 0) entries.push([idx, b]);
+    }
+    buf = new ArrayBuffer(16 + entries.length * 40);
+    const dv = new DataView(buf);
+    dv.setUint32(0, 2, true);            // MSG_DELTA
+    dv.setUint32(4, entries.length, true);
+    dv.setFloat64(8, dtYears, true);
+    let off = 16;
+    for (const [idx, b] of entries) {
+      dv.setUint32(off, idx, true);
+      dv.setFloat64(off + 8, b.x, true);
+      dv.setFloat64(off + 16, b.y, true);
+      dv.setFloat64(off + 24, b.vx, true);
+      dv.setFloat64(off + 32, b.vy, true);
+      off += 40;
+    }
+  } else {
+    buf = new ArrayBuffer(16);
+    const dv = new DataView(buf);
+    dv.setUint32(0, 1, true);            // MSG_STEP
+    dv.setFloat64(8, dtYears, true);
+  }
+  _pendingDeltaBodies.clear();
+  cudaInflightRefs = src.slice();
+  _cudaInflightDt = dtYears;
+  _cudaSentAt = performance.now();
+  cudaBusy = true;
+  cudaSocket.send(buf);
 }
 
 // Hybrid: massive Koerper (Planeten/Sterne/Choreografie) auf dem Worker in
@@ -3795,7 +3862,10 @@ async function advanceAsync(dtYears) {
   const needF64 = !!(sc && sc.precise);
   if (useCuda && cudaReady) {
     // CUDA rechnet f64 — auch fuer empfindliche Szenarien geeignet.
-    await advanceCuda(dtYears);
+    // Pipelined: kein await; Ergebnis-Anwendung, Kollisionen und
+    // simTime passieren im WebSocket-onmessage (1 Frame Latenz).
+    advanceCuda(dtYears);
+    return;
   } else if (useCuda && !cudaReady) {
     // Backend (noch) nicht verbunden — Worker als gleichwertiger f64-Pfad.
     await advanceWorker(dtYears);
@@ -4310,6 +4380,9 @@ const BOUNCE_FLASH_MS = 2000;   // Ring-Flash-Dauer um gebouncten Asteroid
 // e < 1 (teilelastisch). e=0 waere perfekt plastisch (kleben, kein Abprall).
 const BOUNCE_RESTITUTION = 0.6;
 function _bounce(a, b, tContact) {
+  // CUDA-Backend: nur die zwei gestossenen Koerper als Delta nachschicken
+  markBodyDelta(a);
+  markBodyDelta(b);
   // Stoßnormale entlang der Verbindungslinie der Massenmittelpunkte
   // (echte Physik fuer Kugel-Stoss). Slingshot wirkt ENTLANG der Normale —
   // bei head-on Stoss voll, bei perpendicular keine Beschleunigung
@@ -4754,8 +4827,44 @@ async function simLoop() {
       // darf die ganze Simulation nicht einfrieren. Loggen, weitermachen.
       console.warn('advanceAsync warf — Frame uebersprungen:', err);
     }
-    _perf.physMs += performance.now() - physT0;
-    _perf.frames++;
+    // Pipelined CUDA zaehlt seine Physik-Frames im WebSocket-onmessage
+    // (dort ist Roundtrip = Physikzeit); hier nur synchrone Engines.
+    if (!(useCuda && cudaReady)) {
+      _perf.physMs += performance.now() - physT0;
+      _perf.frames++;
+    }
+    // Pipelined CUDA: waehrend die Antwort unterwegs ist, Positionen linear
+    // extrapolieren (x += v·dt) — sonst ruckelt es sichtbar (einfrieren,
+    // springen, einfrieren), besonders remote mit WAN-Jitter. Rein visuell:
+    // die naechste Antwort ueberschreibt alles mit dem authoritativen
+    // f64-Zustand, und Uploads (FULL) passieren immer direkt nach einer
+    // Antwort-Anwendung — ein extrapolierter Wert verlaesst den Browser nie.
+    // Gedeckelt auf die Sim-Zeit des in-flight Frames, damit bei langen
+    // Stalls nicht ueberschossen und zurueckgesprungen wird.
+    if (useCuda && cudaReady && cudaBusy && _perf.daysPerSec > 0) {
+      // Eigene Zeitbasis — lastTickMs ist hier bereits auf nowMs gesetzt.
+      const frameDeltaMs = _extrapPrevMs ? Math.min(nowMs - _extrapPrevMs, 250) : 0;
+      const wantDays = _perf.daysPerSec * frameDeltaMs / 1000;
+      // Doppelte Deckelung: (1) nie ueber die Sim-Zeit des in-flight Frames
+      // hinaus, (2) nie weiter als ~T/20 des schnellsten Umlaufs — lineare
+      // Extrapolation ist nur auf kurzen Bahnstuecken ehrlich; sonst
+      // schiessen enge Planeten tangential ueber und schnappen zurueck.
+      // trailIntervalDays entspricht T_min/120 (siehe computeTrailInterval).
+      const capDays = Math.min(_cudaInflightDt * 365.25, 6 * trailIntervalDays)
+                      - _cudaExtrapDays;
+      const d = Math.min(wantDays, Math.max(capDays, 0));
+      if (d > 0) {
+        const dtY = d / 365.25;
+        for (let i = 0; i < bodies.length; i++) {
+          const b = bodies[i];
+          if (!b.visible) continue;
+          b.x += b.vx * dtY;
+          b.y += b.vy * dtY;
+        }
+        _cudaExtrapDays += d;
+      }
+    }
+    _extrapPrevMs = nowMs;
   }
   // Fluchtkurs auswerten — barycenter() braucht die unbound-Flags.
   updateBoundState();
@@ -5034,8 +5143,16 @@ document.getElementById('mob-p-angle').addEventListener('input', function() {
 });
 
 // Wolken-Slider (Anzahl + Dichte + Spin) \u2014 Desktop+Mobile bidirektional sync.
+// Wolken-Anzahl-Slider ist logarithmisch (log10): 0,7 -> ~5 bis 4,0 -> 10 000.
+// Grosse Wolken sind mit dem CUDA-Backend problemlos — der alte
+// Linear-Slider deckelte bei 500.
+function cloudCountFromSlider(id) {
+  const v = Math.pow(10, parseFloat(document.getElementById(id).value));
+  return Math.max(1, Math.round(v));
+}
+
 function updateCloudDerived() {
-  const N = parseInt(document.getElementById('cloud-n').value, 10);
+  const N = cloudCountFromSlider('cloud-n');
   const density = Math.pow(10, parseFloat(document.getElementById('cloud-density').value));
   const R = Math.sqrt(N / (Math.PI * density));
   const txt = '~' + fmtDE(R, R < 10 ? 1 : 0) + ' ' + t('cv.au');
@@ -5044,8 +5161,9 @@ function updateCloudDerived() {
 }
 ['cloud-n', 'mob-cloud-n'].forEach(id => {
   document.getElementById(id).addEventListener('input', function() {
-    document.getElementById('cloud-n-val').textContent = this.value;
-    document.getElementById('mob-cloud-n-val').textContent = this.value;
+    const n = Math.max(1, Math.round(Math.pow(10, parseFloat(this.value))));
+    document.getElementById('cloud-n-val').textContent = n;
+    document.getElementById('mob-cloud-n-val').textContent = n;
     document.getElementById('cloud-n').value = this.value;
     document.getElementById('mob-cloud-n').value = this.value;
     updateCloudDerived();
@@ -5289,6 +5407,9 @@ function applyEngine(mode, persist) {
   useGPU    = (mode === 'gpu');
   useHybrid = (mode === 'hybrid');
   useCuda   = (mode === 'cuda');
+  // Nach Engine-Wechsel kennt das Backend den aktuellen Zustand nicht —
+  // der naechste CUDA-Frame muss ein FULL-Frame sein.
+  if (useCuda) _cudaStateStale = true;
   for (const prefix of ['rad', 'mob-rad']) {
     const el = document.getElementById(prefix + '-' + mode);
     if (el) el.checked = true;
@@ -5410,7 +5531,7 @@ function addPlanetCheckbox(p, container) {
 
   row.querySelector('input[type=checkbox]').addEventListener('change', function() {
     const b = bodies.find(b => b.name === this.dataset.name);
-    if (b) { b.visible = this.checked; computeAccelerations(); }
+    if (b) { b.visible = this.checked; markBodiesMutated(); computeAccelerations(); }
     const other = container === checkDiv ? mobCheckDiv : checkDiv;
     const oc = other.querySelector(`input[type=checkbox][data-name="${p.name}"]`);
     if (oc) oc.checked = this.checked;
@@ -5440,6 +5561,7 @@ function addPlanetCheckbox(p, container) {
 // Wendet alle ausstehenden Masse-/Geschwindigkeitsaenderungen gesammelt
 // an — fuer alle Koerper auf einmal, dann einmalig computeAccelerations.
 function applyPendingChanges() {
+  markBodiesMutated();   // CUDA-Backend: naechster Frame als FULL
   let changed = false;
 
   document.querySelectorAll('.mass-in.pending').forEach(inp => {
@@ -5621,7 +5743,7 @@ function doInjectCloud() {
   const speedAU = speedKmS * KM_S_TO_AU_YR;
   const baseVx =  speedAU * Math.sin(angleRad);
   const baseVy = -speedAU * Math.cos(angleRad);
-  const N = parseInt(document.getElementById('cloud-n').value, 10);
+  const N = cloudCountFromSlider('cloud-n');
   const density = Math.pow(10, parseFloat(document.getElementById('cloud-density').value));
   // Wolkenradius aus Anzahl und Flaechen-Dichte: R = sqrt(N / (π · ρ))
   const R = Math.sqrt(N / (Math.PI * density));
@@ -5723,6 +5845,7 @@ document.getElementById('mob-fab-clear-escaping').addEventListener('click', doCl
 document.getElementById('mob-fab-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('mob-fab-clear-clouds').addEventListener('click', doClearClouds);
 function doRecenter() {
+  markBodiesMutated();   // CUDA-Backend: naechster Frame als FULL
   // Recenter hebt einen aktiven Fokus immer mit auf — sonst zoomt
   // fitZoomToSystem nur auf den fokussierten Body, nicht aufs System.
   focusBody = null;
@@ -6066,6 +6189,7 @@ function getTouchMidpoint(t1, t2) {
 // (Schwerpunkt verschiebt sich durch den neuen Koerper). Loesung:
 // lockBarycenter automatisch aus, Checkbox visuell synchron halten.
 function releaseBarycenterLock() {
+  markBodiesMutated();   // CUDA-Backend: naechster Frame als FULL
   if (!lockBarycenter) return;
   lockBarycenter = false;
   const cb1 = document.getElementById('chk-baryctr');

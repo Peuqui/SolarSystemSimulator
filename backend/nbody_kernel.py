@@ -12,7 +12,8 @@ Cooperative-Groups-Grid-Sync — dadurch faellt der Launch-Overhead weg,
 der eine naive GPU-Portierung auf JS-Worker-Niveau ausbremst.
 
 Asteroiden liegen in globalen Arrays (Grid-Stride, beliebiges N).
-Massive Koerper (bis M_MAX) verwaltet Thread 0; ihre Gegenkraefte werden
+Massive Koerper (bis M_MAX) verwaltet Thread 0
+ihre Gegenkraefte werden
 blockweise in Shared Memory reduziert und per atomicAdd aufsummiert.
 """
 from __future__ import annotations
@@ -302,14 +303,23 @@ class NBodyCuda:
     def name(self) -> str:
         return cp.cuda.runtime.getDeviceProperties(self.device)["name"].decode()
 
-    def advance(self, dt_years: float,
-                x: np.ndarray, y: np.ndarray,
-                vx: np.ndarray, vy: np.ndarray,
-                mass: np.ndarray, visible: np.ndarray,
-                is_ast: np.ndarray) -> tuple[np.ndarray, ...]:
+    def load_state(self, x: np.ndarray, y: np.ndarray,
+                   vx: np.ndarray, vy: np.ndarray,
+                   mass: np.ndarray, visible: np.ndarray,
+                   is_ast: np.ndarray) -> dict:
+        """Vollzustand vom Client uebernehmen — bleibt danach GPU-resident.
+
+        Rueckgabe ist ein Zustands-Dict, das der Server PRO VERBINDUNG
+        haelt und an step() uebergibt — mehrere gleichzeitige Clients
+        (z. B. lokal + remote) stoeren sich so nicht gegenseitig.
+
+        Der Browser schickt den Vollzustand nur noch bei Mutationen
+        (Kollisionen, Injects, Edits)
+        normale Frames sind reine
+        step()-Aufrufe ohne Upload (server-authoritativer Zustand).
+        """
         ast = is_ast != 0
-        mas = ~ast
-        m_idx = np.flatnonzero(mas)
+        m_idx = np.flatnonzero(~ast)
         a_idx = np.flatnonzero(ast)
         m = len(m_idx)
         if m > M_MAX:
@@ -317,32 +327,90 @@ class NBodyCuda:
         with cp.cuda.Device(self.device):
             d = cp.float64
             n_ast = len(a_idx)
-            # EIN H2D-Transfer statt 18 einzelner: alle f64-Daten (Asteroiden
-            # + massive, je 5 Felder) in einen Block packen, auf der GPU per
-            # View zerschneiden. Halbiert den Fix-Overhead pro Frame — das
-            # dominiert bei kleinen Zeitschritten.
+            # EIN H2D-Transfer: alle f64-Felder in einem Block, auf der GPU
+            # per View zerschnitten.
             f64_host = np.concatenate([
                 x[a_idx], y[a_idx], vx[a_idx], vy[a_idx], mass[a_idx],
                 x[m_idx], y[m_idx], vx[m_idx], vy[m_idx], mass[m_idx]])
             vis_host = np.concatenate([visible[a_idx], visible[m_idx]])
             g_f64 = cp.asarray(f64_host, d)
-            g_vis = cp.asarray(vis_host, cp.uint8)
+            st = {"N": len(x), "n_ast": n_ast, "m": m,
+                  "f64": g_f64, "vis": cp.asarray(vis_host, cp.uint8),
+                  "a_idx": cp.asarray(a_idx, cp.int32),
+                  "m_idx": cp.asarray(m_idx, cp.int32),
+                  "aaccx": cp.zeros(n_ast, d), "aaccy": cp.zeros(n_ast, d),
+                  "maccx": cp.zeros(m, d), "maccy": cp.zeros(m, d),
+                  "backx": cp.zeros(m, d), "backy": cp.zeros(m, d),
+                  "out_f32": cp.empty(4 * len(x), cp.float32)}
+            # Inverse Abbildung Originalindex -> (Kategorie, Position) fuer
+            # punktuelle Delta-Updates (Bounces) ohne FULL-Upload.
+            n = len(x)
+            inv_kind = np.zeros(n, np.uint8)
+            inv_kind[a_idx] = 1
+            inv_pos = np.zeros(n, np.int64)
+            inv_pos[a_idx] = np.arange(len(a_idx))
+            inv_pos[m_idx] = np.arange(m)
+            st["inv_kind"] = inv_kind
+            st["inv_pos"] = inv_pos
+            return st
+
+    def apply_updates(self, st: dict, idx: np.ndarray,
+                      vals: np.ndarray) -> None:
+        """Punktuelle x/y/vx/vy-Updates (Bounces) in den residenten Zustand
+        schreiben — ein Scatter statt FULL-Upload. idx: Originalindizes,
+        vals: (k, 4) mit [x, y, vx, vy]."""
+        if st is None:
+            raise ValueError("kein Zustand geladen — FULL-Frame noetig")
+        n_ast, m = st["n_ast"], st["m"]
+        kind = st["inv_kind"][idx]
+        pos = st["inv_pos"][idx]
+        base = 5 * n_ast
+        flats = []
+        values = []
+        for f in range(4):
+            flats.append(np.where(kind == 1, f * n_ast + pos, base + f * m + pos))
+            values.append(vals[:, f])
+        with cp.cuda.Device(self.device):
+            st["f64"][cp.asarray(np.concatenate(flats))] = \
+                cp.asarray(np.concatenate(values))
+
+    def step(self, st: dict, dt_years: float) -> np.ndarray:
+        """Einen Frame auf dem residenten Zustand rechnen.
+
+        Rueckgabe: f32-Array [x|y|vx|vy] in Originalreihenfolge des Clients
+        (kompakt fuers Rendering
+        die f64-Wahrheit bleibt auf der GPU).
+        """
+        if st is None:
+            raise ValueError("kein Zustand geladen — FULL-Frame noetig")
+        with cp.cuda.Device(self.device):
+            n_ast, m, g_f64 = st["n_ast"], st["m"], st["f64"]
             o = 0
-            g_ax  = g_f64[o:o + n_ast]; o += n_ast
-            g_ay  = g_f64[o:o + n_ast]; o += n_ast
-            g_avx = g_f64[o:o + n_ast]; o += n_ast
-            g_avy = g_f64[o:o + n_ast]; o += n_ast
-            g_am  = g_f64[o:o + n_ast]; o += n_ast
-            g_mx  = g_f64[o:o + m]; o += m
-            g_my  = g_f64[o:o + m]; o += m
-            g_mvx = g_f64[o:o + m]; o += m
-            g_mvy = g_f64[o:o + m]; o += m
-            g_mm  = g_f64[o:o + m]; o += m
-            g_avis = g_vis[:n_ast]
-            g_mvis = g_vis[n_ast:]
-            g_aaccx = cp.zeros(n_ast, d); g_aaccy = cp.zeros(n_ast, d)
-            g_maccx = cp.zeros(m, d); g_maccy = cp.zeros(m, d)
-            g_backx = cp.zeros(m, d); g_backy = cp.zeros(m, d)
+            g_ax  = g_f64[o:o + n_ast]
+            o += n_ast
+            g_ay  = g_f64[o:o + n_ast]
+            o += n_ast
+            g_avx = g_f64[o:o + n_ast]
+            o += n_ast
+            g_avy = g_f64[o:o + n_ast]
+            o += n_ast
+            g_am  = g_f64[o:o + n_ast]
+            o += n_ast
+            g_mx  = g_f64[o:o + m]
+            o += m
+            g_my  = g_f64[o:o + m]
+            o += m
+            g_mvx = g_f64[o:o + m]
+            o += m
+            g_mvy = g_f64[o:o + m]
+            o += m
+            g_mm  = g_f64[o:o + m]
+            o += m
+            g_avis = st["vis"][:n_ast]
+            g_mvis = st["vis"][n_ast:]
+            g_aaccx, g_aaccy = st["aaccx"], st["aaccy"]
+            g_maccx, g_maccy = st["maccx"], st["maccy"]
+            g_backx, g_backy = st["backx"], st["backy"]
             # CuPy klemmt das Grid bei Cooperative Launches selbst auf das
             # Residenz-Limit — der Grid-Stride-Loop im Kernel deckt den Rest.
             grid = max(1, (n_ast + self._block - 1) // self._block)
@@ -358,17 +426,23 @@ class NBodyCuda:
                  cp.int32(MAX_SUB_STEPS_PER_FRAME),
                  cp.float64(YOSHIDA_W1), cp.float64(YOSHIDA_W0)))
 
-            # Der Kernel hat direkt in die Views von g_f64 geschrieben —
-            # EIN D2H-Transfer holt den kompletten neuen Zustand zurueck.
-            host = cp.asnumpy(g_f64)
-            out_x = np.array(x, dtype=np.float64, copy=True)
-            out_y = np.array(y, dtype=np.float64, copy=True)
-            out_vx = np.array(vx, dtype=np.float64, copy=True)
-            out_vy = np.array(vy, dtype=np.float64, copy=True)
-            na = n_ast
-            out_x[a_idx] = host[0:na];        out_y[a_idx] = host[na:2*na]
-            out_vx[a_idx] = host[2*na:3*na];  out_vy[a_idx] = host[3*na:4*na]
-            mo = 5 * na
-            out_x[m_idx] = host[mo:mo+m];         out_y[m_idx] = host[mo+m:mo+2*m]
-            out_vx[m_idx] = host[mo+2*m:mo+3*m];  out_vy[m_idx] = host[mo+3*m:mo+4*m]
-            return out_x, out_y, out_vx, out_vy
+            # Ausgabe fuer den Client: f32 [x|y|vx|vy] in Originalreihenfolge,
+            # auf der GPU per Scatter zusammengesetzt, EIN D2H-Transfer.
+            # Die f64-Wahrheit bleibt resident auf der Karte.
+            n = st["N"]
+            out = st["out_f32"]
+            ga, gm = st["a_idx"], st["m_idx"]
+            f32 = cp.float32
+            xs = out[0:n]
+            ys = out[n:2*n]
+            vxs = out[2*n:3*n]
+            vys = out[3*n:4*n]
+            xs[ga] = g_ax.astype(f32)
+            xs[gm] = g_mx.astype(f32)
+            ys[ga] = g_ay.astype(f32)
+            ys[gm] = g_my.astype(f32)
+            vxs[ga] = g_avx.astype(f32)
+            vxs[gm] = g_mvx.astype(f32)
+            vys[ga] = g_avy.astype(f32)
+            vys[gm] = g_mvy.astype(f32)
+            return cp.asnumpy(out)

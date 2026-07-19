@@ -21,9 +21,11 @@ def reference_advance(dt_years, x, y, vx, vy, mass, visible, is_ast):
     mas_i = np.flatnonzero(~ast & vis)
 
     def accel():
-        ax = np.zeros_like(x); ay = np.zeros_like(y)
+        ax = np.zeros_like(x)
+        ay = np.zeros_like(y)
         for i in mas_i:
-            dx = x - x[i]; dy = y - y[i]
+            dx = x - x[i]
+            dy = y - y[i]
             r2 = dx * dx + dy * dy + SOFTENING
             f = G_AU / (r2 * np.sqrt(r2))
             f[i] = 0.0
@@ -77,9 +79,14 @@ def reference_advance(dt_years, x, y, vx, vy, mass, visible, is_ast):
 def make_system(n_ast: int, seed: int = 7):
     rng = np.random.default_rng(seed)
     n = 10 + n_ast
-    x = np.zeros(n); y = np.zeros(n); vx = np.zeros(n); vy = np.zeros(n)
-    mass = np.full(n, 1e-6); mass[0] = 1.0
-    is_ast = np.zeros(n, np.uint8); is_ast[10:] = 1
+    x = np.zeros(n)
+    y = np.zeros(n)
+    vx = np.zeros(n)
+    vy = np.zeros(n)
+    mass = np.full(n, 1e-6)
+    mass[0] = 1.0
+    is_ast = np.zeros(n, np.uint8)
+    is_ast[10:] = 1
     visible = np.ones(n, np.uint8)
     visible[3] = 0                      # ein eingefrorener Planet als Edge-Case
     rp = np.arange(1, 10, dtype=np.float64)
@@ -87,9 +94,11 @@ def make_system(n_ast: int, seed: int = 7):
     vy[1:10] = np.sqrt(G_AU / rp)
     r = 2 + 2 * rng.random(n_ast)
     th = rng.random(n_ast) * 2 * np.pi
-    x[10:] = r * np.cos(th); y[10:] = r * np.sin(th)
+    x[10:] = r * np.cos(th)
+    y[10:] = r * np.sin(th)
     v = np.sqrt(G_AU / r)
-    vx[10:] = -v * np.sin(th); vy[10:] = v * np.cos(th)
+    vx[10:] = -v * np.sin(th)
+    vy[10:] = v * np.cos(th)
     mass[10:] = 1e-12
     return x, y, vx, vy, mass, visible, is_ast
 
@@ -99,37 +108,57 @@ def main() -> None:
     sim = NBodyCuda(dev)
     print(f"Device: {dev} ({sim.name()})")
 
-    # --- Korrektheit: 5 Tage Frame, 200 Asteroiden, gegen CPU-Referenz
+    # --- Korrektheit: 5 Tage Frame, 200 Asteroiden, gegen CPU-Referenz.
+    # Die Rueckgabe ist f32 (Renderdaten) — die f64-Wahrheit bleibt auf der
+    # GPU. Toleranz daher f32-Epsilon-Niveau.
     state = make_system(200)
     dt = 5 / 365.25
-    gx, gy, gvx, gvy = sim.advance(dt, *state)
+    n = len(state[0])
+    st = sim.load_state(*state)
+    out = sim.step(st, dt)
+    gx, gy, gvx, gvy = out[0:n], out[n:2*n], out[2*n:3*n], out[3*n:4*n]
     rx, ry, rvx, rvy = reference_advance(dt, *state)
     err_pos = np.max(np.abs(np.concatenate([gx - rx, gy - ry])))
     err_vel = np.max(np.abs(np.concatenate([gvx - rvx, gvy - rvy])))
-    frozen_ok = gx[3] == state[0][3] and gy[3] == state[1][3]
-    print(f"max |Δpos| = {err_pos:.3e} AU, max |Δvel| = {err_vel:.3e} AU/Jahr, "
+    frozen_ok = abs(gx[3] - state[0][3]) < 1e-5 and abs(gy[3] - state[1][3]) < 1e-5
+    print(f"max |Δpos| = {err_pos:.3e} AU (f32-Ausgabe), max |Δvel| = {err_vel:.3e}, "
           f"eingefrorener Koerper unveraendert: {frozen_ok}")
-    assert err_pos < 1e-9 and err_vel < 1e-9 and frozen_ok, "Physik weicht ab!"
+    assert err_pos < 5e-6 and err_vel < 5e-6 and frozen_ok, "Physik weicht ab!"
 
-    # --- Energie-Sanity: 1 Jahr Sonnensystem ohne Asteroiden
+    # --- Residenz-Kontinuitaet: 1 Jahr in 73 STEPs OHNE Neu-Upload —
+    # der Zustand lebt zwischen den Frames auf der GPU.
     state = make_system(0)
-    sx, sy, svx, svy = state[0].copy(), state[1].copy(), state[2].copy(), state[3].copy()
+    n = len(state[0])
+    st = sim.load_state(*state)
     for _ in range(73):                      # 73 × 5 Tage ≈ 1 Jahr
-        sx, sy, svx, svy = sim.advance(5 / 365.25, sx, sy, svx, svy,
-                                       state[4], state[5], state[6])
-    r_earth = np.hypot(sx[3] - sx[0], sy[3] - sy[0])
-    print(f"Planet r=3 AU nach 1 Jahr: {np.hypot(sx[3]-sx[0], sy[3]-sy[0]):.6f} "
-          f"(eingefroren, soll exakt 3.0)")
+        out = sim.step(st, 5 / 365.25)
+    sx, sy = out[0:n], out[n:2*n]
+    print(f"Planet r=3 AU nach 1 Jahr resident: "
+          f"Abstand zur (wandernden) Sonne {np.hypot(sx[3]-sx[0], sy[3]-sy[0]):.6f}")
+
+    # --- Delta-Updates: punktuelle Aenderungen treffen die richtigen Slots
+    state = make_system(5)
+    st = sim.load_state(*state)
+    n = len(state[0])
+    idx = np.array([12, 2], dtype=np.int64)     # ein Asteroid, ein Planet
+    vals = np.array([[9.0, -9.0, 0.0, 0.0], [4.0, 4.5, 0.0, 0.0]])
+    sim.apply_updates(st, idx, vals)
+    out = sim.step(st, 1e-9)                    # Quasi-Nullschritt
+    ok = (abs(out[12] - 9.0) < 1e-4 and abs(out[n + 12] + 9.0) < 1e-4
+          and abs(out[2] - 4.0) < 1e-4 and abs(out[n + 2] - 4.5) < 1e-4)
+    print(f"Delta-Update trifft korrekte Slots: {ok}")
+    assert ok, "Delta-Scatter fehlerhaft!"
 
     # --- Benchmark: Tage/s wie im Browser-Vergleich (dt=50 Tage/Frame)
     for n_ast in (7000, 50000, 200000):
         state = make_system(n_ast)
         dtf = 50 / 365.25
-        sim.advance(dtf, *state)             # Warmup
+        st = sim.load_state(*state)
+        sim.step(st, dtf)                    # Warmup
         t0 = time.perf_counter()
         frames = 20
         for _ in range(frames):
-            sim.advance(dtf, *state)
+            sim.step(st, dtf)
         secs = time.perf_counter() - t0
         days_per_sec = frames * 50 / secs
         ms = secs / frames * 1000
