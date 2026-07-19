@@ -2,19 +2,30 @@
 
 Spiegelt exakt die Physik des JS-Workers in index.html:
 - Yoshida-Integrator 4. Ordnung (3 gewichtete Velocity-Verlets pro Schritt)
-- adaptiver Substep aus den massiven Paaren (tEnc/20, Floor MAX_SUB_DT/1000)
+- adaptiver Substep in Hybrid-Worker-Semantik (ASTAD): massive Paare UND
+  Asteroid-x-massiv druecken dt (tEnc/20, Floor MAX_SUB_DT/1000)
 - Kraefte: massive×massive + massive×Asteroid (symmetrisch, Softening 1e-6),
   Asteroid×Asteroid vernachlaessigt
 - ausgeschaltete Koerper (visible=0) sind eingefroren
 
-Der komplette Frame (alle Substeps) laeuft in EINEM Kernel-Launch mit
-Cooperative-Groups-Grid-Sync — dadurch faellt der Launch-Overhead weg,
-der eine naive GPU-Portierung auf JS-Worker-Niveau ausbremst.
+MULTI-GPU (hardwareagnostisch): Die Asteroiden werden gewichtet nach
+f64-Score auf beliebig viele Karten geshardet; die massiven Koerper sind
+auf jeder Karte repliziert und werden von JEDER Karte deterministisch
+identisch integriert (die Gegenkraft-Partialsummen aller Shards werden in
+fester Reihenfolge summiert — bit-identische Bahnen, exakte Physik, kein
+Naeherungs-Fallback). Die Substep-Synchronisation laeuft ueber eine
+System-Scope-Spin-Barrier auf gemapptem Host-Speicher (PCIe reicht, kein
+NVLink noetig). Mit EINER Karte degeneriert dieselbe Codebahn zu reinen
+grid.sync()s — null Zusatz-Overhead.
 
-Asteroiden liegen in globalen Arrays (Grid-Stride, beliebiges N).
-Massive Koerper (bis M_MAX) verwaltet Thread 0
-ihre Gegenkraefte werden
-blockweise in Shared Memory reduziert und per atomicAdd aufsummiert.
+BATCH-SAMPLING: Ein Launch rechnet K Raster-Samples am Stueck und schreibt
+pro Raster einen kompakten f32-Snapshot (Launch-/Sync-Overhead nur noch
+1x pro K Samples).
+
+Der komplette Batch laeuft in EINEM cooperative Launch je Karte
+(Grid-Sync); Asteroiden liegen in globalen Arrays (Grid-Stride),
+massive Koerper verwaltet Thread 0, Gegenkraefte werden blockweise in
+Shared Memory reduziert.
 """
 from __future__ import annotations
 
@@ -24,6 +35,7 @@ from __future__ import annotations
 # keinen CUDA-Root und findet libcudadevrt.a (Cooperative-Groups-Linking)
 # nicht — der memoisierte Pfad wird daher direkt gesetzt. (Interne API,
 # gilt fuer cupy 14.x; bei einem CuPy-Upgrade pruefen.)
+import ctypes
 import os
 
 import cupy as cp
@@ -42,6 +54,8 @@ import warnings  # noqa: E402
 warnings.filterwarnings("ignore", message="The grid size will be reduced")
 
 M_MAX = 64
+G_MAX = 8                      # max. Physik-GPUs (GSync-Layout)
+K_MAX = 16                     # max. Samples pro Batch-Launch
 G_AU = 4 * np.pi * np.pi
 SOFTENING = 1e-6
 MAX_SUB_DT_YEARS = 0.5 / 365.25
@@ -54,66 +68,99 @@ _SRC = r"""
 namespace cg = cooperative_groups;
 
 #define M_MAX 64
+#define G_MAX 8
 
-struct Ctrl {           // Steuerzustand des adaptiven Frame-Loops
-    double remaining;   // verbleibende Frame-Zeit (Jahre)
-    double subDt;       // aktueller Substep
-    int done;
-    int guard;
-    // Minimales tEnc/20 aller Paare als Bit-Repraesentation — fuer
-    // positive doubles ist die ull-Ordnung identisch zur double-Ordnung,
-    // daher funktioniert atomicMin. (32 Bytes gesamt = 4 f64-Slots.)
-    unsigned long long minEnc;
+// Geteilter Sync-Bereich aller Physik-GPUs. Bei nGpus > 1 liegt er in
+// GEMAPPTEM Host-Speicher (jede Karte sieht dieselben Bytes ueber PCIe),
+// bei nGpus == 1 in normalem Device-Speicher (gleiche Codebahn, volle
+// Geschwindigkeit).
+// ATOMICS-FREI: System-Atomics auf gemapptem Host-Speicher sind ueber
+// PCIe nicht unterstuetzt (nur mit hostNativeAtomicSupported, d. h.
+// NVLink-Host-Kopplung) — der erste Wurf hing deshalb in der Barrier.
+// Stattdessen schreibt jede Karte AUSSCHLIESSLICH in ihre eigenen Slots
+// (Rundenzaehler, Min-Wert, Partialsummen) und liest die der anderen:
+// reine Loads/Stores, die jede PCIe-Plattform beherrscht.
+#define PAD 16   // eigene Cacheline pro Karte gegen False Sharing
+struct GSync {
+    unsigned int round_[G_MAX * PAD];       // Barrier-Rundenzaehler je GPU
+    unsigned long long minEnc[G_MAX * PAD]; // lokales tEnc/20-Min je GPU
+    double backX[G_MAX * M_MAX];            // Gegenkraft-Partialsummen
+    double backY[G_MAX * M_MAX];
 };
 
-// Verlet-Teilschritt fuer die massiven Koerper — nur Thread 0.
-// mAcc haelt die aktuelle Beschleunigung (Eingang: gueltig, Ausgang: neu).
-__device__ void massivePositions(
-    double* mx, double* my, const double* mvx, const double* mvy,
-    const double* mAccX, const double* mAccY, const unsigned char* mVis,
-    const int M, const double dt)
+struct Ctrl {            // GPU-lokaler, replizierter Loop-Zustand
+    double remaining;    // verbleibende Raster-Zeit (identisch auf allen)
+    double subDt;
+    int done;
+    int guard;
+    unsigned long long minEncDev;   // device-lokale Min-Reduktion
+};
+
+// System-weite Barrier zwischen allen Physik-GPUs (Sense ueber
+// monoton wachsende Rundenzaehler). Ein Thread pro Karte macht den
+// PCIe-Handshake, der Rest haengt im grid.sync. Bei nGpus == 1
+// degeneriert sie zum reinen grid.sync.
+__device__ void sys_barrier(GSync* gs, const int gpuId, const int nGpus,
+                            unsigned int* barRound,
+                            cg::grid_group& grid, const int tid)
 {
-    for (int i = 0; i < M; i++) {
-        if (!mVis[i]) continue;
-        mx[i] += mvx[i] * dt + 0.5 * mAccX[i] * dt * dt;
-        my[i] += mvy[i] * dt + 0.5 * mAccY[i] * dt * dt;
+    grid.sync();
+    if (nGpus > 1 && tid == 0) {
+        // Alle vorherigen Writes dieser Karte (Partialsummen, minEnc)
+        // muessen VOR dem Rundenzaehler systemweit sichtbar sein.
+        __threadfence_system();
+        const unsigned int r = ++(*barRound);
+        ((volatile unsigned int*)gs->round_)[gpuId * PAD] = r;
+        for (int g = 0; g < nGpus; g++) {
+            volatile unsigned int* p =
+                &((volatile unsigned int*)gs->round_)[g * PAD];
+            while (*p < r) { __nanosleep(256); }
+        }
     }
+    grid.sync();
 }
 
 extern "C" __global__ void frame_kernel(
-    // Asteroiden [nAst]
+    // Asteroiden-SHARD dieser Karte [nAst]
     double* __restrict__ ax, double* __restrict__ ay,
     double* __restrict__ avx, double* __restrict__ avy,
     double* __restrict__ aAccX, double* __restrict__ aAccY,
     const double* __restrict__ am,
     const unsigned char* __restrict__ aVis,
-    // massive Koerper [M]
+    // massive Koerper (REPLIK, wird von jeder Karte identisch integriert)
     double* mx, double* my, double* mvx, double* mvy,
     const double* __restrict__ mm,
     const unsigned char* __restrict__ mVis,
-    double* mAccX, double* mAccY,        // aktuelle Beschleunigung massive
-    double* backX, double* backY,        // Gegenkraft-Akkumulatoren [M]
-    Ctrl* ctrl,
+    double* mAccX, double* mAccY,
+    double* backX, double* backY,        // device-lokale Gegenkraft-Akkus
+    GSync* gs, Ctrl* ctrl,
+    // Batch-Snapshots: kompakt [K][4][nAst] f32; GPU 0 schreibt die
+    // Massiven zusaetzlich nach snapM [K][4][M].
+    float* __restrict__ snap, float* __restrict__ snapM,
     const int nAst, const int M,
+    const int gpuId, const int nGpus,
     const double G, const double soft,
-    const double dtFrame, const double maxSubDt,
-    const int maxSubSteps,
+    const double dtRaster, const int K,
+    const double maxSubDt, const int maxSubSteps,
     const double w1, const double w0)
 {
     cg::grid_group grid = cg::this_grid();
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
     const int stride = gridDim.x * blockDim.x;
+    // Rundenzaehler dieser Karte — ueber Launches hinweg fortlaufend
+    // (gs->round_ behaelt den Stand, alle Karten starten konsistent).
+    unsigned int barRound = (nGpus > 1)
+        ? ((volatile unsigned int*)gs->round_)[gpuId * PAD] : 0u;
 
     __shared__ double s_mx[M_MAX], s_my[M_MAX], s_mm[M_MAX];
     __shared__ unsigned char s_mv[M_MAX];
     __shared__ double s_fx[M_MAX], s_fy[M_MAX];
+    __shared__ unsigned long long s_minEnc;
 
     // ---- Initiale Beschleunigungen (wie computeAccel() im JS-Worker) ----
     if (tid == 0) {
-        ctrl->remaining = dtFrame;
-        ctrl->done = 0;
         ctrl->guard = 0;
-        for (int k = 0; k < M; k++) { backX[k] = 0.0; backY[k] = 0.0; }
+        for (int j = 0; j < M; j++) { backX[j] = 0.0; backY[j] = 0.0; }
     }
     grid.sync();
     if (threadIdx.x < M) {
@@ -121,22 +168,23 @@ extern "C" __global__ void frame_kernel(
         s_my[threadIdx.x] = my[threadIdx.x];
         s_mm[threadIdx.x] = mm[threadIdx.x];
         s_mv[threadIdx.x] = mVis[threadIdx.x];
+        s_fx[threadIdx.x] = 0.0;
+        s_fy[threadIdx.x] = 0.0;
     }
-    if (threadIdx.x < M) { s_fx[threadIdx.x] = 0.0; s_fy[threadIdx.x] = 0.0; }
     __syncthreads();
     for (int i = tid; i < nAst; i += stride) {
         double acx = 0.0, acy = 0.0;
         if (aVis[i]) {
             const double px = ax[i], py = ay[i], pm = am[i];
-            for (int k = 0; k < M; k++) {
-                if (!s_mv[k]) continue;
-                const double dx = s_mx[k] - px, dy = s_my[k] - py;
+            for (int kk = 0; kk < M; kk++) {
+                if (!s_mv[kk]) continue;
+                const double dx = s_mx[kk] - px, dy = s_my[kk] - py;
                 const double r2 = dx * dx + dy * dy + soft;
                 const double f = G / (r2 * sqrt(r2));
-                acx += f * s_mm[k] * dx;
-                acy += f * s_mm[k] * dy;
-                atomicAdd(&s_fx[k], -f * pm * dx);
-                atomicAdd(&s_fy[k], -f * pm * dy);
+                acx += f * s_mm[kk] * dx;
+                acy += f * s_mm[kk] * dy;
+                atomicAdd(&s_fx[kk], -f * pm * dx);
+                atomicAdd(&s_fy[kk], -f * pm * dy);
             }
         }
         aAccX[i] = acx; aAccY[i] = acy;
@@ -148,8 +196,19 @@ extern "C" __global__ void frame_kernel(
     }
     grid.sync();
     if (tid == 0) {
+        for (int j = 0; j < M; j++) {           // eigener Slot: normale
+            gs->backX[gpuId * M_MAX + j] = backX[j];   // Writes reichen
+            gs->backY[gpuId * M_MAX + j] = backY[j];
+        }
+    }
+    sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+    if (tid == 0) {
         for (int i = 0; i < M; i++) {
-            double acx = backX[i], acy = backY[i];
+            double acx = 0.0, acy = 0.0;
+            for (int g = 0; g < nGpus; g++) {       // feste Reihenfolge ->
+                acx += gs->backX[g * M_MAX + i];    // deterministisch auf
+                acy += gs->backY[g * M_MAX + i];    // allen Karten identisch
+            }
             if (mVis[i]) {
                 for (int j = 0; j < M; j++) {
                     if (j == i || !mVis[j]) continue;
@@ -163,56 +222,48 @@ extern "C" __global__ void frame_kernel(
             mAccX[i] = acx; mAccY[i] = acy;
         }
     }
-    grid.sync();
+    sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
 
-    // ---- Frame-Loop: adaptiver Substep, Yoshida = 3 Verlets ----
-    // adaptDt in Hybrid-Worker-Semantik (ASTAD=1): massive Paare UND
-    // Asteroid-x-massiv-Begegnungen druecken dt (tEnc/20, Floor
-    // maxSubDt/1000). Ohne den Asteroid-Anteil werden Sonnentaucher am
-    // Perihel mit 0,5-Tage-Schritten numerisch katapultiert und danach
-    // vom Runaway-Waechter gekillt. Die Reduktion laeuft parallel:
-    // Block-Minimum in Shared Memory, dann ein atomicMin pro Block.
     const double wDts[3] = { w1, w0, w1 };
-    __shared__ unsigned long long s_minEnc;
-    for (;;) {
+
+    // ================= Batch: K Raster-Samples pro Launch =================
+    for (int ks = 0; ks < K; ks++) {
         if (tid == 0) {
-            if (ctrl->remaining <= 1e-12 || ctrl->guard++ >= maxSubSteps) {
-                ctrl->done = 1;
-            } else {
-                ctrl->minEnc = __double_as_longlong(maxSubDt);
-            }
+            ctrl->remaining = dtRaster;
+            ctrl->done = 0;
         }
         grid.sync();
-        if (ctrl->done) break;
-        if (threadIdx.x == 0) s_minEnc = __double_as_longlong(maxSubDt);
-        __syncthreads();
-        double best = maxSubDt;
-        for (int i = tid; i < nAst; i += stride) {
-            if (!aVis[i]) continue;
-            const double px = ax[i], py = ay[i];
-            const double pvx = avx[i], pvy = avy[i];
-            for (int k = 0; k < M; k++) {
-                if (!mVis[k]) continue;
-                const double dx = mx[k] - px, dy = my[k] - py;
-                double dist = sqrt(dx * dx + dy * dy);
-                if (dist < 1e-12) dist = 1e-12;
-                const double dvx = mvx[k] - pvx, dvy = mvy[k] - pvy;
-                const double vrel = sqrt(dvx * dvx + dvy * dvy);
-                if (vrel > 1e-9) {
-                    const double tEnc = dist / vrel / 20.0;
-                    if (tEnc < best) best = tEnc;
+
+        // ---- Frame-Loop: adaptiver Substep, Yoshida = 3 Verlets ----
+        for (;;) {
+            // adaptDt in Hybrid-Worker-Semantik (ASTAD): massive Paare
+            // (nur GPU 0) UND Asteroid-x-massiv (jeder Shard) druecken dt.
+            // Globales Minimum ueber alle Karten via atomicMin_system auf
+            // der Bit-Repraesentation (fuer positive doubles ordnungs-
+            // erhaltend). Alle Karten lesen dasselbe dt -> replizierte
+            // Massiv-Integration bleibt bit-identisch.
+            if (tid == 0) {
+                if (ctrl->remaining <= 1e-12 ||
+                    ctrl->guard++ >= maxSubSteps) {
+                    ctrl->done = 1;
                 }
+                ctrl->minEncDev = __double_as_longlong(maxSubDt);
             }
-        }
-        if (tid == 0) {
-            for (int i = 0; i < M; i++) {
-                if (!mVis[i]) continue;
-                for (int j = i + 1; j < M; j++) {
-                    if (!mVis[j]) continue;
-                    const double dx = mx[j] - mx[i], dy = my[j] - my[i];
+            grid.sync();
+            if (ctrl->done) break;
+            if (threadIdx.x == 0) s_minEnc = __double_as_longlong(maxSubDt);
+            __syncthreads();
+            double best = maxSubDt;
+            for (int i = tid; i < nAst; i += stride) {
+                if (!aVis[i]) continue;
+                const double px = ax[i], py = ay[i];
+                const double pvx = avx[i], pvy = avy[i];
+                for (int kk = 0; kk < M; kk++) {
+                    if (!mVis[kk]) continue;
+                    const double dx = mx[kk] - px, dy = my[kk] - py;
                     double dist = sqrt(dx * dx + dy * dy);
                     if (dist < 1e-12) dist = 1e-12;
-                    const double dvx = mvx[j] - mvx[i], dvy = mvy[j] - mvy[i];
+                    const double dvx = mvx[kk] - pvx, dvy = mvy[kk] - pvy;
                     const double vrel = sqrt(dvx * dvx + dvy * dvy);
                     if (vrel > 1e-9) {
                         const double tEnc = dist / vrel / 20.0;
@@ -220,92 +271,169 @@ extern "C" __global__ void frame_kernel(
                     }
                 }
             }
-        }
-        if (best < maxSubDt)
-            atomicMin(&s_minEnc, __double_as_longlong(best));
-        __syncthreads();
-        if (threadIdx.x == 0 &&
-            s_minEnc != __double_as_longlong(maxSubDt))
-            atomicMin(&ctrl->minEnc, s_minEnc);
-        grid.sync();
-        if (tid == 0) {
-            double dt = __longlong_as_double(ctrl->minEnc);
-            if (dt < maxSubDt / 1000.0) dt = maxSubDt / 1000.0;
-            if (dt > ctrl->remaining) dt = ctrl->remaining;
-            ctrl->subDt = dt;
-            ctrl->remaining -= dt;
-        }
-        grid.sync();
-        const double subDt = ctrl->subDt;
-
-        for (int w = 0; w < 3; w++) {
-            const double dt = wDts[w] * subDt;
-            // Phase A: Positionen (Asteroiden stride, massive Thread 0);
-            // Gegenkraft-Akkus vorab nullen.
-            for (int i = tid; i < nAst; i += stride) {
-                if (!aVis[i]) continue;
-                ax[i] += avx[i] * dt + 0.5 * aAccX[i] * dt * dt;
-                ay[i] += avy[i] * dt + 0.5 * aAccY[i] * dt * dt;
-            }
-            if (tid == 0) {
-                massivePositions(mx, my, mvx, mvy, mAccX, mAccY, mVis, M, dt);
-                for (int k = 0; k < M; k++) { backX[k] = 0.0; backY[k] = 0.0; }
-            }
-            grid.sync();
-            // Phase B: neue Asteroid-Beschleunigung + Velocity-Update
-            // (haengt nur von neuen Positionen ab) + Gegenkraft-Reduktion.
-            if (threadIdx.x < M) {
-                s_mx[threadIdx.x] = mx[threadIdx.x];
-                s_my[threadIdx.x] = my[threadIdx.x];
-                s_fx[threadIdx.x] = 0.0;
-                s_fy[threadIdx.x] = 0.0;
-            }
-            __syncthreads();
-            for (int i = tid; i < nAst; i += stride) {
-                if (!aVis[i]) continue;
-                const double px = ax[i], py = ay[i], pm = am[i];
-                double acx = 0.0, acy = 0.0;
-                for (int k = 0; k < M; k++) {
-                    if (!s_mv[k]) continue;
-                    const double dx = s_mx[k] - px, dy = s_my[k] - py;
-                    const double r2 = dx * dx + dy * dy + soft;
-                    const double f = G / (r2 * sqrt(r2));
-                    acx += f * s_mm[k] * dx;
-                    acy += f * s_mm[k] * dy;
-                    atomicAdd(&s_fx[k], -f * pm * dx);
-                    atomicAdd(&s_fy[k], -f * pm * dy);
-                }
-                avx[i] += 0.5 * (aAccX[i] + acx) * dt;
-                avy[i] += 0.5 * (aAccY[i] + acy) * dt;
-                aAccX[i] = acx; aAccY[i] = acy;
-            }
-            __syncthreads();
-            if (threadIdx.x < M) {
-                atomicAdd(&backX[threadIdx.x], s_fx[threadIdx.x]);
-                atomicAdd(&backY[threadIdx.x], s_fy[threadIdx.x]);
-            }
-            grid.sync();
-            // Phase C: massive Beschleunigung + Velocity (Thread 0)
-            if (tid == 0) {
+            if (gpuId == 0 && tid == 0) {
                 for (int i = 0; i < M; i++) {
-                    double acx = backX[i], acy = backY[i];
-                    if (mVis[i]) {
-                        for (int j = 0; j < M; j++) {
-                            if (j == i || !mVis[j]) continue;
-                            const double dx = mx[j] - mx[i], dy = my[j] - my[i];
-                            const double r2 = dx * dx + dy * dy + soft;
-                            const double f = G / (r2 * sqrt(r2));
-                            acx += f * mm[j] * dx;
-                            acy += f * mm[j] * dy;
+                    if (!mVis[i]) continue;
+                    for (int j = i + 1; j < M; j++) {
+                        if (!mVis[j]) continue;
+                        const double dx = mx[j] - mx[i], dy = my[j] - my[i];
+                        double dist = sqrt(dx * dx + dy * dy);
+                        if (dist < 1e-12) dist = 1e-12;
+                        const double dvx = mvx[j] - mvx[i];
+                        const double dvy = mvy[j] - mvy[i];
+                        const double vrel = sqrt(dvx * dvx + dvy * dvy);
+                        if (vrel > 1e-9) {
+                            const double tEnc = dist / vrel / 20.0;
+                            if (tEnc < best) best = tEnc;
                         }
-                        mvx[i] += 0.5 * (mAccX[i] + acx) * dt;
-                        mvy[i] += 0.5 * (mAccY[i] + acy) * dt;
                     }
-                    mAccX[i] = acx; mAccY[i] = acy;
                 }
             }
+            if (best < maxSubDt)
+                atomicMin(&s_minEnc, __double_as_longlong(best));
+            __syncthreads();
+            if (threadIdx.x == 0 &&
+                s_minEnc != __double_as_longlong(maxSubDt))
+                atomicMin(&ctrl->minEncDev, s_minEnc);   // device-lokal
             grid.sync();
+            if (nGpus > 1 && tid == 0)
+                ((volatile unsigned long long*)gs->minEnc)[gpuId * PAD] =
+                    ctrl->minEncDev;
+            sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+            // dt bestimmen — tid 0 JEDER Karte liest alle Slots in fester
+            // Reihenfolge: identisches Minimum, replizierter Loop-Zustand
+            // bleibt bit-identisch.
+            if (tid == 0) {
+                unsigned long long mv = ctrl->minEncDev;
+                if (nGpus > 1) {
+                    mv = __double_as_longlong(maxSubDt);
+                    for (int g = 0; g < nGpus; g++) {
+                        const unsigned long long v =
+                            ((volatile unsigned long long*)
+                                 gs->minEnc)[g * PAD];
+                        if (v < mv) mv = v;
+                    }
+                }
+                double dt = __longlong_as_double(mv);
+                if (dt < maxSubDt / 1000.0) dt = maxSubDt / 1000.0;
+                if (dt > ctrl->remaining) dt = ctrl->remaining;
+                ctrl->subDt = dt;
+                ctrl->remaining -= dt;
+            }
+            grid.sync();
+            const double subDt = ctrl->subDt;
+
+            for (int w = 0; w < 3; w++) {
+                const double dt = wDts[w] * subDt;
+                // Phase A: Positionen — Astis (Shard, Grid-Stride) und
+                // Massive (jede Karte identisch, Thread 0). Eigenen
+                // Gegenkraft-Slot fuer Phase B nullen.
+                for (int i = tid; i < nAst; i += stride) {
+                    if (!aVis[i]) continue;
+                    ax[i] += avx[i] * dt + 0.5 * aAccX[i] * dt * dt;
+                    ay[i] += avy[i] * dt + 0.5 * aAccY[i] * dt * dt;
+                }
+                if (tid == 0) {
+                    for (int i = 0; i < M; i++) {
+                        if (!mVis[i]) continue;
+                        mx[i] += mvx[i] * dt + 0.5 * mAccX[i] * dt * dt;
+                        my[i] += mvy[i] * dt + 0.5 * mAccY[i] * dt * dt;
+                    }
+                    for (int j = 0; j < M; j++) {
+                        backX[j] = 0.0; backY[j] = 0.0;
+                    }
+                }
+                grid.sync();
+                // Phase B: neue Asti-Beschleunigung + Velocity-Update +
+                // Gegenkraft-Reduktion in den eigenen GSync-Slot.
+                if (threadIdx.x < M) {
+                    s_mx[threadIdx.x] = mx[threadIdx.x];
+                    s_my[threadIdx.x] = my[threadIdx.x];
+                    s_fx[threadIdx.x] = 0.0;
+                    s_fy[threadIdx.x] = 0.0;
+                }
+                __syncthreads();
+                for (int i = tid; i < nAst; i += stride) {
+                    if (!aVis[i]) continue;
+                    const double px = ax[i], py = ay[i], pm = am[i];
+                    double acx = 0.0, acy = 0.0;
+                    for (int kk = 0; kk < M; kk++) {
+                        if (!s_mv[kk]) continue;
+                        const double dx = s_mx[kk] - px, dy = s_my[kk] - py;
+                        const double r2 = dx * dx + dy * dy + soft;
+                        const double f = G / (r2 * sqrt(r2));
+                        acx += f * s_mm[kk] * dx;
+                        acy += f * s_mm[kk] * dy;
+                        atomicAdd(&s_fx[kk], -f * pm * dx);
+                        atomicAdd(&s_fy[kk], -f * pm * dy);
+                    }
+                    avx[i] += 0.5 * (aAccX[i] + acx) * dt;
+                    avy[i] += 0.5 * (aAccY[i] + acy) * dt;
+                    aAccX[i] = acx; aAccY[i] = acy;
+                }
+                __syncthreads();
+                if (threadIdx.x < M) {
+                    atomicAdd(&backX[threadIdx.x], s_fx[threadIdx.x]);
+                    atomicAdd(&backY[threadIdx.x], s_fy[threadIdx.x]);
+                }
+                grid.sync();
+                if (tid == 0) {
+                    for (int j = 0; j < M; j++) {
+                        gs->backX[gpuId * M_MAX + j] = backX[j];
+                        gs->backY[gpuId * M_MAX + j] = backY[j];
+                    }
+                }
+                sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+                // Phase C: Massiv-Beschleunigung aus den Partialsummen
+                // ALLER Karten (feste Reihenfolge -> deterministisch) +
+                // Velocity — auf jeder Karte identisch.
+                if (tid == 0) {
+                    for (int i = 0; i < M; i++) {
+                        double acx = 0.0, acy = 0.0;
+                        for (int g = 0; g < nGpus; g++) {
+                            acx += gs->backX[g * M_MAX + i];
+                            acy += gs->backY[g * M_MAX + i];
+                        }
+                        if (mVis[i]) {
+                            for (int j = 0; j < M; j++) {
+                                if (j == i || !mVis[j]) continue;
+                                const double dx = mx[j] - mx[i];
+                                const double dy = my[j] - my[i];
+                                const double r2 = dx * dx + dy * dy + soft;
+                                const double f = G / (r2 * sqrt(r2));
+                                acx += f * mm[j] * dx;
+                                acy += f * mm[j] * dy;
+                            }
+                            mvx[i] += 0.5 * (mAccX[i] + acx) * dt;
+                            mvy[i] += 0.5 * (mAccY[i] + acy) * dt;
+                        }
+                        mAccX[i] = acx; mAccY[i] = acy;
+                    }
+                }
+                sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+            }
         }
+
+        // ---- Snapshot dieses Rasters: kompakt f32, Shard-Reihenfolge ----
+        {
+            const long long b = (long long)ks * 4 * nAst;
+            for (int i = tid; i < nAst; i += stride) {
+                snap[b + i] = (float)ax[i];
+                snap[b + nAst + i] = (float)ay[i];
+                snap[b + 2 * nAst + i] = (float)avx[i];
+                snap[b + 3 * nAst + i] = (float)avy[i];
+            }
+            if (gpuId == 0 && tid == 0) {
+                const long long bm = (long long)ks * 4 * M;
+                for (int j = 0; j < M; j++) {
+                    snapM[bm + j] = (float)mx[j];
+                    snapM[bm + M + j] = (float)my[j];
+                    snapM[bm + 2 * M + j] = (float)mvx[j];
+                    snapM[bm + 3 * M + j] = (float)mvy[j];
+                }
+            }
+        }
+        grid.sync();
     }
 }
 """
@@ -316,233 +444,355 @@ _FP64_RATIO = {
 }
 
 
+def _f64_score(i: int) -> float:
+    p = cp.cuda.runtime.getDeviceProperties(i)
+    ratio = _FP64_RATIO.get((p["major"], p["minor"]), 1 / 32)
+    return p["multiProcessorCount"] * p["clockRate"] * ratio
+
+
 def pick_device() -> int:
     """GPU mit der hoechsten f64-Leistung waehlen (V100 vor RTX 8000)."""
-    best, best_score = 0, -1.0
-    for i in range(cp.cuda.runtime.getDeviceCount()):
-        p = cp.cuda.runtime.getDeviceProperties(i)
-        cc = (p["major"], p["minor"])
-        ratio = _FP64_RATIO.get(cc, 1 / 32)
-        score = p["multiProcessorCount"] * p["clockRate"] * ratio
-        if score > best_score:
-            best, best_score = i, score
-    return best
+    n = cp.cuda.runtime.getDeviceCount()
+    return max(range(n), key=_f64_score)
+
+
+def pick_devices() -> list[int]:
+    """Physik-GPUs hardwareagnostisch waehlen: alle Karten, deren
+    f64-Score mindestens 25% der besten erreicht — schwaechere Karten
+    wuerden den synchronen Substep-Verbund nur ausbremsen (die Barrier
+    wartet auf den langsamsten Shard). Absteigend nach Score sortiert;
+    Karte [0] integriert die Massiven."""
+    n = cp.cuda.runtime.getDeviceCount()
+    scores = {i: _f64_score(i) for i in range(n)}
+    best = max(scores.values())
+    devs = sorted((i for i in range(n) if scores[i] >= 0.25 * best),
+                  key=lambda i: -scores[i])
+    return devs[:G_MAX]
+
+
+def pick_detect_device(exclude) -> int | None:
+    """Beste GPU AUSSERHALB der Physik-Karten fuer die ausgelagerte
+    Kollisions-/Bounce-Erkennung — die Erkennung ist leichtgewichtig
+    (1-3% Last), da reicht auch eine f64-schwache Karte. None, wenn es
+    keine weitere Karte gibt."""
+    excl = set(exclude) if isinstance(exclude, (list, tuple, set)) \
+        else {exclude}
+    n = cp.cuda.runtime.getDeviceCount()
+    cands = [i for i in range(n) if i not in excl]
+    if not cands:
+        return None
+    return max(cands, key=_f64_score)
 
 
 class NBodyCuda:
-    """Haelt Kernel + GPU-Buffer und rechnet einen Frame pro advance()."""
+    """Haelt Kernel + GPU-Buffer fuer einen Verbund aus 1..G_MAX Karten.
 
-    def __init__(self, device: int):
-        self.device = device
-        with cp.cuda.Device(device):
-            self._mod = cp.RawModule(
-                code=_SRC, options=("--std=c++17",),
-                enable_cooperative_groups=True)
-            self._kern = self._mod.get_function("frame_kernel")
-            self._block = 256
+    devices: Liste der Physik-GPUs (devices[0] integriert die Massiven).
+    Ein einzelnes int wird als 1-Karten-Verbund akzeptiert."""
+
+    def __init__(self, devices):
+        if isinstance(devices, int):
+            devices = [devices]
+        if not devices or len(devices) > G_MAX:
+            raise ValueError(f"1..{G_MAX} Devices erwartet: {devices}")
+        self.devices = list(devices)
+        self.device = self.devices[0]      # Kompatibilitaet (Erkennung etc.)
+        self._mods = {}
+        self._kerns = {}
+        self._block = 256
+        for d in self.devices:
+            with cp.cuda.Device(d):
+                mod = cp.RawModule(
+                    code=_SRC, options=("--std=c++17",),
+                    enable_cooperative_groups=True)
+                self._mods[d] = mod
+                self._kerns[d] = mod.get_function("frame_kernel")
 
     def name(self) -> str:
-        return cp.cuda.runtime.getDeviceProperties(self.device)["name"].decode()
+        names = []
+        for d in self.devices:
+            p = cp.cuda.runtime.getDeviceProperties(d)
+            names.append(p["name"].decode())
+        return " + ".join(names)
+
+    # ---------------- Zustand laden (gewichtete Shards) ----------------
 
     def load_state(self, x: np.ndarray, y: np.ndarray,
                    vx: np.ndarray, vy: np.ndarray,
                    mass: np.ndarray, visible: np.ndarray,
                    is_ast: np.ndarray) -> dict:
-        """Vollzustand vom Client uebernehmen — bleibt danach GPU-resident.
+        """Vollzustand uebernehmen — bleibt danach GPU-resident.
 
-        Rueckgabe ist ein Zustands-Dict, das der Server PRO VERBINDUNG
-        haelt und an step() uebergibt — mehrere gleichzeitige Clients
-        (z. B. lokal + remote) stoeren sich so nicht gegenseitig.
-
-        Der Browser schickt den Vollzustand nur noch bei Mutationen
-        (Kollisionen, Injects, Edits)
-        normale Frames sind reine
-        step()-Aufrufe ohne Upload (server-authoritativer Zustand).
-        """
+        Asteroiden werden nach f64-Score gewichtet auf die Karten
+        verteilt (contiguous Slices der Originalreihenfolge); massive
+        Koerper sind auf jeder Karte repliziert. Rueckgabe ist ein
+        Zustands-Dict PRO SESSION."""
         ast = is_ast != 0
         m_idx = np.flatnonzero(~ast)
         a_idx = np.flatnonzero(ast)
         m = len(m_idx)
         if m > M_MAX:
             raise ValueError(f"zu viele massive Koerper: {m} > {M_MAX}")
-        with cp.cuda.Device(self.device):
-            d = cp.float64
-            n_ast = len(a_idx)
-            # EIN H2D-Transfer: alle f64-Felder in einem Block, auf der GPU
-            # per View zerschnitten.
-            f64_host = np.concatenate([
-                x[a_idx], y[a_idx], vx[a_idx], vy[a_idx], mass[a_idx],
-                x[m_idx], y[m_idx], vx[m_idx], vy[m_idx], mass[m_idx]])
-            vis_host = np.concatenate([visible[a_idx], visible[m_idx]])
-            g_f64 = cp.asarray(f64_host, d)
-            st = {"N": len(x), "n_ast": n_ast, "m": m,
-                  "f64": g_f64, "vis": cp.asarray(vis_host, cp.uint8),
-                  "a_idx": cp.asarray(a_idx, cp.int32),
-                  "m_idx": cp.asarray(m_idx, cp.int32),
-                  "aaccx": cp.zeros(n_ast, d), "aaccy": cp.zeros(n_ast, d),
-                  "maccx": cp.zeros(m, d), "maccy": cp.zeros(m, d),
-                  "backx": cp.zeros(m, d), "backy": cp.zeros(m, d),
-                  "out_f32": cp.empty(4 * len(x), cp.float32),
-                  # Kernel-Steuerpuffer PRO SESSION — mehrere gleichzeitige
-                  # Producer (mehrere Clients) duerfen sich den Loop-Zustand
-                  # nicht teilen.
-                  "ctrl": cp.zeros(4, dtype=cp.float64)}
-            # Inverse Abbildung Originalindex -> (Kategorie, Position) fuer
-            # punktuelle Delta-Updates (Bounces) ohne FULL-Upload.
-            n = len(x)
-            inv_kind = np.zeros(n, np.uint8)
-            inv_kind[a_idx] = 1
-            inv_pos = np.zeros(n, np.int64)
-            inv_pos[a_idx] = np.arange(len(a_idx))
-            inv_pos[m_idx] = np.arange(m)
-            st["inv_kind"] = inv_kind
-            st["inv_pos"] = inv_pos
-            st["a_idx_h"] = a_idx
-            st["m_idx_h"] = m_idx
-            return st
+        n = len(x)
+        n_ast = len(a_idx)
+        ng = len(self.devices)
+
+        # Gewichtete Partition der Asteroiden-Indizes
+        weights = np.array([_f64_score(d) for d in self.devices])
+        weights = weights / weights.sum()
+        cuts = np.floor(np.cumsum(weights) * n_ast).astype(np.int64)
+        cuts[-1] = n_ast
+        bounds = np.concatenate(([0], cuts))
+        shard_aidx = [a_idx[bounds[g]:bounds[g + 1]] for g in range(ng)]
+
+        # GSync-Bereich: gemappter Host-Speicher bei >1 Karte (alle sehen
+        # dieselben Bytes), sonst normaler Device-Speicher.
+        # struct GSync: round_[G_MAX*16] u32 | minEnc[G_MAX*16] u64 |
+        # backX/backY[G_MAX*M_MAX] f64 (+ Alignment-Polster)
+        gs_bytes = 4 * G_MAX * 16 + 8 * G_MAX * 16 + 2 * 8 * G_MAX * M_MAX
+        gs_bytes += (-gs_bytes) % 8 + 64
+        if ng > 1:
+            # cudaHostAllocPortable(1) | cudaHostAllocMapped(2): der
+            # Bereich ist in ALLEN Karten-Kontexten zero-copy erreichbar.
+            gs_host_ptr = cp.cuda.runtime.hostAlloc(gs_bytes, 3)
+            ctypes.memset(gs_host_ptr, 0, gs_bytes)
+        else:
+            gs_host_ptr = None
+
+        shards = []
+        for g, d in enumerate(self.devices):
+            sa = shard_aidx[g]
+            with cp.cuda.Device(d):
+                dd = cp.float64
+                f64_host = np.concatenate([
+                    x[sa], y[sa], vx[sa], vy[sa], mass[sa],
+                    x[m_idx], y[m_idx], vx[m_idx], vy[m_idx], mass[m_idx]])
+                vis_host = np.concatenate([visible[sa], visible[m_idx]])
+                sh = {"dev": d, "gpu_id": g, "n_ast": len(sa),
+                      "a_idx_h": sa,
+                      "f64": cp.asarray(f64_host, dd),
+                      "vis": cp.asarray(vis_host, cp.uint8),
+                      "aaccx": cp.zeros(len(sa), dd),
+                      "aaccy": cp.zeros(len(sa), dd),
+                      "maccx": cp.zeros(m, dd), "maccy": cp.zeros(m, dd),
+                      "backx": cp.zeros(m, dd), "backy": cp.zeros(m, dd),
+                      "ctrl": cp.zeros(5, dtype=cp.float64),
+                      "snap": cp.empty(K_MAX * 4 * max(len(sa), 1),
+                                       cp.float32)}
+                if g == 0:
+                    sh["snapM"] = cp.empty(K_MAX * 4 * max(m, 1),
+                                           cp.float32)
+                if ng > 1:
+                    sh["gs"] = _device_view_of_host(gs_host_ptr, gs_bytes, d)
+                else:
+                    sh["gs"] = cp.zeros(gs_bytes // 8, dtype=cp.float64)
+                shards.append(sh)
+
+        # Inverse Abbildung Originalindex -> (Shard, Position) fuer
+        # punktuelle Updates ohne FULL-Upload. Massive: Shard -1.
+        inv_shard = np.full(n, -1, np.int8)
+        inv_pos = np.zeros(n, np.int64)
+        for g, sa in enumerate(shard_aidx):
+            inv_shard[sa] = g
+            inv_pos[sa] = np.arange(len(sa))
+        inv_pos[m_idx] = np.arange(m)
+
+        # gs_host_ptr wird bewusst nicht freigegeben: der Producer lebt
+        # genau eine Film-Session, der Live-Pfad laedt selten neu (8 KB
+        # pro FULL-Upload bei Multi-GPU sind vernachlaessigbar).
+        st = {"N": n, "m": m, "n_ast": n_ast, "shards": shards,
+              "m_idx_h": m_idx, "a_idx_h": a_idx,
+              "inv_shard": inv_shard, "inv_pos": inv_pos,
+              "gs_host_ptr": gs_host_ptr}
+        return st
+
+    # ---------------- Frame rechnen (Batch) ----------------
+
+    def step_batch(self, st: dict, dt_raster_years: float,
+                   k: int) -> np.ndarray:
+        """K Raster-Samples in EINEM cooperative Launch je Karte rechnen.
+
+        Rueckgabe: f32-Array (k, 4n) [x|y|vx|vy] in Originalreihenfolge.
+        Die f64-Wahrheit bleibt auf den Karten. Erst werden ALLE Karten
+        gelaunct (sie warten in der System-Barrier aufeinander!), dann
+        eingesammelt."""
+        if st is None:
+            raise ValueError("kein Zustand geladen — FULL-Frame noetig")
+        if not 1 <= k <= K_MAX:
+            raise ValueError(f"k ausserhalb 1..{K_MAX}: {k}")
+        m = st["m"]
+        ng = len(st["shards"])
+        for sh in st["shards"]:
+            d = sh["dev"]
+            n_ast = sh["n_ast"]
+            with cp.cuda.Device(d):
+                f64 = sh["f64"]
+                o = 0
+                views = []
+                for ln in (n_ast,) * 5 + (m,) * 5:
+                    views.append(f64[o:o + ln])
+                    o += ln
+                (g_ax, g_ay, g_avx, g_avy, _g_am,
+                 g_mx, g_my, g_mvx, g_mvy, g_mm) = views
+                grid = max(1, (n_ast + self._block - 1) // self._block)
+                self._kerns[d](
+                    (grid,), (self._block,),
+                    (g_ax, g_ay, g_avx, g_avy,
+                     sh["aaccx"], sh["aaccy"], _g_am,
+                     sh["vis"][:n_ast],
+                     g_mx, g_my, g_mvx, g_mvy, g_mm,
+                     sh["vis"][n_ast:],
+                     sh["maccx"], sh["maccy"],
+                     sh["backx"], sh["backy"],
+                     sh["gs"], sh["ctrl"],
+                     sh["snap"],
+                     sh.get("snapM", sh["snap"]),
+                     cp.int32(n_ast), cp.int32(m),
+                     cp.int32(sh["gpu_id"]), cp.int32(ng),
+                     cp.float64(G_AU), cp.float64(SOFTENING),
+                     cp.float64(dt_raster_years), cp.int32(k),
+                     cp.float64(MAX_SUB_DT_YEARS),
+                     cp.int32(MAX_SUB_STEPS_PER_FRAME),
+                     cp.float64(YOSHIDA_W1), cp.float64(YOSHIDA_W0)))
+        # Einsammeln + Host-Scatter in Originalreihenfolge
+        n = st["N"]
+        out = np.empty((k, 4 * n), dtype=np.float32)
+        for sh in st["shards"]:
+            n_ast = sh["n_ast"]
+            with cp.cuda.Device(sh["dev"]):
+                snap = cp.asnumpy(sh["snap"][:k * 4 * n_ast]) \
+                    .reshape(k, 4, n_ast)
+                if sh["gpu_id"] == 0:
+                    snapm = cp.asnumpy(sh["snapM"][:k * 4 * m]) \
+                        .reshape(k, 4, m)
+            sa = sh["a_idx_h"]
+            for f in range(4):
+                out[:, f * n + sa] = snap[:, f, :]
+            if sh["gpu_id"] == 0:
+                mi = st["m_idx_h"]
+                for f in range(4):
+                    out[:, f * n + mi] = snapm[:, f, :]
+        return out
+
+    def step(self, st: dict, dt_years: float) -> np.ndarray:
+        """Ein einzelnes Sample (Kompatibilitaets-API fuer den
+        Live-CUDA-Pfad des Servers)."""
+        return self.step_batch(st, dt_years, 1)[0]
+
+    # ---------------- Punktuelle Zustands-Updates ----------------
+
+    def _flat(self, st: dict, sh: dict, field: int, pos):
+        n_ast = sh["n_ast"]
+        return field * n_ast + pos
 
     def apply_updates(self, st: dict, idx: np.ndarray,
                       vals: np.ndarray) -> None:
-        """Punktuelle x/y/vx/vy-Updates (Bounces) in den residenten Zustand
-        schreiben — ein Scatter statt FULL-Upload. idx: Originalindizes,
-        vals: (k, 4) mit [x, y, vx, vy]."""
-        if st is None:
-            raise ValueError("kein Zustand geladen — FULL-Frame noetig")
-        n_ast, m = st["n_ast"], st["m"]
-        kind = st["inv_kind"][idx]
-        pos = st["inv_pos"][idx]
-        base = 5 * n_ast
-        flats = []
-        values = []
-        for f in range(4):
-            flats.append(np.where(kind == 1, f * n_ast + pos, base + f * m + pos))
-            values.append(vals[:, f])
-        with cp.cuda.Device(self.device):
-            st["f64"][cp.asarray(np.concatenate(flats))] = \
-                cp.asarray(np.concatenate(values))
+        """x/y/vx/vy ABSOLUT setzen (Scatter). idx: Originalindizes."""
+        self._scatter(st, idx, vals, add=False)
 
-    def apply_velocities(self, st: dict, idx: np.ndarray,
-                         vx: np.ndarray, vy: np.ndarray) -> None:
-        """Nur Geschwindigkeiten setzen (Asti-Bounces): die f64-Positionen
-        im residenten Zustand bleiben unangetastet — Impulse aus dem
-        f32-Sample zu schreiben wuerde die Praezision nicht verletzen,
-        Positionen schon."""
-        kind = st["inv_kind"][idx]
-        pos = st["inv_pos"][idx]
-        n_ast, m = st["n_ast"], st["m"]
-        base = 5 * n_ast
-        flats = []
-        values = []
-        for f, v in ((2, vx), (3, vy)):
-            flats.append(np.where(kind == 1, f * n_ast + pos,
-                                  base + f * m + pos))
-            values.append(v)
-        with cp.cuda.Device(self.device):
-            st["f64"][cp.asarray(np.concatenate(flats))] = \
-                cp.asarray(np.concatenate(values).astype(np.float64))
+    def apply_deltas(self, st: dict, idx: np.ndarray,
+                     deltas: np.ndarray) -> None:
+        """Additive x/y/vx/vy-Korrekturen (Bounce-Impulse + Push).
+        idx MUSS eindeutig sein (Fancy-Index-Add)."""
+        self._scatter(st, idx, deltas, add=True)
+
+    def _scatter(self, st: dict, idx: np.ndarray, vals: np.ndarray,
+                 add: bool) -> None:
+        inv_shard = st["inv_shard"][idx]
+        inv_pos = st["inv_pos"][idx]
+        m = st["m"]
+        for sh in st["shards"]:
+            g = sh["gpu_id"]
+            n_ast = sh["n_ast"]
+            base = 5 * n_ast
+            sel = inv_shard == g
+            # Massive (Shard -1) wohnen auf ALLEN Karten -> ueberall
+            # anwenden, damit die Repliken identisch bleiben.
+            msel = inv_shard == -1
+            flats = []
+            values = []
+            for f in range(4):
+                if sel.any():
+                    flats.append(f * n_ast + inv_pos[sel])
+                    values.append(vals[sel, f])
+                if msel.any():
+                    flats.append(base + f * m + inv_pos[msel])
+                    values.append(vals[msel, f])
+            if not flats:
+                continue
+            with cp.cuda.Device(sh["dev"]):
+                gi = cp.asarray(np.concatenate(flats))
+                gv = cp.asarray(np.concatenate(values).astype(np.float64))
+                if add:
+                    sh["f64"][gi] = sh["f64"][gi] + gv
+                else:
+                    sh["f64"][gi] = gv
 
     def apply_body_state(self, st: dict, idx: int,
                          x: float, y: float, vx: float, vy: float,
                          mass: float) -> None:
         """Einen Koerper komplett setzen (x, y, vx, vy, Masse) — fuer
         Kollisions-Merges im Film-Producer."""
-        kind = st["inv_kind"][idx]
+        g = int(st["inv_shard"][idx])
         pos = int(st["inv_pos"][idx])
-        n_ast, m = st["n_ast"], st["m"]
-        base = 5 * n_ast
-        if kind == 1:
-            flat = [pos, n_ast + pos, 2 * n_ast + pos,
-                    3 * n_ast + pos, 4 * n_ast + pos]
-        else:
-            flat = [base + pos, base + m + pos, base + 2 * m + pos,
-                    base + 3 * m + pos, base + 4 * m + pos]
-        with cp.cuda.Device(self.device):
-            st["f64"][cp.asarray(np.asarray(flat, np.int64))] = \
-                cp.asarray(np.asarray([x, y, vx, vy, mass]))
+        m = st["m"]
+        vals = np.asarray([x, y, vx, vy, mass])
+        for sh in st["shards"]:
+            n_ast = sh["n_ast"]
+            base = 5 * n_ast
+            if g >= 0 and sh["gpu_id"] == g:
+                flat = [f * n_ast + pos for f in range(5)]
+            elif g == -1:
+                flat = [base + f * m + pos for f in range(5)]
+            else:
+                continue
+            with cp.cuda.Device(sh["dev"]):
+                sh["f64"][cp.asarray(np.asarray(flat, np.int64))] = \
+                    cp.asarray(vals)
 
     def deactivate_body(self, st: dict, idx: int) -> None:
-        """Koerper einfrieren und kraftlos machen (verschluckt): Masse 0,
-        visible 0. Position/Geschwindigkeit bleiben (letzter Stand)."""
-        kind = st["inv_kind"][idx]
+        """Koerper einfrieren und kraftlos machen: Masse 0, visible 0."""
+        g = int(st["inv_shard"][idx])
         pos = int(st["inv_pos"][idx])
-        n_ast, m = st["n_ast"], st["m"]
-        with cp.cuda.Device(self.device):
-            if kind == 1:
-                st["f64"][4 * n_ast + pos] = 0.0     # Masse
-                st["vis"][pos] = 0
-            else:
-                st["f64"][5 * n_ast + 4 * m + pos] = 0.0
-                st["vis"][n_ast + pos] = 0
+        m = st["m"]
+        for sh in st["shards"]:
+            n_ast = sh["n_ast"]
+            with cp.cuda.Device(sh["dev"]):
+                if g >= 0 and sh["gpu_id"] == g:
+                    sh["f64"][4 * n_ast + pos] = 0.0
+                    sh["vis"][pos] = 0
+                elif g == -1:
+                    sh["f64"][5 * n_ast + 4 * m + pos] = 0.0
+                    sh["vis"][n_ast + pos] = 0
 
-    def step(self, st: dict, dt_years: float) -> np.ndarray:
-        """Einen Frame auf dem residenten Zustand rechnen.
+    def export_f64(self, st: dict) -> np.ndarray:
+        """Exakten f64-Zustand [x|y|vx|vy] (4n) in Originalreihenfolge
+        exportieren — fuer die Engine-Uebergabe (Film-Stop/Dump)."""
+        n = st["N"]
+        m = st["m"]
+        out4 = np.empty(4 * n, dtype="<f8")
+        for sh in st["shards"]:
+            n_ast = sh["n_ast"]
+            with cp.cuda.Device(sh["dev"]):
+                f64 = cp.asnumpy(sh["f64"])
+            sa = sh["a_idx_h"]
+            base = 5 * n_ast
+            for f in range(4):
+                out4[f * n + sa] = f64[f * n_ast:(f + 1) * n_ast]
+            if sh["gpu_id"] == 0:
+                mi = st["m_idx_h"]
+                for f in range(4):
+                    out4[f * n + mi] = f64[base + f * m:base + (f + 1) * m]
+        return out4
 
-        Rueckgabe: f32-Array [x|y|vx|vy] in Originalreihenfolge des Clients
-        (kompakt fuers Rendering
-        die f64-Wahrheit bleibt auf der GPU).
-        """
-        if st is None:
-            raise ValueError("kein Zustand geladen — FULL-Frame noetig")
-        with cp.cuda.Device(self.device):
-            n_ast, m, g_f64 = st["n_ast"], st["m"], st["f64"]
-            o = 0
-            g_ax  = g_f64[o:o + n_ast]
-            o += n_ast
-            g_ay  = g_f64[o:o + n_ast]
-            o += n_ast
-            g_avx = g_f64[o:o + n_ast]
-            o += n_ast
-            g_avy = g_f64[o:o + n_ast]
-            o += n_ast
-            g_am  = g_f64[o:o + n_ast]
-            o += n_ast
-            g_mx  = g_f64[o:o + m]
-            o += m
-            g_my  = g_f64[o:o + m]
-            o += m
-            g_mvx = g_f64[o:o + m]
-            o += m
-            g_mvy = g_f64[o:o + m]
-            o += m
-            g_mm  = g_f64[o:o + m]
-            o += m
-            g_avis = st["vis"][:n_ast]
-            g_mvis = st["vis"][n_ast:]
-            g_aaccx, g_aaccy = st["aaccx"], st["aaccy"]
-            g_maccx, g_maccy = st["maccx"], st["maccy"]
-            g_backx, g_backy = st["backx"], st["backy"]
-            # CuPy klemmt das Grid bei Cooperative Launches selbst auf das
-            # Residenz-Limit — der Grid-Stride-Loop im Kernel deckt den Rest.
-            grid = max(1, (n_ast + self._block - 1) // self._block)
-            self._kern(
-                (grid,), (self._block,),
-                (g_ax, g_ay, g_avx, g_avy, g_aaccx, g_aaccy, g_am, g_avis,
-                 g_mx, g_my, g_mvx, g_mvy, g_mm, g_mvis,
-                 g_maccx, g_maccy, g_backx, g_backy,
-                 st["ctrl"],
-                 cp.int32(n_ast), cp.int32(m),
-                 cp.float64(G_AU), cp.float64(SOFTENING),
-                 cp.float64(dt_years), cp.float64(MAX_SUB_DT_YEARS),
-                 cp.int32(MAX_SUB_STEPS_PER_FRAME),
-                 cp.float64(YOSHIDA_W1), cp.float64(YOSHIDA_W0)))
 
-            # Ausgabe fuer den Client: f32 [x|y|vx|vy] in Originalreihenfolge,
-            # auf der GPU per Scatter zusammengesetzt, EIN D2H-Transfer.
-            # Die f64-Wahrheit bleibt resident auf der Karte.
-            n = st["N"]
-            out = st["out_f32"]
-            ga, gm = st["a_idx"], st["m_idx"]
-            f32 = cp.float32
-            xs = out[0:n]
-            ys = out[n:2*n]
-            vxs = out[2*n:3*n]
-            vys = out[3*n:4*n]
-            xs[ga] = g_ax.astype(f32)
-            xs[gm] = g_mx.astype(f32)
-            ys[ga] = g_ay.astype(f32)
-            ys[gm] = g_my.astype(f32)
-            vxs[ga] = g_avx.astype(f32)
-            vxs[gm] = g_mvx.astype(f32)
-            vys[ga] = g_avy.astype(f32)
-            vys[gm] = g_mvy.astype(f32)
-            return cp.asnumpy(out)
+def _device_view_of_host(host_ptr: int, nbytes: int, device: int):
+    """Gemappten Host-Speicher als Device-Pointer der jeweiligen Karte
+    ansprechen (zero-copy ueber PCIe) — Traeger der System-Barrier.
+    Unter UVA (64-bit, alle modernen Karten) ist der Host-Pointer eines
+    cudaHostAlloc(Portable|Mapped)-Bereichs direkt als Device-Pointer
+    gueltig — cudaHostGetDevicePointer waere ein No-op."""
+    with cp.cuda.Device(device):
+        mem = cp.cuda.UnownedMemory(host_ptr, nbytes, owner=None)
+        return cp.ndarray((nbytes // 8,), dtype=cp.float64,
+                          memptr=cp.cuda.MemoryPointer(mem, 0))

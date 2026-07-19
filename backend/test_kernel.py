@@ -10,7 +10,7 @@ import time
 import numpy as np
 
 from nbody_kernel import (G_AU, MAX_SUB_DT_YEARS, SOFTENING, YOSHIDA_W0,
-                          YOSHIDA_W1, NBodyCuda, pick_device)
+                          YOSHIDA_W1, NBodyCuda, pick_device, pick_devices)
 
 
 def reference_advance(dt_years, x, y, vx, vy, mass, visible, is_ast):
@@ -154,21 +154,57 @@ def main() -> None:
     print(f"Delta-Update trifft korrekte Slots: {ok}")
     assert ok, "Delta-Scatter fehlerhaft!"
 
-    # --- Benchmark: Tage/s wie im Browser-Vergleich (dt=50 Tage/Frame)
-    for n_ast in (7000, 50000, 200000):
-        state = make_system(n_ast)
-        dtf = 50 / 365.25
-        st = sim.load_state(*state)
-        sim.step(st, dtf)                    # Warmup
-        t0 = time.perf_counter()
-        frames = 20
-        for _ in range(frames):
-            sim.step(st, dtf)
-        secs = time.perf_counter() - t0
-        days_per_sec = frames * 50 / secs
-        ms = secs / frames * 1000
-        print(f"N={n_ast:7d}: {ms:7.1f} ms/Frame (dt=50 Tage) "
-              f"→ {days_per_sec:7.0f} Tage/s  (JS-Worker N=7000: ~290)")
+    # --- Batch-Sampling: K=4 Raster in einem Launch == 4 einzelne Steps
+    state = make_system(500)
+    n = len(state[0])
+    raster = 0.5 / 365.25
+    st1 = sim.load_state(*state)
+    st2 = sim.load_state(*state)
+    batch = sim.step_batch(st1, raster, 4)
+    singles = [sim.step(st2, raster) for _ in range(4)]
+    err_b = max(np.max(np.abs(batch[i] - singles[i])) for i in range(4))
+    print(f"Batch(K=4) vs 4x Einzel-Step: max |Δ| = {err_b:.3e}")
+    assert err_b < 1e-6, "Batch-Sampling weicht ab!"
+
+    # --- Multi-GPU: 2er- und 3er-Verbund gegen dieselbe CPU-Referenz
+    devs = pick_devices()
+    for ng in (2, 3):
+        if len(devs) < ng:
+            print(f"({ng}-GPU-Test uebersprungen: nur {len(devs)} "
+                  f"Physik-GPUs)")
+            continue
+        simg = NBodyCuda(devs[:ng])
+        state = make_system(2000)
+        n = len(state[0])
+        stg = simg.load_state(*state)
+        outg = simg.step(stg, 5 / 365.25)
+        rx, ry, rvx, rvy = reference_advance(5 / 365.25, *state)
+        gx, gy = outg[0:n], outg[n:2*n]
+        gvx, gvy = outg[2*n:3*n], outg[3*n:4*n]
+        e_p = np.max(np.abs(np.concatenate([gx - rx, gy - ry])))
+        e_v = np.max(np.abs(np.concatenate([gvx - rvx, gvy - rvy])))
+        print(f"{ng} GPUs ({simg.name()}): max |Δpos| = {e_p:.3e}, "
+              f"max |Δvel| = {e_v:.3e}")
+        assert e_p < 5e-6 and e_v < 5e-6, f"{ng}-GPU-Physik weicht ab!"
+
+    # --- Benchmark: Tage/s (dt=50 Tage/Frame), 1 GPU vs voller Verbund
+    for label, simb in (("1 GPU", sim),
+                        (f"{len(devs)} GPUs", NBodyCuda(devs))
+                        if len(devs) > 1 else (("1 GPU", sim),)):
+        for n_ast in (7000, 50000, 200000):
+            state = make_system(n_ast)
+            dtf = 50 / 365.25
+            st = simb.load_state(*state)
+            simb.step(st, dtf)                    # Warmup
+            t0 = time.perf_counter()
+            frames = 20
+            for _ in range(frames):
+                simb.step(st, dtf)
+            secs = time.perf_counter() - t0
+            days_per_sec = frames * 50 / secs
+            ms = secs / frames * 1000
+            print(f"{label} N={n_ast:7d}: {ms:7.1f} ms/Frame "
+                  f"→ {days_per_sec:7.0f} Tage/s")
 
 
 if __name__ == "__main__":

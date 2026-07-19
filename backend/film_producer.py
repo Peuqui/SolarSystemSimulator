@@ -41,9 +41,30 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
 
     import cupy as cp
 
-    from nbody_kernel import G_AU, NBodyCuda, pick_device
+    from concurrent.futures import ThreadPoolExecutor
 
-    sim = NBodyCuda(pick_device())
+    from nbody_kernel import (G_AU, NBodyCuda, pick_detect_device,
+                              pick_devices)
+
+    # Multi-GPU lohnt erst, wenn die Rechenlast den Barrier-Overhead
+    # (~PCIe-Roundtrips pro Substep) klar uebersteigt — gemessen ab
+    # ~30k Asteroiden. Darunter ist die beste Einzelkarte schneller.
+    n_ast_total = int(np.count_nonzero(
+        np.asarray(state["isAst"], dtype=np.uint8)))
+    phys_devs = pick_devices() if n_ast_total >= 30000 \
+        else pick_devices()[:1]
+    sim = NBodyCuda(phys_devs)
+    # Kollisions-/Bounce-Erkennung auf die zweitbeste f64-GPU auslagern:
+    # sie laeuft dann UEBERLAPPT mit dem naechsten Kernel-Step (Pipeline).
+    # Preis: Erkennungs-Ergebnisse von Sample k werden erst vor Step k+2
+    # angewandt (1 Raster Versatz) — feiner als der Live-JS-Algo, der
+    # Kollisionen einmal pro Frame (oft 1-2 Tage) aufloest. Ohne zweite
+    # GPU laeuft die Analyse im selben Muster auf der Physik-GPU.
+    det_dev = pick_detect_device(phys_devs)
+    ana_dev = det_dev if det_dev is not None else sim.device
+    print(f"[film] physik auf gpus {phys_devs}, erkennung auf gpu "
+          f"{ana_dev}" + (" (pipelined)" if det_dev is not None else
+                          " (seriell, keine weitere gpu)"), flush=True)
     x = state["x"]
     y = state["y"]
     vx = state["vx"]
@@ -54,17 +75,17 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     is_ast = np.array(state["isAst"], dtype=np.uint8, copy=True) != 0
     st = sim.load_state(x, y, vx, vy, mass, vis, state["isAst"])
     n = len(x)
-    pad = (-n) % 4
-    mass_f32 = mass.astype("<f4").tobytes()
-    vis_pad = vis.tobytes() + b"\x00" * pad
     collisions = 0
     dt_years = raster_days / 365.25
 
-    with cp.cuda.Device(sim.device):
-        g_vis = cp.asarray(vis)
-        g_rr = cp.asarray(real_r.astype(np.float32))
+    with cp.cuda.Device(ana_dev):
         g_ast = cp.asarray(is_ast)
-        g_prev = None
+        prev_det = None          # voriges Sample (fuer den Merge-Sweep)
+        g_vis_det = cp.asarray(vis)
+        g_rr_det = cp.asarray(real_r.astype(np.float32))
+    # vis/real_r aendern sich nur bei Merges/Kills — nur dann neu auf die
+    # Erkennungs-GPU laden statt bei jedem Sample (spart 2 H2D/Sample).
+    det_dirty = [False]
 
     shm = shared_memory.SharedMemory(name=shm_name)
     buf = shm.buf
@@ -77,56 +98,40 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         # Exakten f64-Zustand (Originalreihenfolge) fuer die Uebergabe an
         # andere Engines exportieren — sonst verlieren alle Koerper beim
         # Verlassen des Film-Modus ihren Impuls (Samples tragen nur x,y).
-        f64 = cp.asnumpy(st["f64"])
-        a_idx = st["a_idx_h"]
-        m_idx = st["m_idx_h"]
-        na = len(a_idx)
-        m = len(m_idx)
-        base = 5 * na
-        out4 = np.empty(4 * n, dtype="<f8")
-        for f in range(4):
-            out4[f * n + a_idx] = f64[f * na:(f + 1) * na]
-            out4[f * n + m_idx] = f64[base + f * m:base + (f + 1) * m]
+        out4 = sim.export_f64(st).astype("<f8")
         dump_shm.buf[0:out4.nbytes] = out4.tobytes()
 
     import struct as _struct
 
-    def emit_event(a: int, b: int, new_mass: float, kind: int = 0) -> None:
+    def emit_event(a: int, b: int, new_mass: float, kind: int,
+                   k_ev: int) -> None:
         # Merge/Kill/Bounce als Ereignis in den Event-Ring — Samples selbst
-        # tragen nur noch Positionen (reines Punkte-Streaming).
+        # tragen nur noch Positionen (reines Punkte-Streaming). k_ev ist
+        # der Sample-Zaehler der ANALYSE (Pipeline: Anwendung 1 spaeter).
         i = ev_count_val.value % ev_cap
-        t_ev = t0_days + (k + 1) * raster_days
+        t_ev = t0_days + (k_ev + 1) * raster_days
         ev_buf[i * EV_BYTES:(i + 1) * EV_BYTES] = _struct.pack(
             "<dIIfI", t_ev, a & 0xFFFFFFFF, b, new_mass, kind)
         ev_count_val.value += 1
 
-    def detect_and_merge(sample: np.ndarray) -> None:
-        nonlocal collisions, mass_f32, vis_pad, g_prev
-        st_local = st
-        sx = sample[0:n]
-        sy = sample[n:2 * n]
-        svx = sample[2 * n:3 * n]
-        svy = sample[3 * n:4 * n]
+    def analyze_merge(sx, sy, gx, gy, gvx, gvy, g_vis_a, g_rr_a):
+        """Merge-Kandidaten + Runaways auf der Erkennungs-GPU bestimmen.
+        Reine Analyse — mutiert nichts; Anwendung im Hauptloop."""
+        nonlocal prev_det
         hit_pairs = []
         runaway_np = None
         m_alive = np.empty(0, dtype=np.int64)
-        with cp.cuda.Device(sim.device):
-            g = st_local["out_f32"]
-            gx = g[0:n]
-            gy = g[n:2 * n]
-            gvx = g[2 * n:3 * n]
-            gvy = g[3 * n:4 * n]
-            px, py = (gx, gy) if g_prev is None else \
-                (g_prev[0:n], g_prev[n:2 * n])
-            m_idx_all = st_local["m_idx_h"]
+        if True:
+            px, py = (gx, gy) if prev_det is None else prev_det
+            m_idx_all = st["m_idx_h"]
             m_alive = m_idx_all[(vis[m_idx_all] != 0) & (mass[m_idx_all] > 0)]
             if len(m_alive):
                 gm = cp.asarray(m_alive)
                 cx = gx[gm][:, None]
                 cy = gy[gm][:, None]
-                rsum = g_rr[gm][:, None] + g_rr[None, :]
+                rsum = g_rr_a[gm][:, None] + g_rr_a[None, :]
                 rsum2 = rsum * rsum
-                alive = g_vis != 0
+                alive = g_vis_a != 0
 
                 def seg_hit(p0x, p0y, p1x, p1y):
                     ssx = (p1x - p0x)[None, :]
@@ -159,15 +164,25 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                                    cp.float32(1e-6))
                     v2 = gvx * gvx + gvy * gvy
                     vesc2 = cp.float32(2.0 * G_AU * msum) / r
-                    runaway = (v2 > 9.0 * vesc2) & g_ast & (g_vis != 0)
+                    runaway = (v2 > 9.0 * vesc2) & g_ast & (g_vis_a != 0)
                     ridx = cp.flatnonzero(runaway)
                     if ridx.size:
                         runaway_np = cp.asnumpy(ridx)
-            g_prev = g.copy()
+            prev_det = (gx.copy(), gy.copy())
+        pairs = [(int(m_alive[row]), int(j)) for row, j in hit_pairs]
+        return pairs, runaway_np
+
+    def apply_merges(sample, pairs, runaway_np, k_ev):
+        """Merge-/Kill-Ergebnisse der Analyse auf den residenten Zustand
+        (Physik-GPU) und die Host-Spiegel anwenden."""
+        nonlocal collisions
+        st_local = st
+        sx = sample[0:n]
+        sy = sample[n:2 * n]
+        svx = sample[2 * n:3 * n]
+        svy = sample[3 * n:4 * n]
         changed = False
-        for row, j in hit_pairs:
-            mi = int(m_alive[row])
-            j = int(j)
+        for mi, j in pairs:
             if not vis[mi] or not vis[j] or mass[mi] <= 0:
                 continue
             a, b = (mi, j) if mass[mi] >= mass[j] else (j, mi)
@@ -185,10 +200,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             mass[b] = 0.0
             vis[b] = 0
             real_r[a] = (real_r[a] ** 3 + real_r[b] ** 3) ** (1.0 / 3.0)
-            with cp.cuda.Device(sim.device):
-                g_vis[b] = 0
-                g_rr[a] = np.float32(real_r[a])
-            emit_event(a, b, float(m_ges))
+            emit_event(a, b, float(m_ges), 0, k_ev)
             collisions += 1
             changed = True
         if runaway_np is not None:
@@ -199,37 +211,32 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 sim.deactivate_body(st_local, j)
                 mass[j] = 0.0
                 vis[j] = 0
-                with cp.cuda.Device(sim.device):
-                    g_vis[j] = 0
-                emit_event(0xFFFFFFFF, j, 0.0)   # reiner Kill (Numerik-Waechter)
+                emit_event(0xFFFFFFFF, j, 0.0, 0, k_ev)   # Numerik-Waechter
                 collisions += 1
                 changed = True
         if changed:
             coll_val.value = collisions
+            det_dirty[0] = True
 
     BOUNCE_E = 0.6            # Restitution (wie BOUNCE_RESTITUTION im JS)
     bounce_count = 0
 
-    def detect_ast_bounce(sample: np.ndarray) -> None:
+    def analyze_bounce(gx32, gy32, gvx32, gvy32, g_vis_a, g_rr_a):
         """Asteroid-x-Asteroid-Stoesse nach dem bisherigen Algo (Bounce,
         Restitution 0,6, Ein-Stoss pro Sample, Ueberlapp-Aufloesung 1,1x).
-        Kandidaten + Swept-Check laufen KOMPLETT AUF DER GPU (CuPy auf dem
-        residenten out_f32) — die CPU-Variante kostete bei 100k Teilchen
-        mehr als der Physik-Kernel und liess die GPU bei 33% verhungern.
-        Nur die wenigen echten Treffer kommen zum Host."""
-        nonlocal bounce_count, collisions
+        Kandidaten + Swept-Check laufen auf der Erkennungs-GPU; Rueckgabe
+        sind die Treffer-Paare (Anwendung als Deltas im Hauptloop)."""
         dt_y = raster_days / 365.25
         hits_host = None
-        with cp.cuda.Device(sim.device):
-            g = st["out_f32"]
-            gx = g[0:n].astype(cp.float64)
-            gy = g[n:2 * n].astype(cp.float64)
-            gvx = g[2 * n:3 * n].astype(cp.float64)
-            gvy = g[3 * n:4 * n].astype(cp.float64)
-            g_alive = g_ast & (g_vis != 0)
+        if True:
+            gx = gx32.astype(cp.float64)
+            gy = gy32.astype(cp.float64)
+            gvx = gvx32.astype(cp.float64)
+            gvy = gvy32.astype(cp.float64)
+            g_alive = g_ast & (g_vis_a != 0)
             ai = cp.flatnonzero(g_alive)
             if int(ai.size) < 2:
-                return
+                return None
             axp = gx[ai]
             ayp = gy[ai]
             sp = cp.hypot(gvx[ai], gvy[ai])
@@ -256,8 +263,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                                cp.where(dv2 > 0, dv2, 1.0), 0.0, dt_y)
                 cxm = dpx + dvx_ * tmin
                 cym = dpy + dvy_ * tmin
-                rsum = g_rr[pi].astype(cp.float64) + \
-                    g_rr[pj].astype(cp.float64)
+                rsum = g_rr_a[pi].astype(cp.float64) + \
+                    g_rr_a[pj].astype(cp.float64)
                 hitm = cxm * cxm + cym * cym <= rsum * rsum
                 hidx = cp.flatnonzero(hitm)
                 return pi[hidx], pj[hidx]
@@ -294,10 +301,16 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                         hit_i_parts.append(hi_c)
                         hit_j_parts.append(hj_c)
             if not hit_i_parts:
-                return
+                return None
             hits_host = (cp.asnumpy(cp.concatenate(hit_i_parts)),
                          cp.asnumpy(cp.concatenate(hit_j_parts)))
-        # --- Host: Ein-Stoss-Filter, Impuls, Ueberlapp — wie im JS-Algo ---
+        return hits_host
+
+    def bounce_deltas(sample: np.ndarray, hits_host):
+        """Host-Teil des Bounce-Algos: Ein-Stoss-Filter, Impuls und
+        Ueberlapp-Push — wie im JS, aber als DELTAS (dx, dy, dvx, dvy),
+        weil die Anwendung pipelined ein Sample spaeter erfolgt."""
+        dt_y = raster_days / 365.25
         hi, hj = hits_host
         x = sample[0:n].astype(np.float64)
         y = sample[n:2 * n].astype(np.float64)
@@ -314,7 +327,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             used[b_i] = True
             keep_idx.append(t_i)
         if not keep_idx:
-            return
+            return None
         keep_idx = np.asarray(keep_idx)
         hi = hi[keep_idx].astype(np.int64)
         hj = hj[keep_idx].astype(np.int64)
@@ -334,7 +347,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         vrel = dvx_ * nx_ + dvy_ * ny_
         act = vrel < 0
         if not act.any():
-            return
+            return None
         hi = hi[act]
         hj = hj[act]
         nx_ = nx_[act]
@@ -345,10 +358,14 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         with np.errstate(divide="ignore", invalid="ignore"):
             imp = -(1.0 + BOUNCE_E) * vrel / (1.0 / mi_ + 1.0 / mj_)
         imp = np.nan_to_num(imp)
-        vxa[hi] -= imp * nx_ / mi_
-        vya[hi] -= imp * ny_ / mi_
-        vxa[hj] += imp * nx_ / mj_
-        vya[hj] += imp * ny_ / mj_
+        ddx = np.zeros(n)
+        ddy = np.zeros(n)
+        ddvx = np.zeros(n)
+        ddvy = np.zeros(n)
+        ddvx[hi] -= imp * nx_ / mi_
+        ddvy[hi] -= imp * ny_ / mi_
+        ddvx[hj] += imp * nx_ / mj_
+        ddvy[hj] += imp * ny_ / mj_
         pdx = x[hj] - x[hi]
         pdy = y[hj] - y[hi]
         pdist = np.hypot(pdx, pdy)
@@ -364,14 +381,21 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             wa = mass[oj] / mges
             wb = mass[oi] / mges
             shift = overlap[ol] * 1.1
-            x[oi] -= pnx * shift * wa
-            y[oi] -= pny * shift * wa
-            x[oj] += pnx * shift * wb
-            y[oj] += pny * shift * wb
+            ddx[oi] -= pnx * shift * wa
+            ddy[oi] -= pny * shift * wa
+            ddx[oj] += pnx * shift * wb
+            ddy[oj] += pny * shift * wb
         betroffen = np.unique(np.concatenate([hi, hj]))
-        vals = np.stack([x[betroffen], y[betroffen],
-                         vxa[betroffen], vya[betroffen]], axis=1)
-        sim.apply_updates(st, betroffen.astype(np.int64), vals)
+        deltas = np.stack([ddx[betroffen], ddy[betroffen],
+                           ddvx[betroffen], ddvy[betroffen]], axis=1)
+        return hi, hj, betroffen.astype(np.int64), deltas
+
+    def apply_bounce(res_bounce, k_ev):
+        """Bounce-Deltas auf den residenten Zustand (Physik-GPU) und die
+        Ereignisse/Zaehler anwenden."""
+        nonlocal bounce_count, collisions
+        hi, hj, betroffen, deltas = res_bounce
+        sim.apply_deltas(st, betroffen, deltas)
         # Jeder Bounce zaehlt wie in den Live-Engines als Kollision und
         # geht als kind=1-Ereignis an den Client (Zaehler + Blitz), ohne
         # dass ein Koerper stirbt. a = schwererer (Flash-Track wie im JS).
@@ -380,13 +404,62 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             b_i = int(hj[t_i])
             heavy, light = (a_i, b_i) if mass[a_i] >= mass[b_i] \
                 else (b_i, a_i)
-            emit_event(heavy, light, 0.0, kind=1)
+            emit_event(heavy, light, 0.0, 1, k_ev)
         collisions += len(hi)
         coll_val.value = collisions
         bounce_count += len(hi)
 
+    def analyze_batch(outs: np.ndarray, k0: int) -> list:
+        # Alle K Samples des Batches sequenziell analysieren (der
+        # Pipeline-Thread hat sie als Host-Kopien) — Ergebnisse werden
+        # gesammelt im Hauptloop angewandt.
+        return [analyze_sample(outs[i], k0 + i) for i in range(len(outs))]
+
+    def analyze_sample(out_np: np.ndarray, k_ev: int) -> dict:
+        """Komplette Erkennung eines Samples auf der Erkennungs-GPU —
+        laeuft im Pipeline-Thread, mutiert nichts. vis/mass/real_r werden
+        hier nur GELESEN; der Hauptloop mutiert sie erst nach dem
+        Einsammeln des Ergebnisses (keine Gleichzeitigkeit)."""
+        nonlocal g_vis_det, g_rr_det
+        with cp.cuda.Device(ana_dev):
+            gx = cp.asarray(out_np[0:n])
+            gy = cp.asarray(out_np[n:2 * n])
+            gvx = cp.asarray(out_np[2 * n:3 * n])
+            gvy = cp.asarray(out_np[3 * n:4 * n])
+            if det_dirty[0]:
+                g_vis_det = cp.asarray(vis)
+                g_rr_det = cp.asarray(real_r.astype(np.float32))
+                det_dirty[0] = False
+            g_vis_a = g_vis_det
+            g_rr_a = g_rr_det
+            pairs, runaway_np = analyze_merge(
+                out_np[0:n], out_np[n:2 * n],
+                gx, gy, gvx, gvy, g_vis_a, g_rr_a)
+            hits = analyze_bounce(gx, gy, gvx, gvy, g_vis_a, g_rr_a) \
+                if ast_bounce else None
+        bounce = bounce_deltas(out_np, hits) if hits is not None else None
+        return {"k": k_ev, "sample": out_np, "pairs": pairs,
+                "runaways": runaway_np, "bounce": bounce}
+
+    def apply_analysis(res: dict) -> None:
+        apply_merges(res["sample"], res["pairs"], res["runaways"], res["k"])
+        if res["bounce"] is not None:
+            apply_bounce(res["bounce"], res["k"])
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = None
+    # Batch-Groesse: K Raster pro Kernel-Launch. Erkennungs-Ergebnisse
+    # werden nach dem Batch angewandt — mit K=4 (2 Tage) entspricht der
+    # Versatz dem Live-Verhalten (Kollisionsaufloesung 1x pro Frame).
+    K = 4
     try:
         while running_val.value:
+            # Pipeline: Erkennungs-Ergebnisse des VORIGEN Batches
+            # einsammeln und anwenden, bevor der naechste Launch startet.
+            if future is not None:
+                for res in future.result():
+                    apply_analysis(res)
+                future = None
             if dump_req_val.value == 1:
                 dump_state()
                 dump_req_val.value = 2
@@ -396,19 +469,20 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             # 70% des Rings als Vorlauf, 30% bleiben Rueckspul-Historie —
             # sonst frisst die Eviction sich bis an den Playhead heran
             # und der Player reitet stotternd auf der Abbruchkante.
-            if k - ph_abs >= int(capacity * 0.7):
+            if k + K - ph_abs >= int(capacity * 0.7):
                 time.sleep(0.01)
                 continue
-            out = sim.step(st, dt_years)
-            detect_and_merge(out)
-            if ast_bounce:
-                detect_ast_bounce(out)
+            outs = sim.step_batch(st, dt_years, K)
+            # Erkennung laeuft UEBERLAPPT auf der Erkennungs-GPU, waehrend
+            # die Physik-GPUs schon den naechsten Batch rechnen.
+            future = executor.submit(analyze_batch, outs, k)
             # Reines Punkte-Streaming: nur x|y (8 Bytes/Koerper) — alles
             # andere (Masse/Sichtbarkeit) laeuft als Ereignis.
-            sample = out[0:2 * n].tobytes()
-            slot = k % capacity
-            buf[slot * sample_bytes:(slot + 1) * sample_bytes] = sample
-            k += 1
+            for i in range(K):
+                slot = (k + i) % capacity
+                buf[slot * sample_bytes:(slot + 1) * sample_bytes] = \
+                    outs[i][0:2 * n].tobytes()
+            k += K
             head_val.value = k
             if ast_bounce and k % 500 == 0 and bounce_count:
                 print(f"[film] {bounce_count} asti-bounces nach "
@@ -416,6 +490,10 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     finally:
         # Letzter Zustand fuer die Engine-Uebergabe, dann sauber schliessen
         try:
+            if future is not None:
+                for res in future.result():
+                    apply_analysis(res)
+            executor.shutdown(wait=False)
             dump_state()
             dump_req_val.value = 2
         except Exception:
