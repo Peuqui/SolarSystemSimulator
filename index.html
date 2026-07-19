@@ -2388,17 +2388,34 @@ let _starPattern = null;
 let _baryDirty = true;
 let _baryCacheX = 0, _baryCacheY = 0;
 
-let _baryFilmMs = 0;
+let _barySlice = null;   // haeppchenweise Film-Summe (kein Frame-Spike)
 function barycenter() {
   if (!_baryDirty) return [_baryCacheX, _baryCacheY];
-  // Film-Modus setzt _baryDirty jeden Frame — die volle O(N)-Summe bei
-  // 250k Koerpern kostete ~13% der Frame-Zeit. 150-ms-Aktualitaet reicht
-  // auch fuer die Schwerpunkt-Zentrierung: der Gesamtimpuls ist ~0, der
-  // Schwerpunkt wandert traege — Kamera-Spruenge sind unmerklich.
+  // Film-Modus: die volle O(N)-Summe kostete bei 270k Koerpern ~40 ms —
+  // als 150-ms-Cache war das ein periodischer RUCKLER. Stattdessen wird
+  // die Summe in 32k-Happen ueber die Frames verteilt und das Ergebnis
+  // nach jeder Vollrunde uebernommen (escapeScore-Filter/Rogues sind im
+  // Film ungepflegt/leer — die einfache Masse-Summe ist dort identisch).
   if (typeof filmActive !== 'undefined' && filmActive) {
-    const now = performance.now();
-    if (now - _baryFilmMs < 150) return [_baryCacheX, _baryCacheY];
-    _baryFilmMs = now;
+    if (!_barySlice || _barySlice.n !== bodies.length) {
+      _barySlice = { n: bodies.length, i: 0, mx: 0, my: 0, mt: 0 };
+    }
+    const sl = _barySlice;
+    const ende = Math.min(sl.n, sl.i + 32768);
+    for (let i = sl.i; i < ende; i++) {
+      const b = bodies[i];
+      if (!b.visible) continue;
+      sl.mx += b.mass * b.x; sl.my += b.mass * b.y; sl.mt += b.mass;
+    }
+    sl.i = ende;
+    if (sl.i >= sl.n) {
+      if (sl.mt > 0) {
+        _baryCacheX = sl.mx / sl.mt;
+        _baryCacheY = sl.my / sl.mt;
+      }
+      sl.i = 0; sl.mx = 0; sl.my = 0; sl.mt = 0;
+    }
+    return [_baryCacheX, _baryCacheY];
   }
   let mx = 0, my = 0, mt = 0;            // Hauptsystem mit escapeScore-Filter
   let mxR = 0, myR = 0, mtR = 0;         // Hauptsystem OHNE Filter (Fallback)
@@ -2718,6 +2735,33 @@ function renderAsteroidsGL() {
   // Canvas immer clearen (sonst bleibt der alte Frame).
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
+  // Film-Direktpfad: filmApply hat das Vertex-Array schon gepackt —
+  // nur hochladen und zeichnen, kein Objekt-Loop.
+  if (filmActive && _filmVtxCount >= 0) {
+    if (_filmVtxCount === 0) return true;
+    const bytes = _filmVtxCount * 5 * 4;
+    gl.bindBuffer(gl.ARRAY_BUFFER, astGL.buffer);
+    if (astGL.vertexData.byteLength < bytes) {
+      let sz = astGL.vertexData.length;
+      while (sz * 4 < bytes) sz *= 2;
+      astGL.vertexData = new Float32Array(sz);
+      gl.bufferData(gl.ARRAY_BUFFER, astGL.vertexData.byteLength,
+                    gl.DYNAMIC_DRAW);
+    }
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, _filmVtx, 0, _filmVtxCount * 5);
+    gl.useProgram(astGL.program);
+    gl.enableVertexAttribArray(astGL.loc.aPos);
+    gl.enableVertexAttribArray(astGL.loc.aColor);
+    gl.vertexAttribPointer(astGL.loc.aPos,   2, gl.FLOAT, false, 20, 0);
+    gl.vertexAttribPointer(astGL.loc.aColor, 3, gl.FLOAT, false, 20, 8);
+    gl.uniform3f(astGL.loc.uCamera, cam.cx, cam.cy, cam.zoom * 80);
+    gl.uniform2f(astGL.loc.uView, viewCX, H / 2);
+    gl.uniform2f(astGL.loc.uScreen, W, H);
+    gl.uniform1f(astGL.loc.uLogZoom, useLogZoom ? 1 : 0);
+    gl.uniform1f(astGL.loc.uInvLog33, _INV_LOG_33);
+    gl.drawArrays(gl.POINTS, 0, _filmVtxCount);
+    return true;
+  }
   // Obere Schranke statt Vorab-Zaehl-Loop — der kostete bei 250k
   // Koerpern einen kompletten zweiten Property-Read-Durchlauf pro Frame.
   const need = bodies.length * 5;   // pro Vertex: x, y, r, g, b
@@ -3077,19 +3121,27 @@ function draw() {
   // Zugleich Color-Revert: Asteroiden, deren _colorRevertAt abgelaufen ist,
   // bekommen ihre Original-Farbe zurueck (Cache invalidieren, naechster
   // GL-Render parsed das beige zurueck).
+  // Nur die aktive Marker-Liste scannen — der fruehere Scan ueber ALLE
+  // Koerper kostete bei 250k mehrere ms pro Frame.
   const _bounceNow = performance.now();
-  for (let i = 0; i < bodies.length; i++) {
-    const b = bodies[i];
-    if (!b.visible || !b.isAsteroid) continue;
-    if (b._colorRevertAt && _bounceNow >= b._colorRevertAt && b._origColor) {
-      b.color = b._origColor;
-      b._glColor = null;
-      b._origColor = null;
-      b._colorRevertAt = 0;
+  for (let mi = _bounceMarked.length - 1; mi >= 0; mi--) {
+    const b = _bounceMarked[mi];
+    let fertigFarbe = true;
+    if (b._colorRevertAt && b._origColor) {
+      if (_bounceNow >= b._colorRevertAt) {
+        b.color = b._origColor;
+        b._glColor = null;
+        b._origColor = null;
+        b._colorRevertAt = 0;
+      } else fertigFarbe = false;
     }
-    if (!b._bounceFlash) continue;
-    const age = _bounceNow - b._bounceFlash;
-    if (age > BOUNCE_FLASH_MS) continue;
+    const age = b._bounceFlash ? _bounceNow - b._bounceFlash : Infinity;
+    if (fertigFarbe && age > BOUNCE_FLASH_MS) {
+      b._inMarkList = false;
+      _bounceMarked.splice(mi, 1);
+      continue;
+    }
+    if (!b.visible || age > BOUNCE_FLASH_MS) continue;
     const [sx, sy] = worldToScreen(b.x, b.y);
     if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
     const alpha = 1 - age / BOUNCE_FLASH_MS;
@@ -3104,8 +3156,13 @@ function draw() {
 
   // Bodies (Asteroiden werden uebersprungen — schon im Batch oben gezeichnet;
   // ausgenommen unbound-/Fokus-Marker, die einzeln gerendert bleiben).
+  // Ohne Flucht-Markierung/Asti-Fokus interessieren hier nur die paar
+  // massiven Koerper — der 250k-Scan mit 3 Property-Reads entfaellt.
+  const _astiSonderfaelle = astEscapeMark ||
+                            (focusBody && focusBody.isAsteroid);
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
+    if (b.isAsteroid && !_astiSonderfaelle) continue;
     if (!b.visible) continue;
     // Flucht-Asteroid nur dann einzeln (mit rotem Ring) zeichnen, wenn Markierung an;
     // sonst normal gebatcht — Erkennung laeuft trotzdem (fuer Aufraeumen).
@@ -3784,8 +3841,10 @@ function initCudaBackend(urlIndex = 0) {
           b: dv.getUint32(off + 12, true),
           mass: dv.getFloat32(off + 16, true),
           kind: dv.getUint32(off + 20, true),   // 0=merge/kill, 1=bounce
+          x: dv.getFloat32(off + 24, true),     // exakter Ereignis-Ort
+          y: dv.getFloat32(off + 28, true),
         });
-        off += 24;
+        off += 32;
       }
       while (filmQueue.times.length > 2 &&
              filmQueue.times[1] < filmPlayheadDays - 2 * filmRasterDays()) {
@@ -4251,6 +4310,8 @@ let _filmHandover = false;   // Engine-Uebergabe: warten bis f64-Dump da ist
 let _filmRestartPending = false;   // Film-Neustart wartet auf f64-Dump
 let _filmShatterPending = null;    // { a, b, t, x, y, vx, vy } (status=7)
 let _filmCollBase = 0;             // Zaehlerstand vor der aktuellen Session
+let _filmVtx = null;               // GL-Direktpfad: [x,y,r,g,b] aus filmApply
+let _filmVtxCount = -1;            // Punkte darin; -1 = Pfad inaktiv
 
 let _filmLastSubMs = 0;
 let _filmMetaTail = 0;       // Server-Puffergrenzen (aus jedem Push-Frame)
@@ -4282,26 +4343,61 @@ function filmApply(t) {
   const fx0 = b0.sx / 65535, fy0 = b0.sy / 65535;
   const fx1 = b1.sx / 65535, fy1 = b1.sy / 65535;
   _filmInView.fill(0);
+  // GL-Direktpfad: das Vertex-Array [x,y,r,g,b] wird HIER im Dekodier-
+  // Loop gepackt — renderAsteroidsGL laedt es nur noch hoch, statt pro
+  // Frame nochmal ueber alle Koerper-Objekte zu laufen (7 Property-
+  // Reads x 250k). Sichtfenster-Cull identisch zum GL-Pfad.
+  let vtx = null, vo = 0;
+  let wxMin = -Infinity, wxMax = Infinity, wyMin = -Infinity, wyMax = Infinity;
+  if (typeof astGL !== 'undefined' && astGL.enabled) {
+    const need = s0.idx.length * 5;
+    if (!_filmVtx || _filmVtx.length < need) {
+      let sz = _filmVtx ? _filmVtx.length : 4096 * 5;
+      while (sz < need) sz *= 2;
+      _filmVtx = new Float32Array(sz);
+    }
+    vtx = _filmVtx;
+    if (!useLogZoom) {
+      const kz = cam.zoom * 80;
+      const invK = 1 / kz;
+      wxMin = cam.cx - (viewCX + 2) * invK;
+      wxMax = cam.cx + (W - viewCX + 2) * invK;
+      wyMin = cam.cy - (H / 2 + 2) * invK;
+      wyMax = cam.cy + (H / 2 + 2) * invK;
+    }
+  }
+  const evVis = _filmEvVis;
   for (let m = 0; m < s0.idx.length; m++) {
     const ki = s0.idx[m];
     const b = filmRefs[ki];
     if (!b) continue;
     const x0 = b0.x0 + s0.qx[m] * fx0;
     const y0 = b0.y0 + s0.qy[m] * fy0;
+    let bx, by;
     const m1 = s1._pos[ki];
     if (m1 >= 0) {
-      b.x = x0 + (b1.x0 + s1.qx[m1] * fx1 - x0) * f;
-      b.y = y0 + (b1.y0 + s1.qy[m1] * fy1 - y0) * f;
+      bx = x0 + (b1.x0 + s1.qx[m1] * fx1 - x0) * f;
+      by = y0 + (b1.y0 + s1.qy[m1] * fy1 - y0) * f;
     } else {
-      b.x = x0;
-      b.y = y0;
+      bx = x0;
+      by = y0;
     }
+    b.x = bx;
+    b.y = by;
     _filmInView[ki] = 1;
+    if (vtx !== null && b.isAsteroid && evVis[ki] === 1 &&
+        bx >= wxMin && bx <= wxMax && by >= wyMin && by <= wyMax) {
+      let c = b._glColor;
+      if (!c) { c = _hexToRgb(b.color); b._glColor = c; }
+      vtx[vo++] = bx; vtx[vo++] = by;
+      vtx[vo++] = c[0]; vtx[vo++] = c[1]; vtx[vo++] = c[2];
+    }
   }
+  _filmVtxCount = vtx !== null ? (vo / 5) : -1;
   filmApplyEvents(t);
-  for (let k = 0; k < filmRefs.length; k++) {
-    filmRefs[k].visible = _filmEvVis[k] === 1;
-  }
+  // visible wird NUR noch bei Ereignis-Aenderungen gesetzt (in
+  // filmApplyEvents) — die fruehere Jeden-Frame-Schleife kostete bei
+  // 270k Koerpern 270k Objekt-Writes pro Frame.
 }
 
 // Merge/Kill-Ereignisse bis Zeitpunkt t anwenden — und beim Rueckspulen
@@ -4313,6 +4409,7 @@ function filmApplyEvents(t) {
     for (let k = 0; k < filmRefs.length; k++) {
       const b = filmRefs[k];
       _filmEvVis[k] = _filmBaseVis[k];
+      b.visible = _filmBaseVis[k] === 1;
       if (b.mass !== _filmBaseMass[k]) {
         b.mass = _filmBaseMass[k];
         b.radius = massToRadius(b.mass);
@@ -4336,10 +4433,10 @@ function filmApplyEvents(t) {
       const imBild = _filmInView && _filmInView[ev.a] === 1 &&
                      _filmInView[ev.b] === 1;
       if (ha && hb && imBild) _markBouncePair(ha, hb);
-      if (ha && hb && imBild && flashes < 8 &&
+      if (ha && hb && flashes < 8 &&
           collisionFlashes.length < 64) {
         collisionFlashes.push({
-          x: ha.x, y: ha.y,
+          x: ev.x, y: ev.y,          // exakter Ort vom Producer
           scale: Math.max(ha.realR || 0, hb.realR || 0),
           t: performance.now(),
           asteroid: true,
@@ -4350,7 +4447,10 @@ function filmApplyEvents(t) {
       changed = true;
       continue;
     }
-    if (ev.b < _filmEvVis.length) _filmEvVis[ev.b] = 0;
+    if (ev.b < _filmEvVis.length) {
+      _filmEvVis[ev.b] = 0;
+      if (filmRefs[ev.b]) filmRefs[ev.b].visible = false;
+    }
     let surv = null;
     if (ev.a !== 0xFFFFFFFF && ev.mass > 0) {
       surv = filmRefs[ev.a];
@@ -4363,17 +4463,19 @@ function filmApplyEvents(t) {
     // Engines. Gedeckelt auf 8 pro Frame, damit Scrub-Vorspulen (viele
     // Ereignisse auf einmal) den Canvas nicht mit Blitzen flutet.
     const loser = filmRefs[ev.b];
-    if (loser && _filmInView && _filmInView[ev.b] === 1 &&
-        flashes < 8 && collisionFlashes.length < 64) {
-      // Skala wie live: realR (nicht Display-Radius — der machte
-      // Riesen-Explosionen). Deckel 64 lebende Flashes: die Gradient-
-      // Kreise sind teuer und drueckten bei Event-Stuermen die FPS.
+    if (loser && flashes < 8 && collisionFlashes.length < 64) {
+      // Position: exakter Ereignis-Ort vom Producer — aus dem Stream
+      // ist er nicht rekonstruierbar (Opfer fehlt im Folge-Sample).
+      // Skala wie live: realR. Deckel 64 lebende Flashes (Gradient-
+      // Kreise sind teuer). track nur bei aktuell gestreamtem
+      // Ueberlebenden, sonst folgte der Flash einer stale Position.
       collisionFlashes.push({
-        x: loser.x, y: loser.y,
+        x: ev.x, y: ev.y,
         scale: Math.max(loser.realR || 0, surv ? surv.realR : 0),
         t: performance.now(),
         asteroid: loser.isAsteroid,
-        track: surv || null,
+        track: (surv && _filmInView && _filmInView[ev.a] === 1)
+                 ? surv : null,
       });
       flashes++;
     }
@@ -5192,9 +5294,12 @@ const BOUNCE_RESTITUTION = 0.6;
 // plus expandierender Ring-Flash. Original-Farbe einmalig sichern, damit
 // nach COLOR_REVERT_MS zurueckgewechselt wird. SSOT fuer Live-_bounce UND
 // Film-Bounce-Ereignisse (kind=1).
+let _bounceMarked = [];   // aktive Marker — draw scannt NUR diese Liste
 function _markBouncePair(a, b) {
   const heavy = a.mass >= b.mass ? a : b;
   const light = heavy === a ? b : a;
+  if (!heavy._inMarkList) { _bounceMarked.push(heavy); heavy._inMarkList = true; }
+  if (!light._inMarkList) { _bounceMarked.push(light); light._inMarkList = true; }
   if (!heavy._origColor) heavy._origColor = heavy.color;
   if (!light._origColor) light._origColor = light.color;
   heavy.color = '#3080ff';  heavy._glColor = null;

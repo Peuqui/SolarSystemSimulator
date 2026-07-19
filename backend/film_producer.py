@@ -24,8 +24,12 @@ import time
 import numpy as np
 
 
-EV_BYTES = 24    # Ereignis: f64 tTage | u32 a (Ueberlebender/0xFFFFFFFF) |
-#                  u32 b (Verlierer) | f32 neueMasse | u32 kind
+EV_BYTES = 32    # Ereignis: f64 tTage | u32 a (Ueberlebender/0xFFFFFFFF) |
+#                  u32 b (Verlierer) | f32 neueMasse | u32 kind |
+#                  f32 x | f32 y (exakter Ereignis-Ort — der Client kann
+#                  ihn NICHT aus dem Stream rekonstruieren: das Opfer
+#                  fehlt im Folge-Sample, seine interpolierte Position
+#                  stammt je nach Stream-Dichte von Tagen davor)
 #                  kind 0 = merge/kill (b verschwindet), 1 = bounce (nur
 #                  Zaehler + Visual, niemand stirbt)
 
@@ -109,14 +113,15 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     import struct as _struct
 
     def emit_event(a: int, b: int, new_mass: float, kind: int,
-                   k_ev: int) -> None:
+                   k_ev: int, ex: float, ey: float) -> None:
         # Merge/Kill/Bounce als Ereignis in den Event-Ring — Samples selbst
         # tragen nur noch Positionen (reines Punkte-Streaming). k_ev ist
         # der Sample-Zaehler der ANALYSE (Pipeline: Anwendung 1 spaeter).
         i = ev_count_val.value % ev_cap
         t_ev = t0_days + (k_ev + 1) * raster_days
         ev_buf[i * EV_BYTES:(i + 1) * EV_BYTES] = _struct.pack(
-            "<dIIfI", t_ev, a & 0xFFFFFFFF, b, new_mass, kind)
+            "<dIIfIff", t_ev, a & 0xFFFFFFFF, b, new_mass, kind,
+            float(ex), float(ey))
         ev_count_val.value += 1
 
     def analyze_merge(sx, sy, gx, gy, gvx, gvy, g_vis_a, g_rr_a):
@@ -227,7 +232,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             mass[b] = 0.0
             vis[b] = 0
             real_r[a] = (real_r[a] ** 3 + real_r[b] ** 3) ** (1.0 / 3.0)
-            emit_event(a, b, float(m_ges), 0, k_ev)
+            emit_event(a, b, float(m_ges), 0, k_ev, nx, ny)
             collisions += 1
             changed = True
         if runaway_np is not None:
@@ -238,7 +243,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 sim.deactivate_body(st_local, j)
                 mass[j] = 0.0
                 vis[j] = 0
-                emit_event(0xFFFFFFFF, j, 0.0, 0, k_ev)   # Numerik-Waechter
+                emit_event(0xFFFFFFFF, j, 0.0, 0, k_ev,
+                           float(sx[j]), float(sy[j]))   # Numerik-Waechter
                 collisions += 1
                 changed = True
         if changed:
@@ -256,17 +262,23 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         dt_y = raster_days / 365.25
         hits_host = None
         if True:
-            gx = gx32.astype(cp.float64)
-            gy = gy32.astype(cp.float64)
-            gvx = gvx32.astype(cp.float64)
-            gvy = gvy32.astype(cp.float64)
+            # VORFILTER komplett in f32 (auf der f64-schwachen
+            # Erkennungskarte ~30x schneller). Der Beruehrungsradius wird
+            # um mehr als den f32-Rundungsfehler (~3e-7 AU bei 5 AU)
+            # aufgeweitet — kein echter Treffer kann verloren gehen. Die
+            # wenigen Kandidaten werden danach exakt in f64 nachgeprueft.
+            gx = gx32
+            gy = gy32
+            gvx = gvx32
+            gvy = gvy32
+            F32_TOL = cp.float32(1e-6)
             g_alive = g_ast & (g_vis_a != 0)
             ai = cp.flatnonzero(g_alive)
             if int(ai.size) < 2:
                 return None
-            axp = gx[ai]
-            ayp = gy[ai]
-            sp = cp.hypot(gvx[ai], gvy[ai])
+            axp = gx[ai].astype(cp.float64)
+            ayp = gy[ai].astype(cp.float64)
+            sp = cp.hypot(gvx[ai], gvy[ai]).astype(cp.float64)
             h = max(1e-4, 2.0 * float(cp.percentile(sp, 95)) * dt_y)
             ix = cp.floor(axp / h).astype(cp.int64)
             iy = cp.floor(ayp / h).astype(cp.int64)
@@ -279,19 +291,19 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             ks = key[order]
 
             def sweep_hits(pi, pj):
-                # Swept-Ballistik-Check eines Kandidaten-Chunks; gibt die
-                # Treffer-Paare zurueck (Reihenfolge erhalten).
+                # f32-Vorfilter eines Kandidaten-Chunks: Beruehrung mit
+                # aufgeweitetem Radius; Reihenfolge bleibt erhalten.
                 dpx = gx[pj] - gx[pi]
                 dpy = gy[pj] - gy[pi]
                 dvx_ = gvx[pj] - gvx[pi]
                 dvy_ = gvy[pj] - gvy[pi]
                 dv2 = dvx_ * dvx_ + dvy_ * dvy_
                 tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
-                               cp.where(dv2 > 0, dv2, 1.0), 0.0, dt_y)
+                               cp.where(dv2 > 0, dv2, cp.float32(1.0)),
+                               cp.float32(0.0), cp.float32(dt_y))
                 cxm = dpx + dvx_ * tmin
                 cym = dpy + dvy_ * tmin
-                rsum = g_rr_a[pi].astype(cp.float64) + \
-                    g_rr_a[pj].astype(cp.float64)
+                rsum = g_rr_a[pi] + g_rr_a[pj] + F32_TOL
                 hitm = cxm * cxm + cym * cym <= rsum * rsum
                 hidx = cp.flatnonzero(hitm)
                 return pi[hidx], pj[hidx]
@@ -329,8 +341,30 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                         hit_j_parts.append(hj_c)
             if not hit_i_parts:
                 return None
-            hits_host = (cp.asnumpy(cp.concatenate(hit_i_parts)),
-                         cp.asnumpy(cp.concatenate(hit_j_parts)))
+            # Exakte f64-Nachpruefung NUR der Vorfilter-Kandidaten
+            # (wenige tausend statt Millionen Paare).
+            ci = cp.concatenate(hit_i_parts)
+            cj = cp.concatenate(hit_j_parts)
+            x64i = gx[ci].astype(cp.float64)
+            y64i = gy[ci].astype(cp.float64)
+            x64j = gx[cj].astype(cp.float64)
+            y64j = gy[cj].astype(cp.float64)
+            dvx_ = gvx[cj].astype(cp.float64) - gvx[ci].astype(cp.float64)
+            dvy_ = gvy[cj].astype(cp.float64) - gvy[ci].astype(cp.float64)
+            dpx = x64j - x64i
+            dpy = y64j - y64i
+            dv2 = dvx_ * dvx_ + dvy_ * dvy_
+            tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
+                           cp.where(dv2 > 0, dv2, 1.0), 0.0, dt_y)
+            cxm = dpx + dvx_ * tmin
+            cym = dpy + dvy_ * tmin
+            rsum = g_rr_a[ci].astype(cp.float64) + \
+                g_rr_a[cj].astype(cp.float64)
+            hitm = cxm * cxm + cym * cym <= rsum * rsum
+            hidx = cp.flatnonzero(hitm)
+            if int(hidx.size) == 0:
+                return None
+            hits_host = (cp.asnumpy(ci[hidx]), cp.asnumpy(cj[hidx]))
         return hits_host
 
     def bounce_deltas(sample: np.ndarray, hits_host):
@@ -417,7 +451,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                            ddvx[betroffen], ddvy[betroffen]], axis=1)
         return hi, hj, betroffen.astype(np.int64), deltas
 
-    def apply_bounce(res_bounce, k_ev):
+    def apply_bounce(res_bounce, k_ev, res_sample):
         """Bounce-Deltas auf den residenten Zustand (Physik-GPU) und die
         Ereignisse/Zaehler anwenden."""
         nonlocal bounce_count, collisions
@@ -426,12 +460,14 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         # Jeder Bounce zaehlt wie in den Live-Engines als Kollision und
         # geht als kind=1-Ereignis an den Client (Zaehler + Blitz), ohne
         # dass ein Koerper stirbt. a = schwererer (Flash-Track wie im JS).
+        sample = res_sample
         for t_i in range(len(hi)):
             a_i = int(hi[t_i])
             b_i = int(hj[t_i])
             heavy, light = (a_i, b_i) if mass[a_i] >= mass[b_i] \
                 else (b_i, a_i)
-            emit_event(heavy, light, 0.0, 1, k_ev)
+            emit_event(heavy, light, 0.0, 1, k_ev,
+                       float(sample[heavy]), float(sample[n + heavy]))
         collisions += len(hi)
         coll_val.value = collisions
         bounce_count += len(hi)
@@ -471,14 +507,15 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     def apply_analysis(res: dict) -> None:
         apply_merges(res["sample"], res["pairs"], res["runaways"], res["k"])
         if res["bounce"] is not None:
-            apply_bounce(res["bounce"], res["k"])
+            apply_bounce(res["bounce"], res["k"], res["sample"])
 
     executor = ThreadPoolExecutor(max_workers=1)
     future = None
     # Batch-Groesse: K Raster pro Kernel-Launch. Erkennungs-Ergebnisse
-    # werden nach dem Batch angewandt — mit K=4 (2 Tage) entspricht der
-    # Versatz dem Live-Verhalten (Kollisionsaufloesung 1x pro Frame).
-    K = 4
+    # werden nach dem Batch angewandt — mit K=8 (4 Tage) bleibt der
+    # Versatz in der Groessenordnung grosser Live-Frames, halbiert aber
+    # den Launch-/Pipeline-Overhead nochmals.
+    K = 8
     try:
         while running_val.value:
             if shatter_flag is not None and shatter_flag.value:
