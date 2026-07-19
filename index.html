@@ -3761,6 +3761,7 @@ function initCudaBackend(urlIndex = 0) {
           a: dv.getUint32(off + 8, true),
           b: dv.getUint32(off + 12, true),
           mass: dv.getFloat32(off + 16, true),
+          kind: dv.getUint32(off + 20, true),   // 0=merge/kill, 1=bounce
         });
         off += 24;
       }
@@ -3805,6 +3806,10 @@ function initCudaBackend(urlIndex = 0) {
         markBodiesMutated();
       }
       _filmHandover = false;   // Uebergabe abgeschlossen — Physik frei
+      if (_filmRestartPending) {
+        _filmRestartPending = false;
+        filmStart();             // Neustart mit exakten f64-Impulsen
+      }
       return;
     }
     if (status !== 0) {
@@ -4036,7 +4041,7 @@ function filmStart() {
   if (!cudaReady) return;
   const src = bodies;
   const N = src.length;
-  const buf = new ArrayBuffer(24 + N * (6 * 8 + 2));
+  const buf = new ArrayBuffer(24 + N * (6 * 8 + 2) + 1);
   const dv = new DataView(buf);
   dv.setUint32(0, 3, true);                    // MSG_FILM_START
   dv.setUint32(4, N, true);
@@ -4058,6 +4063,11 @@ function filmStart() {
     visible[i] = b.visible ? 1 : 0;
     isAst[i] = b.isAsteroid ? 1 : 0;
   }
+  // Flag-Byte: Asteroid-x-Asteroid-Bounce im Producer (UI-Toggle).
+  // Offset NACH beiden u8-Arrays: 24 + 48N (f64) + N (visible) + N (isAst).
+  // (Ein frueherer 49N-Tippfehler ueberschrieb isAst[0] — die SONNE wurde
+  // zum Asteroiden erklaert und der Waechter killte alle Astis sofort.)
+  new Uint8Array(buf, 24 + 50 * N, 1)[0] = astAstCollisions ? 1 : 0;
   cudaSocket.send(buf);
   filmRefs = src.slice();
   filmEvents = [];
@@ -4086,7 +4096,48 @@ function filmStart() {
   document.getElementById('film-bar').classList.add('show');
 }
 
+// Impuls-Rekonstruktion aus den letzten zwei Samples (Differenzenquotient
+// der dekodierten Welt-Positionen). Noetig ueberall, wo der Film-Zustand
+// als Startzustand weiterverwendet wird: die Samples tragen nur Positionen,
+// die Client-Geschwindigkeiten sind seit dem Filmstart eingefroren —
+// Positionen von "jetzt" + Impulse von "damals" = Chaos-Auswuerfe.
+function filmReconstructVelocities() {
+  if (filmQueue && filmQueue.times.length >= 2 && filmRefs) {
+    const L = filmQueue.times.length;
+    const sA = filmQueue.samples[L - 2];
+    const sB = filmQueue.samples[L - 1];
+    const dtY = (filmQueue.times[L - 1] - filmQueue.times[L - 2]) / 365.25;
+    if (dtY > 0 && sA.idx && sB.idx) {
+      if (!sA._pos) {
+        sA._pos = new Int32Array(filmRefs.length).fill(-1);
+        for (let m = 0; m < sA.idx.length; m++) sA._pos[sA.idx[m]] = m;
+      }
+      const bA = sA.box, bB = sB.box;
+      const fxA = bA.sx / 65535, fyA = bA.sy / 65535;
+      const fxB = bB.sx / 65535, fyB = bB.sy / 65535;
+      for (let m = 0; m < sB.idx.length; m++) {
+        const ki = sB.idx[m];
+        const m0 = sA._pos[ki];
+        if (m0 < 0) continue;
+        const b = filmRefs[ki];
+        if (!b) continue;
+        const x0 = bA.x0 + sA.qx[m0] * fxA;
+        const y0 = bA.y0 + sA.qy[m0] * fyA;
+        const x1 = bB.x0 + sB.qx[m] * fxB;
+        const y1 = bB.y0 + sB.qy[m] * fyB;
+        b.x = x1;
+        b.y = y1;
+        b.vx = (x1 - x0) / dtY;
+        b.vy = (y1 - y0) / dtY;
+      }
+    }
+  }
+}
+
 function filmStop() {
+  // Sicherheitsnetz, falls der exakte f64-Dump (status=5) nicht ankommt —
+  // der Dump ueberschreibt die Schaetzung, wenn er eintrifft.
+  filmReconstructVelocities();
   if (filmActive && cudaReady && cudaSocket) {
     const buf = new ArrayBuffer(16);
     new DataView(buf).setUint32(0, 4, true);   // MSG_FILM_STOP
@@ -4130,6 +4181,7 @@ function filmSub(tDays, jump) {
 }
 let _filmSubCam = null;
 let _filmHandover = false;   // Engine-Uebergabe: warten bis f64-Dump da ist
+let _filmRestartPending = false;   // Film-Neustart wartet auf f64-Dump
 
 let _filmLastSubMs = 0;
 let _filmMetaTail = 0;       // Server-Puffergrenzen (aus jedem Push-Frame)
@@ -4200,16 +4252,52 @@ function filmApplyEvents(t) {
     _filmEventsApplied = 0;
   }
   let changed = false;
+  let flashes = 0;
   while (_filmEventsApplied < filmEvents.length &&
          filmEvents[_filmEventsApplied].t <= t) {
     const ev = filmEvents[_filmEventsApplied++];
+    if (ev.kind === 1) {
+      // Bounce: niemand stirbt, keine Massenaenderung — nur Zaehler und
+      // Visuals wie in den Live-Engines (Farb-Marker + Explosions-Flash).
+      const ha = filmRefs[ev.a], hb = filmRefs[ev.b];
+      // Farb-/Ring-Marker fuer JEDES Paar (wie live) — nur die
+      // Explosions-Blitze sind gegen Scrub-Fluten gedeckelt.
+      if (ha && hb) _markBouncePair(ha, hb);
+      if (ha && hb && flashes < 8) {
+        collisionFlashes.push({
+          x: ha.x, y: ha.y,
+          scale: Math.max(ha.realR || 0, hb.realR || 0),
+          t: performance.now(),
+          asteroid: true,
+          track: ha,                       // schwererer, wie im Live-Pfad
+        });
+        flashes++;
+      }
+      changed = true;
+      continue;
+    }
     if (ev.b < _filmEvVis.length) _filmEvVis[ev.b] = 0;
+    let surv = null;
     if (ev.a !== 0xFFFFFFFF && ev.mass > 0) {
-      const surv = filmRefs[ev.a];
+      surv = filmRefs[ev.a];
       if (surv) {
         surv.mass = ev.mass;
         surv.radius = massToRadius(ev.mass);
       }
+    }
+    // Kollisions-Explosion an der Treffer-Position — wie in den Live-
+    // Engines. Gedeckelt auf 8 pro Frame, damit Scrub-Vorspulen (viele
+    // Ereignisse auf einmal) den Canvas nicht mit Blitzen flutet.
+    const loser = filmRefs[ev.b];
+    if (loser && flashes < 8) {
+      collisionFlashes.push({
+        x: loser.x, y: loser.y,
+        scale: Math.max(loser.radius || 2, surv ? surv.radius : 2),
+        t: performance.now(),
+        asteroid: loser.isAsteroid,
+        track: surv || null,
+      });
+      flashes++;
     }
     changed = true;
   }
@@ -4227,7 +4315,21 @@ function filmTick(dtDays, slowFactor, nowMs) {
   // ungueltig, Film ab aktuellem Zustand neu starten.
   if (bodies.length !== _filmSentN || _physRev !== _filmSentRev) {
     filmApply(filmPlayheadDays);   // letzten Stand uebernehmen
-    filmStart();
+    // Neustart erst NACH dem exakten f64-Dump des alten Producers —
+    // die Differenzenquotient-Schaetzung traegt u16-Quantisierungsfehler
+    // (~10-20% in v) und verformte die Bahnen bei jedem Inject.
+    // filmStop loest den Dump aus; status=5 startet den Film neu.
+    _filmRestartPending = true;
+    _filmHandover = true;
+    setTimeout(() => {
+      if (_filmRestartPending) {         // Fallback: Dump kam nicht
+        _filmRestartPending = false;
+        _filmHandover = false;
+        filmReconstructVelocities();
+        filmStart();
+      }
+    }, 2500);
+    filmStop();
     return;
   }
   const delta = _filmPrevMs ? Math.min(nowMs - _filmPrevMs, 250) : 16.7;
@@ -4964,6 +5066,23 @@ const BOUNCE_FLASH_MS = 2000;   // Ring-Flash-Dauer um gebouncten Asteroid
 // gehen bei echten Stoessen kaputt -> ein Teil der Energie ist weg, also
 // e < 1 (teilelastisch). e=0 waere perfekt plastisch (kleben, kein Abprall).
 const BOUNCE_RESTITUTION = 0.6;
+// Farb-Marker: schwerer Asteroid -> Blau, leichterer -> Rot (H-R-Konvention),
+// plus expandierender Ring-Flash. Original-Farbe einmalig sichern, damit
+// nach COLOR_REVERT_MS zurueckgewechselt wird. SSOT fuer Live-_bounce UND
+// Film-Bounce-Ereignisse (kind=1).
+function _markBouncePair(a, b) {
+  const heavy = a.mass >= b.mass ? a : b;
+  const light = heavy === a ? b : a;
+  if (!heavy._origColor) heavy._origColor = heavy.color;
+  if (!light._origColor) light._origColor = light.color;
+  heavy.color = '#3080ff';  heavy._glColor = null;
+  light.color = '#ff3030';  light._glColor = null;
+  const t = performance.now();
+  heavy._bounceFlash = t;  heavy._bounceColor = '#3080ff';
+  light._bounceFlash = t;  light._bounceColor = '#ff3030';
+  heavy._colorRevertAt = t + COLOR_REVERT_MS;
+  light._colorRevertAt = t + COLOR_REVERT_MS;
+}
 function _bounce(a, b, tContact) {
   // CUDA-Backend: nur die zwei gestossenen Koerper als Delta nachschicken
   markBodyDelta(a);
@@ -5038,20 +5157,7 @@ function _bounce(a, b, tContact) {
     a.x -= pnx * push * wA;  a.y -= pny * push * wA;
     b.x += pnx * push * wB;  b.y += pny * push * wB;
   }
-  // Farb-Marker: schwerer Asteroid -> Blau, leichterer -> Rot.
-  // Original-Farbe einmalig sichern, damit nach COLOR_REVERT_MS wieder
-  // auf Beige zurueckgewechselt werden kann.
-  const heavy = a.mass >= b.mass ? a : b;
-  const light = heavy === a ? b : a;
-  if (!heavy._origColor) heavy._origColor = heavy.color;
-  if (!light._origColor) light._origColor = light.color;
-  heavy.color = '#3080ff';  heavy._glColor = null;
-  light.color = '#ff3030';  light._glColor = null;
-  const t = performance.now();
-  heavy._bounceFlash = t;  heavy._bounceColor = '#3080ff';
-  light._bounceFlash = t;  light._bounceColor = '#ff3030';
-  heavy._colorRevertAt = t + COLOR_REVERT_MS;
-  light._colorRevertAt = t + COLOR_REVERT_MS;
+  _markBouncePair(a, b);
   // Debug-Counter (auskommentiert):
   // window.__bounceCount = (window.__bounceCount || 0) + 1;
   // const bcEl = document.getElementById('bounce-count');

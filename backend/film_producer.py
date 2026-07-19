@@ -25,14 +25,17 @@ import numpy as np
 
 
 EV_BYTES = 24    # Ereignis: f64 tTage | u32 a (Ueberlebender/0xFFFFFFFF) |
-#                  u32 b (Verlierer) | f32 neueMasse | u32 pad
+#                  u32 b (Verlierer) | f32 neueMasse | u32 kind
+#                  kind 0 = merge/kill (b verschwindet), 1 = bounce (nur
+#                  Zaehler + Visual, niemand stirbt)
 
 
 def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   ev_name: str, ev_cap: int, ev_count_val,
                   dump_name: str, dump_req_val,
                   head_val, playhead_val, coll_val, running_val,
-                  state: dict, raster_days: float, t0_days: float) -> None:
+                  state: dict, raster_days: float, t0_days: float,
+                  ast_bounce: bool = False) -> None:
     # CUDA erst IM Kindprozess initialisieren (spawn-Kontext!)
     from multiprocessing import shared_memory
 
@@ -88,13 +91,13 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
 
     import struct as _struct
 
-    def emit_event(a: int, b: int, new_mass: float) -> None:
-        # Merge/Kill als Ereignis in den Event-Ring — Samples selbst
+    def emit_event(a: int, b: int, new_mass: float, kind: int = 0) -> None:
+        # Merge/Kill/Bounce als Ereignis in den Event-Ring — Samples selbst
         # tragen nur noch Positionen (reines Punkte-Streaming).
         i = ev_count_val.value % ev_cap
         t_ev = t0_days + (k + 1) * raster_days
         ev_buf[i * EV_BYTES:(i + 1) * EV_BYTES] = _struct.pack(
-            "<dIIfI", t_ev, a & 0xFFFFFFFF, b, new_mass, 0)
+            "<dIIfI", t_ev, a & 0xFFFFFFFF, b, new_mass, kind)
         ev_count_val.value += 1
 
     def detect_and_merge(sample: np.ndarray) -> None:
@@ -204,6 +207,184 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         if changed:
             coll_val.value = collisions
 
+    BOUNCE_E = 0.6            # Restitution (wie BOUNCE_RESTITUTION im JS)
+    bounce_count = 0
+
+    def detect_ast_bounce(sample: np.ndarray) -> None:
+        """Asteroid-x-Asteroid-Stoesse nach dem bisherigen Algo (Bounce,
+        Restitution 0,6, Ein-Stoss pro Sample, Ueberlapp-Aufloesung 1,1x).
+        Kandidaten + Swept-Check laufen KOMPLETT AUF DER GPU (CuPy auf dem
+        residenten out_f32) — die CPU-Variante kostete bei 100k Teilchen
+        mehr als der Physik-Kernel und liess die GPU bei 33% verhungern.
+        Nur die wenigen echten Treffer kommen zum Host."""
+        nonlocal bounce_count, collisions
+        dt_y = raster_days / 365.25
+        hits_host = None
+        with cp.cuda.Device(sim.device):
+            g = st["out_f32"]
+            gx = g[0:n].astype(cp.float64)
+            gy = g[n:2 * n].astype(cp.float64)
+            gvx = g[2 * n:3 * n].astype(cp.float64)
+            gvy = g[3 * n:4 * n].astype(cp.float64)
+            g_alive = g_ast & (g_vis != 0)
+            ai = cp.flatnonzero(g_alive)
+            if int(ai.size) < 2:
+                return
+            axp = gx[ai]
+            ayp = gy[ai]
+            sp = cp.hypot(gvx[ai], gvy[ai])
+            h = max(1e-4, 2.0 * float(cp.percentile(sp, 95)) * dt_y)
+            ix = cp.floor(axp / h).astype(cp.int64)
+            iy = cp.floor(ayp / h).astype(cp.int64)
+
+            def cell_key(cx_, cy_):
+                return cx_ * cp.int64(73856093) ^ cy_ * cp.int64(19349663)
+
+            key = cell_key(ix, iy)
+            order = cp.argsort(key)
+            ks = key[order]
+
+            def sweep_hits(pi, pj):
+                # Swept-Ballistik-Check eines Kandidaten-Chunks; gibt die
+                # Treffer-Paare zurueck (Reihenfolge erhalten).
+                dpx = gx[pj] - gx[pi]
+                dpy = gy[pj] - gy[pi]
+                dvx_ = gvx[pj] - gvx[pi]
+                dvy_ = gvy[pj] - gvy[pi]
+                dv2 = dvx_ * dvx_ + dvy_ * dvy_
+                tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
+                               cp.where(dv2 > 0, dv2, 1.0), 0.0, dt_y)
+                cxm = dpx + dvx_ * tmin
+                cym = dpy + dvy_ * tmin
+                rsum = g_rr[pi].astype(cp.float64) + \
+                    g_rr[pj].astype(cp.float64)
+                hitm = cxm * cxm + cym * cym <= rsum * rsum
+                hidx = cp.flatnonzero(hitm)
+                return pi[hidx], pj[hidx]
+
+            # Kompakte Wolken (Injektion) haetten beim Voll-Materialisieren
+            # aller Kandidaten zweistellige Millionen Paare x mehrere
+            # Arrays (GBs VRAM-Peak, den der CuPy-Pool dauerhaft behielte).
+            # Daher Chunk-Verarbeitung: expandieren + sweepen in Stuecken,
+            # nur Treffer ueberleben. Physik identisch, Reihenfolge der
+            # Treffer identisch (Offsets + Chunks aufsteigend).
+            CHUNK = 4_000_000
+            hit_i_parts = []
+            hit_j_parts = []
+            for ox, oy in ((0, 0), (1, 0), (0, 1), (1, 1), (1, -1)):
+                k2 = cell_key(ix + ox, iy + oy)
+                lo = cp.searchsorted(ks, k2, side="left")
+                hi_r = cp.searchsorted(ks, k2, side="right")
+                lens = hi_r - lo
+                tot = int(lens.sum())
+                if tot == 0:
+                    continue
+                cum = cp.cumsum(lens)
+                starts = cum - lens
+                for c0 in range(0, tot, CHUNK):
+                    c1 = min(c0 + CHUNK, tot)
+                    r = cp.arange(c0, c1, dtype=cp.int64)
+                    rows = cp.searchsorted(cum, r, side="right")
+                    cols = r - starts[rows] + lo[rows]
+                    a = ai[rows]
+                    b = ai[order[cols]]
+                    keep = (a < b) if (ox == 0 and oy == 0) else (a != b)
+                    hi_c, hj_c = sweep_hits(a[keep], b[keep])
+                    if int(hi_c.size):
+                        hit_i_parts.append(hi_c)
+                        hit_j_parts.append(hj_c)
+            if not hit_i_parts:
+                return
+            hits_host = (cp.asnumpy(cp.concatenate(hit_i_parts)),
+                         cp.asnumpy(cp.concatenate(hit_j_parts)))
+        # --- Host: Ein-Stoss-Filter, Impuls, Ueberlapp — wie im JS-Algo ---
+        hi, hj = hits_host
+        x = sample[0:n].astype(np.float64)
+        y = sample[n:2 * n].astype(np.float64)
+        vxa = sample[2 * n:3 * n].astype(np.float64)
+        vya = sample[3 * n:4 * n].astype(np.float64)
+        used = np.zeros(n, dtype=bool)
+        keep_idx = []
+        for t_i in range(len(hi)):
+            a_i = int(hi[t_i])
+            b_i = int(hj[t_i])
+            if used[a_i] or used[b_i]:
+                continue
+            used[a_i] = True
+            used[b_i] = True
+            keep_idx.append(t_i)
+        if not keep_idx:
+            return
+        keep_idx = np.asarray(keep_idx)
+        hi = hi[keep_idx].astype(np.int64)
+        hj = hj[keep_idx].astype(np.int64)
+        dpx = x[hj] - x[hi]
+        dpy = y[hj] - y[hi]
+        dvx_ = vxa[hj] - vxa[hi]
+        dvy_ = vya[hj] - vya[hi]
+        dv2 = dvx_ * dvx_ + dvy_ * dvy_
+        tmin = np.clip(-(dpx * dvx_ + dpy * dvy_) /
+                       np.where(dv2 > 0, dv2, 1.0), 0.0, dt_y)
+        ncx = dpx + dvx_ * tmin
+        ncy = dpy + dvy_ * tmin
+        dist = np.hypot(ncx, ncy)
+        dist = np.where(dist > 1e-30, dist, 1.0)
+        nx_ = ncx / dist
+        ny_ = ncy / dist
+        vrel = dvx_ * nx_ + dvy_ * ny_
+        act = vrel < 0
+        if not act.any():
+            return
+        hi = hi[act]
+        hj = hj[act]
+        nx_ = nx_[act]
+        ny_ = ny_[act]
+        vrel = vrel[act]
+        mi_ = mass[hi]
+        mj_ = mass[hj]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            imp = -(1.0 + BOUNCE_E) * vrel / (1.0 / mi_ + 1.0 / mj_)
+        imp = np.nan_to_num(imp)
+        vxa[hi] -= imp * nx_ / mi_
+        vya[hi] -= imp * ny_ / mi_
+        vxa[hj] += imp * nx_ / mj_
+        vya[hj] += imp * ny_ / mj_
+        pdx = x[hj] - x[hi]
+        pdy = y[hj] - y[hi]
+        pdist = np.hypot(pdx, pdy)
+        touch = real_r[hi] + real_r[hj]
+        overlap = touch - pdist
+        ol = (overlap > 0) & (pdist > 1e-30)
+        if ol.any():
+            oi = hi[ol]
+            oj = hj[ol]
+            pnx = pdx[ol] / pdist[ol]
+            pny = pdy[ol] / pdist[ol]
+            mges = mass[oi] + mass[oj]
+            wa = mass[oj] / mges
+            wb = mass[oi] / mges
+            shift = overlap[ol] * 1.1
+            x[oi] -= pnx * shift * wa
+            y[oi] -= pny * shift * wa
+            x[oj] += pnx * shift * wb
+            y[oj] += pny * shift * wb
+        betroffen = np.unique(np.concatenate([hi, hj]))
+        vals = np.stack([x[betroffen], y[betroffen],
+                         vxa[betroffen], vya[betroffen]], axis=1)
+        sim.apply_updates(st, betroffen.astype(np.int64), vals)
+        # Jeder Bounce zaehlt wie in den Live-Engines als Kollision und
+        # geht als kind=1-Ereignis an den Client (Zaehler + Blitz), ohne
+        # dass ein Koerper stirbt. a = schwererer (Flash-Track wie im JS).
+        for t_i in range(len(hi)):
+            a_i = int(hi[t_i])
+            b_i = int(hj[t_i])
+            heavy, light = (a_i, b_i) if mass[a_i] >= mass[b_i] \
+                else (b_i, a_i)
+            emit_event(heavy, light, 0.0, kind=1)
+        collisions += len(hi)
+        coll_val.value = collisions
+        bounce_count += len(hi)
+
     try:
         while running_val.value:
             if dump_req_val.value == 1:
@@ -220,6 +401,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 continue
             out = sim.step(st, dt_years)
             detect_and_merge(out)
+            if ast_bounce:
+                detect_ast_bounce(out)
             # Reines Punkte-Streaming: nur x|y (8 Bytes/Koerper) — alles
             # andere (Masse/Sichtbarkeit) laeuft als Ereignis.
             sample = out[0:2 * n].tobytes()
@@ -227,6 +410,9 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             buf[slot * sample_bytes:(slot + 1) * sample_bytes] = sample
             k += 1
             head_val.value = k
+            if ast_bounce and k % 500 == 0 and bounce_count:
+                print(f"[film] {bounce_count} asti-bounces nach "
+                      f"{k} samples", flush=True)
     finally:
         # Letzter Zustand fuer die Engine-Uebergabe, dann sauber schliessen
         try:

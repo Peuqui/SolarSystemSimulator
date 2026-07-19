@@ -60,6 +60,10 @@ struct Ctrl {           // Steuerzustand des adaptiven Frame-Loops
     double subDt;       // aktueller Substep
     int done;
     int guard;
+    // Minimales tEnc/20 aller Paare als Bit-Repraesentation — fuer
+    // positive doubles ist die ull-Ordnung identisch zur double-Ordnung,
+    // daher funktioniert atomicMin. (32 Bytes gesamt = 4 f64-Slots.)
+    unsigned long long minEnc;
 };
 
 // Verlet-Teilschritt fuer die massiven Koerper — nur Thread 0.
@@ -162,38 +166,76 @@ extern "C" __global__ void frame_kernel(
     grid.sync();
 
     // ---- Frame-Loop: adaptiver Substep, Yoshida = 3 Verlets ----
+    // adaptDt in Hybrid-Worker-Semantik (ASTAD=1): massive Paare UND
+    // Asteroid-x-massiv-Begegnungen druecken dt (tEnc/20, Floor
+    // maxSubDt/1000). Ohne den Asteroid-Anteil werden Sonnentaucher am
+    // Perihel mit 0,5-Tage-Schritten numerisch katapultiert und danach
+    // vom Runaway-Waechter gekillt. Die Reduktion laeuft parallel:
+    // Block-Minimum in Shared Memory, dann ein atomicMin pro Block.
     const double wDts[3] = { w1, w0, w1 };
+    __shared__ unsigned long long s_minEnc;
     for (;;) {
-        // Substep bestimmen (Thread 0, Worker-adaptDt-Semantik: nur
-        // massive Paare, tEnc/20, Floor maxSubDt/1000)
         if (tid == 0) {
             if (ctrl->remaining <= 1e-12 || ctrl->guard++ >= maxSubSteps) {
                 ctrl->done = 1;
             } else {
-                double dt = maxSubDt;
-                for (int i = 0; i < M; i++) {
-                    if (!mVis[i]) continue;
-                    for (int j = i + 1; j < M; j++) {
-                        if (!mVis[j]) continue;
-                        const double dx = mx[j] - mx[i], dy = my[j] - my[i];
-                        double dist = sqrt(dx * dx + dy * dy);
-                        if (dist < 1e-12) dist = 1e-12;
-                        const double dvx = mvx[j] - mvx[i], dvy = mvy[j] - mvy[i];
-                        const double vrel = sqrt(dvx * dvx + dvy * dvy);
-                        if (vrel > 1e-9) {
-                            const double tEnc = dist / vrel;
-                            if (tEnc / 20.0 < dt) dt = tEnc / 20.0;
-                        }
-                    }
-                }
-                if (dt < maxSubDt / 1000.0) dt = maxSubDt / 1000.0;
-                if (dt > ctrl->remaining) dt = ctrl->remaining;
-                ctrl->subDt = dt;
-                ctrl->remaining -= dt;
+                ctrl->minEnc = __double_as_longlong(maxSubDt);
             }
         }
         grid.sync();
         if (ctrl->done) break;
+        if (threadIdx.x == 0) s_minEnc = __double_as_longlong(maxSubDt);
+        __syncthreads();
+        double best = maxSubDt;
+        for (int i = tid; i < nAst; i += stride) {
+            if (!aVis[i]) continue;
+            const double px = ax[i], py = ay[i];
+            const double pvx = avx[i], pvy = avy[i];
+            for (int k = 0; k < M; k++) {
+                if (!mVis[k]) continue;
+                const double dx = mx[k] - px, dy = my[k] - py;
+                double dist = sqrt(dx * dx + dy * dy);
+                if (dist < 1e-12) dist = 1e-12;
+                const double dvx = mvx[k] - pvx, dvy = mvy[k] - pvy;
+                const double vrel = sqrt(dvx * dvx + dvy * dvy);
+                if (vrel > 1e-9) {
+                    const double tEnc = dist / vrel / 20.0;
+                    if (tEnc < best) best = tEnc;
+                }
+            }
+        }
+        if (tid == 0) {
+            for (int i = 0; i < M; i++) {
+                if (!mVis[i]) continue;
+                for (int j = i + 1; j < M; j++) {
+                    if (!mVis[j]) continue;
+                    const double dx = mx[j] - mx[i], dy = my[j] - my[i];
+                    double dist = sqrt(dx * dx + dy * dy);
+                    if (dist < 1e-12) dist = 1e-12;
+                    const double dvx = mvx[j] - mvx[i], dvy = mvy[j] - mvy[i];
+                    const double vrel = sqrt(dvx * dvx + dvy * dvy);
+                    if (vrel > 1e-9) {
+                        const double tEnc = dist / vrel / 20.0;
+                        if (tEnc < best) best = tEnc;
+                    }
+                }
+            }
+        }
+        if (best < maxSubDt)
+            atomicMin(&s_minEnc, __double_as_longlong(best));
+        __syncthreads();
+        if (threadIdx.x == 0 &&
+            s_minEnc != __double_as_longlong(maxSubDt))
+            atomicMin(&ctrl->minEnc, s_minEnc);
+        grid.sync();
+        if (tid == 0) {
+            double dt = __longlong_as_double(ctrl->minEnc);
+            if (dt < maxSubDt / 1000.0) dt = maxSubDt / 1000.0;
+            if (dt > ctrl->remaining) dt = ctrl->remaining;
+            ctrl->subDt = dt;
+            ctrl->remaining -= dt;
+        }
+        grid.sync();
         const double subDt = ctrl->subDt;
 
         for (int w = 0; w < 3; w++) {
@@ -378,6 +420,26 @@ class NBodyCuda:
         with cp.cuda.Device(self.device):
             st["f64"][cp.asarray(np.concatenate(flats))] = \
                 cp.asarray(np.concatenate(values))
+
+    def apply_velocities(self, st: dict, idx: np.ndarray,
+                         vx: np.ndarray, vy: np.ndarray) -> None:
+        """Nur Geschwindigkeiten setzen (Asti-Bounces): die f64-Positionen
+        im residenten Zustand bleiben unangetastet — Impulse aus dem
+        f32-Sample zu schreiben wuerde die Praezision nicht verletzen,
+        Positionen schon."""
+        kind = st["inv_kind"][idx]
+        pos = st["inv_pos"][idx]
+        n_ast, m = st["n_ast"], st["m"]
+        base = 5 * n_ast
+        flats = []
+        values = []
+        for f, v in ((2, vx), (3, vy)):
+            flats.append(np.where(kind == 1, f * n_ast + pos,
+                                  base + f * m + pos))
+            values.append(v)
+        with cp.cuda.Device(self.device):
+            st["f64"][cp.asarray(np.concatenate(flats))] = \
+                cp.asarray(np.concatenate(values).astype(np.float64))
 
     def apply_body_state(self, st: dict, idx: int,
                          x: float, y: float, vx: float, vy: float,

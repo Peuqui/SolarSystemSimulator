@@ -45,14 +45,19 @@ def reference_advance(dt_years, x, y, vx, vy, mass, visible, is_ast):
         return ax, ay
 
     def adapt_dt():
+        # Hybrid-Worker-Semantik (ASTAD=1): massive Paare UND
+        # Asteroid-x-massiv druecken dt (tEnc/20, Floor maxSubDt/1000).
         dt = MAX_SUB_DT_YEARS
-        for a_i in range(len(mas_i)):
-            for b_i in range(a_i + 1, len(mas_i)):
-                i, j = mas_i[a_i], mas_i[b_i]
-                dist = max(np.hypot(x[j] - x[i], y[j] - y[i]), 1e-12)
-                vrel = np.hypot(vx[j] - vx[i], vy[j] - vy[i])
-                if vrel > 1e-9:
-                    dt = min(dt, dist / vrel / 20.0)
+        for i in mas_i:
+            sel = vis.copy()
+            sel[i] = False
+            sel[mas_i[mas_i < i]] = False      # massives Paar nur einmal
+            dist = np.maximum(
+                np.hypot(x[sel] - x[i], y[sel] - y[i]), 1e-12)
+            vrel = np.hypot(vx[sel] - vx[i], vy[sel] - vy[i])
+            ok = vrel > 1e-9
+            if ok.any():
+                dt = min(dt, float(np.min(dist[ok] / vrel[ok])) / 20.0)
         return max(dt, MAX_SUB_DT_YEARS / 1000.0)
 
     ax, ay = accel()

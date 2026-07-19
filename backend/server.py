@@ -70,7 +70,8 @@ class FilmSession:
     MAX_BYTES = 4 << 30          # Ringpuffer-Obergrenze (~4 GB)
 
     def __init__(self, t0_days: float, raster_days: float,
-                 x, y, vx, vy, mass, real_r, visible, is_ast):
+                 x, y, vx, vy, mass, real_r, visible, is_ast,
+                 ast_bounce: bool = False):
         self.raster_days = max(0.1, raster_days)
         self.t0 = t0_days
         self.n = len(x)
@@ -107,7 +108,8 @@ class FilmSession:
                   self.ev_shm.name, self.ev_cap, self.ev_count_val,
                   self.dump_shm.name, self.dump_req_val,
                   self.head_val, self.playhead_val, self.coll_val,
-                  self.running_val, state, self.raster_days, t0_days),
+                  self.running_val, state, self.raster_days, t0_days,
+                  bool(ast_bounce)),
             daemon=True)
         self.proc.start()
 
@@ -177,15 +179,17 @@ class FilmSession:
         # Neue Ereignisse einsammeln + lokalen vis-Spiegel pflegen
         ev_total = int(self.ev_count_val.value)
         ev_from = max(self.sent_ev, ev_total - self.ev_cap + 8)
-        ev_n = min(256, ev_total - ev_from)
+        # 1024/Frame: Bounce-Stroeme (kind=1) erzeugen deutlich mehr
+        # Ereignisse als Merges — Backlog holt ueber Folgeframes auf.
+        ev_n = min(1024, ev_total - ev_from)
         eb = film_producer.EV_BYTES
         ev_parts = []
         for e in range(ev_from, ev_from + ev_n):
             raw = bytes(self.ev_shm.buf[(e % self.ev_cap) * eb:
                                         (e % self.ev_cap) * eb + eb])
             ev_parts.append(raw)
-            b_idx = struct.unpack_from("<I", raw, 12)[0]
-            if b_idx < self.n:
+            b_idx, _m, kind = struct.unpack_from("<IfI", raw, 12)
+            if kind == 0 and b_idx < self.n:
                 self._vis[b_idx] = False
         self.sent_ev = ev_from + ev_n
 
@@ -341,9 +345,13 @@ def parse_film_start(buf: bytes):
     off += n
     is_ast = np.frombuffer(buf, np.uint8, n, off)
     off += n
+    ast_bounce = False
+    if off + 1 == len(buf):               # optionales Flag-Byte
+        ast_bounce = buf[off] != 0
+        off += 1
     if off != len(buf):
         raise ValueError(f"Protokollfehler: {len(buf)} Bytes, erwartet {off}")
-    return raster_days, t0_days, arrays, visible, is_ast
+    return raster_days, t0_days, arrays, visible, is_ast, ast_bounce
 
 
 def parse_full(buf: bytes):
@@ -390,11 +398,13 @@ async def handle(ws, sim: NBodyCuda):
                 typ, _n, dt_years = HEADER.unpack_from(message, 0)
                 if typ == MSG_FILM_START:
                     raster_days, t0_days, (x, y, vx, vy, mass, real_r), \
-                        visible, is_ast = parse_film_start(message)
+                        visible, is_ast, ast_bounce = \
+                        parse_film_start(message)
                     if film:
                         film.stop()
                     film = FilmSession(t0_days, raster_days, x, y, vx, vy,
-                                       mass, real_r, visible, is_ast)
+                                       mass, real_r, visible, is_ast,
+                                       ast_bounce)
                     fulls += 1
                     log.info("Film gestartet: N=%d, Raster %.2f Tage",
                              len(x), film.raster_days)
