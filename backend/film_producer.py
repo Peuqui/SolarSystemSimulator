@@ -41,7 +41,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   state: dict, raster_days: float, t0_days: float,
                   ast_bounce: bool = False,
                   shatter_flag=None, shatter_a=None, shatter_b=None,
-                  shatter_t=None) -> None:
+                  shatter_t=None, det_rank: int = 0) -> None:
     # CUDA erst IM Kindprozess initialisieren (spawn-Kontext!)
     from multiprocessing import shared_memory
 
@@ -66,7 +66,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     # angewandt (1 Raster Versatz) — feiner als der Live-JS-Algo, der
     # Kollisionen einmal pro Frame (oft 1-2 Tage) aufloest. Ohne zweite
     # GPU laeuft die Analyse im selben Muster auf der Physik-GPU.
-    det_dev = pick_detect_device(phys_devs)
+    det_dev = pick_detect_device(phys_devs, det_rank)
     ana_dev = det_dev if det_dev is not None else sim.device
     print(f"[film] physik auf gpus {phys_devs}, erkennung auf gpu "
           f"{ana_dev}" + (" (pipelined)" if det_dev is not None else
@@ -298,9 +298,12 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 dvx_ = gvx[pj] - gvx[pi]
                 dvy_ = gvy[pj] - gvy[pi]
                 dv2 = dvx_ * dvx_ + dvy_ * dvy_
+                # Fenster BEIDSEITIG: [-dt, +dt] — der Live-Algo prueft
+                # per CCD rueckwaerts ueber den Frame; nur vorwaerts
+                # verpasste frontales Tunneling im letzten Kernel-Step.
                 tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
                                cp.where(dv2 > 0, dv2, cp.float32(1.0)),
-                               cp.float32(0.0), cp.float32(dt_y))
+                               cp.float32(-dt_y), cp.float32(dt_y))
                 cxm = dpx + dvx_ * tmin
                 cym = dpy + dvy_ * tmin
                 rsum = g_rr_a[pi] + g_rr_a[pj] + F32_TOL
@@ -355,7 +358,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             dpy = y64j - y64i
             dv2 = dvx_ * dvx_ + dvy_ * dvy_
             tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
-                           cp.where(dv2 > 0, dv2, 1.0), 0.0, dt_y)
+                           cp.where(dv2 > 0, dv2, 1.0), -dt_y, dt_y)
             cxm = dpx + dvx_ * tmin
             cym = dpy + dvy_ * tmin
             rsum = g_rr_a[ci].astype(cp.float64) + \
@@ -397,16 +400,28 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         dvx_ = vxa[hj] - vxa[hi]
         dvy_ = vya[hj] - vya[hi]
         dv2 = dvx_ * dvx_ + dvy_ * dvy_
-        tmin = np.clip(-(dpx * dvx_ + dpy * dvy_) /
-                       np.where(dv2 > 0, dv2, 1.0), 0.0, dt_y)
-        ncx = dpx + dvx_ * tmin
-        ncy = dpy + dvy_ * tmin
+        # Kontaktzeitpunkt wie im JS-_tryCollide: statischer Hit ->
+        # tContact = 0; sonst Bahnschnitt-Quadratik, Kontakt am
+        # EINTRITT (tEnter, dort naehern sie sich nachweislich an),
+        # geclippt auf das Frame-Fenster [-dt, +dt].
+        touch = real_r[hi] + real_r[hj]
+        c_ = dpx * dpx + dpy * dpy - touch * touch
+        b_ = 2.0 * (dpx * dvx_ + dpy * dvy_)
+        disc = b_ * b_ - 4.0 * dv2 * c_
+        sq = np.sqrt(np.maximum(disc, 0.0))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_enter = (-b_ - sq) / (2.0 * np.where(dv2 > 0, dv2, 1.0))
+        t_c = np.where(c_ < 0.0, 0.0,
+                       np.clip(np.nan_to_num(t_enter), -dt_y, dt_y))
+        gueltig = (c_ < 0.0) | (disc >= -(touch * touch) * 0.01)
+        ncx = dpx + dvx_ * t_c
+        ncy = dpy + dvy_ * t_c
         dist = np.hypot(ncx, ncy)
         dist = np.where(dist > 1e-30, dist, 1.0)
         nx_ = ncx / dist
         ny_ = ncy / dist
         vrel = dvx_ * nx_ + dvy_ * ny_
-        act = vrel < 0
+        act = gueltig & (vrel < 0)
         if not act.any():
             return None
         hi = hi[act]
@@ -430,7 +445,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         pdx = x[hj] - x[hi]
         pdy = y[hj] - y[hi]
         pdist = np.hypot(pdx, pdy)
-        touch = real_r[hi] + real_r[hj]
+        touch = real_r[hi] + real_r[hj]     # nach act-Filter neu gefiltert
         overlap = touch - pdist
         ol = (overlap > 0) & (pdist > 1e-30)
         if ol.any():

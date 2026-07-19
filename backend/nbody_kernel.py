@@ -553,18 +553,21 @@ def pick_devices() -> list[int]:
     return devs[:G_MAX]
 
 
-def pick_detect_device(exclude) -> int | None:
-    """Beste GPU AUSSERHALB der Physik-Karten fuer die ausgelagerte
+def pick_detect_device(exclude, rank: int = 0) -> int | None:
+    """GPU AUSSERHALB der Physik-Karten fuer die ausgelagerte
     Kollisions-/Bounce-Erkennung — die Erkennung ist leichtgewichtig
-    (1-3% Last), da reicht auch eine f64-schwache Karte. None, wenn es
-    keine weitere Karte gibt."""
+    (1-3% Last), da reicht auch eine f64-schwache Karte. rank verteilt
+    parallele Sessions round-robin auf die freien Karten (zwei
+    gleichzeitige Nutzer bekommen getrennte Erkennungskarten). None,
+    wenn es keine weitere Karte gibt."""
     excl = set(exclude) if isinstance(exclude, (list, tuple, set)) \
         else {exclude}
     n = cp.cuda.runtime.getDeviceCount()
-    cands = [i for i in range(n) if i not in excl]
+    cands = sorted((i for i in range(n) if i not in excl),
+                   key=lambda i: -_f64_score(i))
     if not cands:
         return None
-    return max(cands, key=_f64_score)
+    return cands[rank % len(cands)]
 
 
 class NBodyCuda:

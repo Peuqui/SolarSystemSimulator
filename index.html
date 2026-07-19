@@ -4192,7 +4192,11 @@ function filmStart() {
   // N (isAst) + N (isStarBH). (Ein frueherer 49N-Tippfehler ueberschrieb
   // isAst[0] — die SONNE wurde zum Asteroiden erklaert und der Waechter
   // killte alle Astis sofort.)
-  new Uint8Array(buf, 24 + 51 * N, 1)[0] = astAstCollisions ? 1 : 0;
+  // Bits 4-7: Film-Protokollversion (1) — ein Server mit anderem
+  // Event-/Frame-Format lehnt ab, statt dass ein alter Tab Muell
+  // dekodiert. Bit 0: Asteroid-x-Asteroid-Bounce (UI-Toggle).
+  new Uint8Array(buf, 24 + 51 * N, 1)[0] =
+    (1 << 4) | (astAstCollisions ? 1 : 0);
   cudaSocket.send(buf);
   filmRefs = src.slice();
   filmEvents = [];

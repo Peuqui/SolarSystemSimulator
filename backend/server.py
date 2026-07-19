@@ -63,6 +63,9 @@ DELTA_REC = np.dtype([("idx", "<u4"), ("pad", "<u4"), ("v", "<f8", (4,))])
 #   f64 tail | f64 head | count x f64 zeiten | count x sample (4N f32)
 
 
+_SESSION_SEQ = [0]   # Round-Robin fuer die Erkennungskarten-Zuteilung
+
+
 class FilmSession:
     """Proxy auf den Producer-PROZESS (film_producer.py): eigener Python-
     Prozess besitzt die GPU und schreibt in einen Shared-Memory-Ring —
@@ -130,8 +133,9 @@ class FilmSession:
                   self.running_val, state, self.raster_days, t0_days,
                   bool(ast_bounce),
                   self.shatter_flag, self.shatter_a, self.shatter_b,
-                  self.shatter_t),
+                  self.shatter_t, _SESSION_SEQ[0]),
             daemon=True)
+        _SESSION_SEQ[0] += 1
         self.proc.start()
 
     @property
@@ -428,8 +432,13 @@ def parse_film_start(buf: bytes):
     is_star_bh = np.frombuffer(buf, np.uint8, n, off)
     off += n
     ast_bounce = False
-    if off + 1 == len(buf):               # optionales Flag-Byte
-        ast_bounce = buf[off] != 0
+    if off + 1 == len(buf):               # Flag-Byte: Bits 4-7 Version
+        flags = buf[off]
+        if flags >> 4 != 1:
+            raise ValueError(
+                "Film-Protokollversion veraltet — Seite neu laden "
+                "(Strg+F5)")
+        ast_bounce = (flags & 1) != 0
         off += 1
     if off != len(buf):
         raise ValueError(f"Protokollfehler: {len(buf)} Bytes, erwartet {off}")
