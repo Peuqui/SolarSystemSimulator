@@ -3713,17 +3713,31 @@ function initCudaBackend(urlIndex = 0) {
     const buf = e.data;
     const status = new Uint32Array(buf, 0, 2)[0];
     if (status === 2) {
-      // Film-Sample-Paar: u32 status | u32 N | f64 t0, t1, tail, head
-      const n = new Uint32Array(buf, 0, 2)[1];
+      // Film-Batch: u32 status | u32 N | u32 count | u32 pad |
+      // f64 tail, head | count x f64 zeiten | count x sample (4N f32)
+      const hdr = new Uint32Array(buf, 0, 4);
+      const n = hdr[1], count = hdr[2];
       const dv = new DataView(buf);
-      filmCache = {
-        t0: dv.getFloat64(8, true),
-        t1: dv.getFloat64(16, true),
-        tail: dv.getFloat64(24, true),
-        head: dv.getFloat64(32, true),
-        s0: new Float32Array(buf, 40, 4 * n),
-        s1: new Float32Array(buf, 40 + 16 * n, 4 * n),
-      };
+      const tail = dv.getFloat64(16, true);
+      const head = dv.getFloat64(24, true);
+      const times = new Float64Array(buf, 32, count);
+      const samples = [];
+      let off = 32 + 8 * count;
+      for (let i = 0; i < count; i++) {
+        samples.push(new Float32Array(buf, off, 4 * n));
+        off += 16 * n;
+      }
+      // Producer-Rate schaetzen (geglaettet) — Grundlage fuer fluessiges
+      // Live-Follow: der Playhead laeuft mit dieser Rate statt bei jeder
+      // Antwort an die Kante zu springen (wichtig bei WAN-Latenz).
+      const nowP = performance.now();
+      if (_filmHeadPrevMs && head > _filmHeadPrev) {
+        const r = (head - _filmHeadPrev) / ((nowP - _filmHeadPrevMs) / 1000);
+        _filmHeadRate = _filmHeadRate ? 0.7 * _filmHeadRate + 0.3 * r : r;
+      }
+      _filmHeadPrev = head;
+      _filmHeadPrevMs = nowP;
+      filmQueue = { times, samples, tail, head };
       filmReqBusy = false;
       return;
     }
@@ -3769,7 +3783,7 @@ function initCudaBackend(urlIndex = 0) {
     cudaBusy = false;
     cudaInflightRefs = null;
     filmActive = false;
-    filmCache = null;
+    filmQueue = null;
     filmReqBusy = false;
     document.getElementById('film-bar').classList.remove('show');
     if (cudaResolver) { const r = cudaResolver; cudaResolver = null; r(); }
@@ -3878,7 +3892,11 @@ function advanceCuda(dtYears) {
 var useFilm = false;
 let filmActive = false;
 let filmReqBusy = false;
-let filmCache = null;        // { t0, t1, s0, s1, tail, head }
+let filmQueue = null;        // { times: Float64Array, samples: [], tail, head }
+let _filmRate = 60;          // aktuelles Playback-Tempo (Tage/s) fuer Batch-Dichte
+let _filmHeadRate = 0;       // geschaetzte Producer-Rate (Tage/s) fuer glattes Live-Follow
+let _filmHeadPrev = 0;
+let _filmHeadPrevMs = 0;
 let filmRefs = null;         // Body-Reihenfolge beim FILM_START
 let filmLive = true;         // Playhead folgt der Live-Kante
 let filmPlayheadDays = 0;
@@ -3918,7 +3936,7 @@ function filmStart() {
   cudaSocket.send(buf);
   filmRefs = src.slice();
   filmActive = true;
-  filmCache = null;
+  filmQueue = null;
   filmReqBusy = false;
   filmLive = true;
   filmPlayheadDays = simTime;
@@ -3935,7 +3953,7 @@ function filmStop() {
     cudaSocket.send(buf);
   }
   filmActive = false;
-  filmCache = null;
+  filmQueue = null;
   filmReqBusy = false;
   // Beim Verlassen ist der angezeigte (interpolierte) Zustand der neue
   // Ist-Zustand — die normale Engine uebernimmt ab hier (FULL folgt).
@@ -3945,26 +3963,38 @@ function filmStop() {
 
 function filmRequest(tDays) {
   if (filmReqBusy || !cudaReady) return;
-  const buf = new ArrayBuffer(16);
+  // Videoplayer-Prinzip: ganze Fenster in Playback-Aufloesung vorausholen.
+  // Zielaufloesung ~20 Samples/s Anzeige (Interpolation glaettet dazwischen),
+  // Fenster ~3 s Playback, Deckel 80 Samples pro Batch.
+  const spacing = Math.max(filmRasterDays(), _filmRate / 20);
+  const count = Math.min(80, Math.max(10, Math.ceil(_filmRate * 3 / spacing)));
+  const buf = new ArrayBuffer(24);
   const dv = new DataView(buf);
   dv.setUint32(0, 5, true);                    // MSG_FILM_REQ
+  dv.setUint32(4, count, true);
   dv.setFloat64(8, tDays, true);
+  dv.setFloat64(16, spacing, true);
   filmReqBusy = true;
   cudaSocket.send(buf);
 }
 
 function filmApply(t) {
-  const c = filmCache;
-  if (!c || !filmRefs) return;
+  const q = filmQueue;
+  if (!q || !filmRefs || q.times.length === 0) return;
   const n = filmRefs.length;
-  const span = c.t1 - c.t0;
-  const f = span > 0 ? Math.min(Math.max((t - c.t0) / span, 0), 1) : 0;
-  for (let i = 0; i < n; i++) {
-    const b = filmRefs[i];
-    b.x  = c.s0[i]         + (c.s1[i]         - c.s0[i])         * f;
-    b.y  = c.s0[n + i]     + (c.s1[n + i]     - c.s0[n + i])     * f;
-    b.vx = c.s0[2 * n + i] + (c.s1[2 * n + i] - c.s0[2 * n + i]) * f;
-    b.vy = c.s0[3 * n + i] + (c.s1[3 * n + i] - c.s0[3 * n + i]) * f;
+  // Bracketing-Paar in der Queue suchen (Zeiten aufsteigend)
+  let i = 0;
+  while (i < q.times.length - 1 && q.times[i + 1] < t) i++;
+  const j = Math.min(i + 1, q.times.length - 1);
+  const s0 = q.samples[i], s1 = q.samples[j];
+  const span = q.times[j] - q.times[i];
+  const f = span > 0 ? Math.min(Math.max((t - q.times[i]) / span, 0), 1) : 0;
+  for (let k = 0; k < n; k++) {
+    const b = filmRefs[k];
+    b.x  = s0[k]         + (s1[k]         - s0[k])         * f;
+    b.y  = s0[n + k]     + (s1[n + k]     - s0[n + k])     * f;
+    b.vx = s0[2 * n + k] + (s1[2 * n + k] - s0[2 * n + k]) * f;
+    b.vy = s0[3 * n + k] + (s1[3 * n + k] - s0[3 * n + k]) * f;
   }
 }
 
@@ -3979,22 +4009,44 @@ function filmTick(dtDays, slowFactor, nowMs) {
   const delta = _filmPrevMs ? Math.min(nowMs - _filmPrevMs, 250) : 16.7;
   _filmPrevMs = nowMs;
   const rate = dtDays * 60 / slowFactor;       // Tage pro Echtzeit-Sekunde
-  if (filmLive && filmCache) {
-    // Live-Kante minus zwei Raster als Jitter-Polster
-    filmPlayheadDays = Math.max(filmCache.tail,
-                                filmCache.head - 2 * filmRasterDays());
+  _filmRate = rate;
+  if (filmLive && filmQueue) {
+    // Ziel: Live-Kante minus zwei Raster als Jitter-Polster. Dorthin mit
+    // der geschaetzten Producer-Rate laufen und sanft driften — harter
+    // Sprung nur bei grossem Rueckstand (z. B. nach Tab-Wechsel).
+    const ziel = Math.max(filmQueue.tail,
+                          filmQueue.head - 2 * filmRasterDays());
+    if (_filmHeadRate > 0) {
+      filmPlayheadDays += _filmHeadRate * delta / 1000;
+      const drift = ziel - filmPlayheadDays;
+      if (Math.abs(drift) > 8 * filmRasterDays()) filmPlayheadDays = ziel;
+      else filmPlayheadDays += drift * 0.05;
+    } else {
+      filmPlayheadDays = ziel;
+    }
   } else if (!filmScrubbing) {
     filmPlayheadDays += rate * delta / 1000;
   }
-  if (filmCache) {
-    filmPlayheadDays = Math.min(Math.max(filmPlayheadDays, filmCache.tail),
-                                filmCache.head);
+  if (filmQueue) {
+    filmPlayheadDays = Math.min(Math.max(filmPlayheadDays, filmQueue.tail),
+                                filmQueue.head);
   }
   simTime = filmPlayheadDays;
-  // Bracketing-Samples nachladen, wenn der Playhead den Cache verlaesst
-  if (!filmCache || filmPlayheadDays > filmCache.t1 ||
-      filmPlayheadDays < filmCache.t0) {
+  // Prefetch: neuen Batch anfordern, wenn die Queue fehlt, der Playhead
+  // sie verlassen hat oder weniger als 1/3 Fenster Vorlauf bleibt.
+  if (!filmQueue || filmQueue.times.length === 0) {
     filmRequest(filmPlayheadDays);
+  } else {
+    const tEnd = filmQueue.times[filmQueue.times.length - 1];
+    const tStart = filmQueue.times[0];
+    const fensterRest = tEnd - filmPlayheadDays;
+    const fenster = tEnd - tStart;
+    if (filmPlayheadDays < tStart || fensterRest < fenster / 3) {
+      // nahtlos: neuer Batch beginnt am Playhead (leichte Ueberlappung).
+      // Im Live-Follow entsteht so ein kontinuierlicher Poll an der
+      // wachsenden Kante — genau das ist der Live-Stream.
+      filmRequest(filmPlayheadDays);
+    }
   }
   filmApply(filmPlayheadDays);
   recordTrails();
@@ -4021,12 +4073,12 @@ document.getElementById('film-live').addEventListener('click', () => {
 {
   const scrub = document.getElementById('film-scrub');
   scrub.addEventListener('input', function() {
-    if (!filmCache) return;
+    if (!filmQueue) return;
     filmScrubbing = true;
     filmLive = false;
     const frac = parseInt(this.value, 10) / 10000;
-    filmPlayheadDays = filmCache.tail +
-      frac * (filmCache.head - filmCache.tail);
+    filmPlayheadDays = filmQueue.tail +
+      frac * (filmQueue.head - filmQueue.tail);
   });
   scrub.addEventListener('change', () => { filmScrubbing = false; });
 }
@@ -4043,16 +4095,16 @@ document.getElementById('film-live').addEventListener('click', () => {
 
 // Zeitleisten-Anzeige aktualisieren (aus updateStats, ~1x/s)
 function updateFilmBar() {
-  if (!filmActive || !filmCache) return;
-  const span = filmCache.head - filmCache.tail;
+  if (!filmActive || !filmQueue) return;
+  const span = filmQueue.head - filmQueue.tail;
   document.getElementById('film-range').textContent =
     fmtDE(filmPlayheadDays / 365.25, 2) + ' / ' +
-    fmtDE(filmCache.head / 365.25, 2) + ' ' + t('stats.years') +
+    fmtDE(filmQueue.head / 365.25, 2) + ' ' + t('stats.years') +
     ' (' + t('film.buffer') + ': ' + fmtDE(span / 365.25, 2) + ')';
   document.getElementById('film-live').classList.toggle('live', filmLive);
   if (!filmScrubbing && span > 0) {
     document.getElementById('film-scrub').value =
-      Math.round((filmPlayheadDays - filmCache.tail) / span * 10000);
+      Math.round((filmPlayheadDays - filmQueue.tail) / span * 10000);
   }
 }
 

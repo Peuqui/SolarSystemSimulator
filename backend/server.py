@@ -46,9 +46,8 @@ MSG_FILM_REQ = 5     # u32 typ | u32 pad | f64 tTage (gewuenschte Sim-Zeit)
 # Delta-Record: u32 idx | u32 pad | f64 x | f64 y | f64 vx | f64 vy
 DELTA_REC = np.dtype([("idx", "<u4"), ("pad", "<u4"), ("v", "<f8", (4,))])
 
-# Film-Antwort: u32 status=2 | u32 N | f64 t0 | f64 t1 | f64 tail | f64 head |
-#               sample(t0) 4N f32 | sample(t1) 4N f32
-FILM_HEAD = struct.Struct("<IIdddd")
+# Film-Antwort (Batch): u32 status=2 | u32 N | u32 count | u32 pad |
+#   f64 tail | f64 head | count x f64 zeiten | count x sample (4N f32)
 
 
 class FilmSession:
@@ -101,19 +100,25 @@ class FilmSession:
         if self.task:
             self.task.cancel()
 
-    def bracket(self, t_days: float) -> bytes:
-        """Antwort mit den zwei Raster-Samples um t herum (geklemmt)."""
+    def batch(self, t_days: float, spacing_days: float, count: int) -> bytes:
+        """Sample-Fenster ab t in gewuenschter Dichte (Videoplayer-Prinzip:
+        der Client holt ganze Batches in Playback-Aufloesung voraus, statt
+        pro Roundtrip ein einzelnes Paar — sonst Diashow bei schnellem
+        Playback uebers Netz)."""
         n_s = len(self.samples)
         if n_s == 0:
             raise ValueError("Puffer noch leer")
-        i = int((t_days - self.t0) / self.raster_days)
-        i = max(0, min(i, n_s - 1))
-        j = min(i + 1, n_s - 1)
-        s0, s1 = self.samples[i], self.samples[j]
-        t0 = self.t0 + (i + 1) * self.raster_days
-        t1 = self.t0 + (j + 1) * self.raster_days
-        head = FILM_HEAD.pack(2, len(s0) // 4, t0, t1, self.tail, self.head)
-        return head + s0.tobytes() + s1.tobytes()
+        step = max(1, int(round(spacing_days / self.raster_days)))
+        i0 = int((t_days - self.t0) / self.raster_days) - 1
+        i0 = max(0, min(i0, n_s - 1))
+        idxs = list(range(i0, n_s, step))[:max(2, min(count, 120))]
+        times = np.asarray(
+            [self.t0 + (i + 1) * self.raster_days for i in idxs], "<f8")
+        head = struct.pack("<IIII", 2, len(self.samples[0]) // 4,
+                           len(idxs), 0)
+        meta = struct.pack("<dd", self.tail, self.head)
+        return head + meta + times.tobytes() + \
+            b"".join(self.samples[i].tobytes() for i in idxs)
 
 
 def parse_film_start(buf: bytes):
@@ -197,13 +202,15 @@ async def handle(ws, sim: NBodyCuda):
                 if typ == MSG_FILM_REQ:
                     if film is None:
                         raise ValueError("kein Film aktiv")
-                    # dt-Feld traegt hier die gewuenschte Sim-Zeit (Tage);
-                    # bei leerem Puffer kurz auf den Producer warten.
+                    # Layout: u32 typ | u32 count | f64 tTage | f64 spacingTage
+                    (spacing_days,) = struct.unpack_from(
+                        "<d", message, HEADER.size)
+                    # bei leerem Puffer kurz auf den Producer warten
                     for _ in range(200):
                         if film.samples or not film.running:
                             break
                         await asyncio.sleep(0.02)
-                    await ws.send(film.bracket(dt_years))
+                    await ws.send(film.batch(dt_years, spacing_days, _n))
                     frames += 1
                     continue
                 if typ == MSG_FULL:
