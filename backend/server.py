@@ -27,13 +27,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import multiprocessing as mp
 import struct
+from multiprocessing import shared_memory
 
-import cupy as cp
 import numpy as np
 import websockets
 
-from nbody_kernel import G_AU, NBodyCuda, pick_device
+import film_producer
+from nbody_kernel import NBodyCuda, pick_device
 
 log = logging.getLogger("solarsim-cuda")
 
@@ -43,7 +45,11 @@ MSG_STEP = 1
 MSG_DELTA = 2
 MSG_FILM_START = 3   # u32 typ | u32 N | f64 rasterTage | f64 t0Tage | FULL-Arrays
 MSG_FILM_STOP = 4    # nur Header
-MSG_FILM_REQ = 5     # u32 typ | u32 pad | f64 tTage (gewuenschte Sim-Zeit)
+MSG_FILM_SUB = 6     # u32 typ | u32 pad | f64 tTage | f64 rateTageProSek
+#   Abo: Client meldet Playhead + Tempo (Start, Scrub, Tempo-Wechsel,
+#   1-Hz-Heartbeat). Der Server STREAMT daraufhin kontinuierlich kleine
+#   Frames (Push) und haelt den Client-Puffer ~5 s Playback voll —
+#   TCP-Backpressure statt Anfrage-Roundtrips (Diashow-Ursache remote).
 # Delta-Record: u32 idx | u32 pad | f64 x | f64 y | f64 vx | f64 vy
 DELTA_REC = np.dtype([("idx", "<u4"), ("pad", "<u4"), ("v", "<f8", (4,))])
 
@@ -52,254 +58,206 @@ DELTA_REC = np.dtype([("idx", "<u4"), ("pad", "<u4"), ("v", "<f8", (4,))])
 
 
 class FilmSession:
-    """Freilaufender Producer: rechnet die Simulation mit maximalem
-    Durchsatz voraus und fuellt einen Ringpuffer aus f32-Samples in festem
-    Sim-Zeit-Raster. Der Client liest daraus wie aus einem Video (Player).
-    Stufe 1: ohne Kollisionen — die Koerperliste bleibt konstant."""
+    """Proxy auf den Producer-PROZESS (film_producer.py): eigener Python-
+    Prozess besitzt die GPU und schreibt in einen Shared-Memory-Ring —
+    kein GIL-Sharing. Der Server liest Batches in Mikrosekunden direkt
+    aus dem Ring, waehrend die GPU mit vollem Durchsatz rechnet und nur
+    pausiert, wenn der Ring voll ist (Ueberschreib-Schutz vor dem
+    Player-Playhead)."""
 
     MAX_BYTES = 4 << 30          # Ringpuffer-Obergrenze (~4 GB)
-    MIN_KEEP = 1000              # nie unter diese Sample-Zahl evikten
 
-    def __init__(self, sim: NBodyCuda, state: dict,
-                 t0_days: float, raster_days: float,
-                 mass: np.ndarray, visible: np.ndarray,
-                 real_r: np.ndarray, is_ast: np.ndarray):
-        self.sim = sim
-        self.state = state
+    def __init__(self, t0_days: float, raster_days: float,
+                 x, y, vx, vy, mass, real_r, visible, is_ast):
         self.raster_days = max(0.1, raster_days)
-        self.t0 = t0_days        # Sim-Zeit des Startzustands
-        self.n = state["N"]
-        # Host-Spiegel (Originalreihenfolge) fuer Kollisionslogik und
-        # Sample-Zusammenbau — aendern sich nur bei Merges.
-        self.mass = np.array(mass, dtype=np.float64, copy=True)
-        self.vis = np.array(visible, dtype=np.uint8, copy=True)
-        self.real_r = np.array(real_r, dtype=np.float64, copy=True)
-        self.is_ast = np.array(is_ast, dtype=np.uint8, copy=True) != 0
-        # GPU-Spiegel fuer die Kollisionserkennung — die Positionsdaten
-        # liegen nach jedem Step ohnehin im residenten out_f32-Puffer;
-        # die (M,N)-Masken rechnen auf der Karte, nur Treffer-Indizes
-        # (fast immer leer) kommen zum Host.
-        with cp.cuda.Device(sim.device):
-            self._g_vis = cp.asarray(self.vis)
-            self._g_mass = cp.asarray(self.mass.astype(np.float32))
-            self._g_rr = cp.asarray(self.real_r.astype(np.float32))
-            self._g_ast = cp.asarray(self.is_ast)
-            self._g_prev = None
-        self._mass_f32 = self.mass.astype("<f4").tobytes()
-        self._vis_pad = self.vis.tobytes() + b"\x00" * ((-self.n) % 4)
-        self.collisions = 0
-        self._prev_xy = None     # Positionen des Vor-Samples (Swept-Check)
-        self.samples: list[bytes] = []
-        self.bytes = 0
-        self.running = True
-        self.task: asyncio.Task | None = None
-        # Vorlauf-Fenster (Videostreaming-Prinzip): der Producer rechnet
-        # nur begrenzt ueber den Player-Playhead hinaus und legt sich dann
-        # schlafen — statt ungebremst zukunft zu produzieren, die der
-        # naechste inject verwirft und deren eviction den zuschauer
-        # ueberholt. last_req_t = zuletzt angefragter Playhead;
-        # lookahead_days wird aus dem Konsumtempo der Batch-Anfragen
-        # abgeleitet (~90 s Playback beim aktuellen Tempo).
-        self.last_req_t = t0_days
-        self.lookahead_days = 730.0
-
-    @property
-    def tail(self) -> float:
-        return self.t0
+        self.t0 = t0_days
+        self.n = len(x)
+        # Reines Punkte-Streaming: Sample = nur x|y f32 (8 Bytes/Koerper);
+        # Masse/Sichtbarkeit laufen als Ereignisse im Event-Ring.
+        self.sample_bytes = 8 * self.n
+        self.capacity = max(2000, int(self.MAX_BYTES // self.sample_bytes))
+        self.shm = shared_memory.SharedMemory(
+            create=True, size=self.capacity * self.sample_bytes)
+        self.ev_cap = 65536
+        self.ev_shm = shared_memory.SharedMemory(
+            create=True, size=self.ev_cap * film_producer.EV_BYTES)
+        ctx = mp.get_context("spawn")
+        self.head_val = ctx.Value("q", 0, lock=False)
+        self.playhead_val = ctx.Value("d", t0_days, lock=False)
+        self.coll_val = ctx.Value("q", 0, lock=False)
+        self.ev_count_val = ctx.Value("q", 0, lock=False)
+        self.running_val = ctx.Value("b", 1, lock=False)
+        state = {k: np.array(v, copy=True) for k, v in
+                 (("x", x), ("y", y), ("vx", vx), ("vy", vy),
+                  ("mass", mass), ("realR", real_r),
+                  ("visible", visible), ("isAst", is_ast))}
+        self.proc = ctx.Process(
+            target=film_producer.producer_main,
+            args=(self.shm.name, self.sample_bytes, self.capacity,
+                  self.ev_shm.name, self.ev_cap, self.ev_count_val,
+                  self.head_val, self.playhead_val, self.coll_val,
+                  self.running_val, state, self.raster_days, t0_days),
+            daemon=True)
+        self.proc.start()
 
     @property
     def head(self) -> float:
-        return self.t0 + len(self.samples) * self.raster_days
+        return self.t0 + self.head_val.value * self.raster_days
 
-    async def produce(self) -> None:
-        dt_years = self.raster_days / 365.25
-        try:
-            while self.running:
-                # Vorlauf voll -> schlafen, bis der Player aufholt
-                if self.head - self.last_req_t > self.lookahead_days:
-                    await asyncio.sleep(0.05)
-                    continue
-                sample = await asyncio.to_thread(self._produce_one, dt_years)
-                self.samples.append(sample)
-                self.bytes += len(sample)
-                # GIL-Luft fuer den Event-Loop: mit komfortablem Polster
-                # vor dem Player kurz durchatmen, damit Batch-Anfragen
-                # sofort beantwortet werden (sonst Stand-und-Sprung beim
-                # Client trotz produzierender GPU). Beim Aufholen: Vollgas.
-                if self.head - self.last_req_t > 30 * self.raster_days:
-                    await asyncio.sleep(0.004)
-                else:
-                    await asyncio.sleep(0)
-                if self.bytes > self.MAX_BYTES and len(self.samples) > self.MIN_KEEP:
-                    # Eviction-Schutz: nie ueber (Playhead - Vorlauf) hinaus
-                    # loeschen — Position und Rueckspul-Marge des Zuschauers
-                    # sind heilig. Ist nichts loeschbar, pausiert der
-                    # Producer (Speicher-Deckel statt Zuschauer-Ueberholen).
-                    guard_t = self.last_req_t - self.lookahead_days
-                    max_drop = int((guard_t - self.t0) / self.raster_days)
-                    drop = min(len(self.samples) // 8, max(0, max_drop))
-                    if drop == 0:
-                        await asyncio.sleep(0.2)
-                        continue
-                    for s in self.samples[:drop]:
-                        self.bytes -= s.nbytes
-                    del self.samples[:drop]
-                    self.t0 += drop * self.raster_days
-        except Exception:
-            log.exception("Film-Producer abgebrochen")
-            self.running = False
+    @property
+    def tail_abs(self) -> int:
+        # Sicherheitsmarge gegen Lese-/Schreib-Ueberlappung am Ringende
+        return max(0, self.head_val.value - self.capacity + 16)
 
-    def stop(self) -> None:
-        self.running = False
-        if self.task:
-            self.task.cancel()
+    @property
+    def tail(self) -> float:
+        return self.t0 + self.tail_abs * self.raster_days
 
-    def _detect_and_merge(self, sample: np.ndarray) -> None:
-        """Kollisionen (massive x alle, Swept + ballistische Prognose) und
-        Numerik-Waechter — komplett auf der GPU: die Positionsdaten liegen
-        nach jedem Step ohnehin im residenten out_f32-Puffer, nur Treffer-
-        Indizes (fast immer leer) kommen zum Host. Merges wirken auf den
-        residenten f64-Zustand UND die Host-/GPU-Spiegel; aeltere Samples
-        bleiben unveraendert (rueckspulbar)."""
-        st = self.state
-        n = self.n
-        x = sample[0:n]
-        y = sample[n:2 * n]
-        vx = sample[2 * n:3 * n]
-        vy = sample[3 * n:4 * n]
-        hit_pairs = []
-        runaway_np = None
-        with cp.cuda.Device(self.sim.device):
-            g = st["out_f32"]
-            gx = g[0:n]
-            gy = g[n:2 * n]
-            gvx = g[2 * n:3 * n]
-            gvy = g[3 * n:4 * n]
-            if self._g_prev is None:
-                px, py = gx, gy
-            else:
-                px, py = self._g_prev[0:n], self._g_prev[n:2 * n]
-            m_idx_all = st["m_idx_h"]
-            m_alive = m_idx_all[(self.vis[m_idx_all] != 0)
-                                & (self.mass[m_idx_all] > 0)]
-            if len(m_alive):
-                gm = cp.asarray(m_alive)
-                cx = gx[gm][:, None]
-                cy = gy[gm][:, None]
-                rsum = self._g_rr[gm][:, None] + self._g_rr[None, :]
-                rsum2 = rsum * rsum
-                alive = self._g_vis != 0
+    @property
+    def running(self) -> bool:
+        return self.proc.is_alive()
 
-                def seg_hit(p0x, p0y, p1x, p1y):
-                    sx = (p1x - p0x)[None, :]
-                    sy = (p1y - p0y)[None, :]
-                    seg2 = sx * sx + sy * sy
-                    tt = ((cx - p0x[None, :]) * sx +
-                          (cy - p0y[None, :]) * sy) / cp.where(
-                              seg2 > 0, seg2, cp.float32(1.0))
-                    tt = cp.clip(tt, 0.0, 1.0)
-                    ddx = p0x[None, :] + tt * sx - cx
-                    ddy = p0y[None, :] + tt * sy - cy
-                    return ddx * ddx + ddy * ddy <= rsum2
-
-                dt_y = cp.float32(self.raster_days / 365.25)
-                hit2d = (seg_hit(px, py, gx, gy) |
-                         seg_hit(gx, gy, gx + gvx * dt_y, gy + gvy * dt_y)) \
-                    & alive[None, :]
-                hit2d[cp.arange(len(gm)), gm] = False
-                rows, cols = cp.nonzero(hit2d)
-                if rows.size:
-                    hit_pairs = list(zip(cp.asnumpy(rows).tolist(),
-                                         cp.asnumpy(cols).tolist()))
-                # Numerik-Waechter (siehe unten) mit Schwerpunkt der massiven
-                mw = self.mass[m_alive]
-                msum = float(mw.sum())
-                if msum > 0:
-                    bx = float((x[m_alive] * mw).sum() / msum)
-                    by = float((y[m_alive] * mw).sum() / msum)
-                    r = cp.maximum(cp.hypot(gx - cp.float32(bx),
-                                            gy - cp.float32(by)),
-                                   cp.float32(1e-6))
-                    v2 = gvx * gvx + gvy * gvy
-                    vesc2 = cp.float32(2.0 * G_AU * msum) / r
-                    runaway = (v2 > 9.0 * vesc2) & self._g_ast \
-                        & (self._g_vis != 0)
-                    ridx = cp.flatnonzero(runaway)
-                    if ridx.size:
-                        runaway_np = cp.asnumpy(ridx)
-            self._g_prev = g.copy()
-        changed = False
-        for row, j in hit_pairs:
-            mi = int(m_alive[row])
-            j = int(j)
-            if not self.vis[mi] or not self.vis[j] or self.mass[mi] <= 0:
-                continue
-            a, b = (mi, j) if self.mass[mi] >= self.mass[j] else (j, mi)
-            m_a, m_b = self.mass[a], self.mass[b]
-            m_ges = m_a + m_b
-            if m_ges <= 0:
-                continue
-            nx = (x[a] * m_a + x[b] * m_b) / m_ges
-            ny = (y[a] * m_a + y[b] * m_b) / m_ges
-            nvx = (vx[a] * m_a + vx[b] * m_b) / m_ges
-            nvy = (vy[a] * m_a + vy[b] * m_b) / m_ges
-            self.sim.apply_body_state(self.state, a, nx, ny, nvx, nvy, m_ges)
-            self.sim.deactivate_body(self.state, b)
-            self.mass[a] = m_ges
-            self.mass[b] = 0.0
-            self.vis[b] = 0
-            self.real_r[a] = (self.real_r[a] ** 3 +
-                              self.real_r[b] ** 3) ** (1.0 / 3.0)
-            with cp.cuda.Device(self.sim.device):
-                self._g_vis[b] = 0
-                self._g_mass[a] = np.float32(m_ges)
-                self._g_mass[b] = 0
-                self._g_rr[a] = np.float32(self.real_r[a])
-            self.collisions += 1
-            changed = True
-        if runaway_np is not None:
-            for j in runaway_np:
-                j = int(j)
-                if not self.vis[j]:
-                    continue
-                self.sim.deactivate_body(self.state, j)
-                self.mass[j] = 0.0
-                self.vis[j] = 0
-                with cp.cuda.Device(self.sim.device):
-                    self._g_vis[j] = 0
-                    self._g_mass[j] = 0
-                self.collisions += 1
-                changed = True
-        if changed:
-            self._mass_f32 = self.mass.astype("<f4").tobytes()
-            self._vis_pad = self.vis.tobytes() + b"\x00" * ((-self.n) % 4)
-
-    def _produce_one(self, dt_years: float) -> bytes:
-        """Ein Producer-Schritt komplett im Worker-Thread: Kernel-Step,
-        GPU-Kollisionserkennung, Sample-Zusammenbau — ein Thread-Hop
-        statt drei."""
-        out = self.sim.step(self.state, dt_years)
-        self._detect_and_merge(out)
-        return out.tobytes() + self._mass_f32 + self._vis_pad
+    @property
+    def samples(self):
+        # Kompatibilitaet zur Warte-Schleife im Handler ("Puffer leer?")
+        return self.head_val.value
 
     def batch(self, t_days: float, spacing_days: float, count: int) -> bytes:
-        """Sample-Fenster ab t in gewuenschter Dichte (Videoplayer-Prinzip:
-        der Client holt ganze Batches in Playback-Aufloesung voraus, statt
-        pro Roundtrip ein einzelnes Paar — sonst Diashow bei schnellem
-        Playback uebers Netz)."""
-        n_s = len(self.samples)
-        if n_s == 0:
+        head_abs = self.head_val.value
+        if head_abs == 0:
             raise ValueError("Puffer noch leer")
+        # Playhead an den Producer melden (Vorlauf-/Ueberschreib-Schutz)
+        self.playhead_val.value = t_days
         step = max(1, int(round(spacing_days / self.raster_days)))
         i0 = int((t_days - self.t0) / self.raster_days) - 1
-        i0 = max(0, min(i0, n_s - 1))
-        idxs = list(range(i0, n_s, step))[:max(2, min(count, 120))]
+        i0 = max(self.tail_abs, min(i0, head_abs - 1))
+        # Nahe der Kante den Abstand aufs Raster kollabieren: lieber die
+        # real existierenden Samples dicht liefern als 1 Sample pro Batch
+        # (sonst steht der Playhead und springt pro Roundtrip).
+        avail = head_abs - i0
+        if avail < step * 8:
+            step = max(1, avail // 8)
+        idxs = list(range(i0, head_abs, step))[:max(2, min(count, 120))]
         times = np.asarray(
             [self.t0 + (i + 1) * self.raster_days for i in idxs], "<f8")
-        head = struct.pack("<IIII", 2, self.n, len(idxs), self.collisions)
+        head = struct.pack("<IIII", 2, self.n, len(idxs),
+                           int(self.coll_val.value))
         meta = struct.pack("<dd", self.tail, self.head)
+        s = self.sample_bytes
+        buf = self.shm.buf
+        parts = [bytes(buf[(i % self.capacity) * s:
+                           (i % self.capacity) * s + s]) for i in idxs]
+        return head + meta + times.tobytes() + b"".join(parts)
+
+    # ---- Streaming (Push) ----
+    sub_rate = 60.0          # Tage/s Playback-Tempo des Clients
+    stream_task = None
+    sent_abs = None          # aktuelle Stream-Position (absoluter Sample-Index)
+    _bw = 4e6                # gemessene Leitungs-Bandbreite (Bytes/s, EWMA)
+
+    sent_ev = 0              # bereits gestreamte Ereignisse
+
+    def build_frame(self, idxs: list) -> bytes:
+        times = np.asarray(
+            [self.t0 + (i + 1) * self.raster_days for i in idxs], "<f8")
+        # Neue Ereignisse seit dem letzten Frame mitschicken (max. 256)
+        ev_total = int(self.ev_count_val.value)
+        ev_from = max(self.sent_ev, ev_total - self.ev_cap + 8)
+        ev_n = min(256, ev_total - ev_from)
+        eb = film_producer.EV_BYTES
+        ev_parts = [bytes(self.ev_shm.buf[(e % self.ev_cap) * eb:
+                                          (e % self.ev_cap) * eb + eb])
+                    for e in range(ev_from, ev_from + ev_n)]
+        self.sent_ev = ev_from + ev_n
+        head = struct.pack("<IIII", 3, self.n, len(idxs), ev_n)
+        meta = struct.pack("<dd", self.tail, self.head)
+        s = self.sample_bytes
+        buf = self.shm.buf
+        parts = [bytes(buf[(i % self.capacity) * s:
+                           (i % self.capacity) * s + s]) for i in idxs]
         return head + meta + times.tobytes() + \
-            b"".join(self.samples[i] for i in idxs)
+            b"".join(parts) + b"".join(ev_parts)
+
+    async def stream(self, ws) -> None:
+        """Kontinuierlicher Sample-Push: haelt den Client-Puffer ~5 s
+        Playback voll. Kleine Frames (<=256 KB) — TCP-Backpressure via
+        await send drosselt automatisch auf Leitungstempo."""
+        try:
+            while self.running_val.value:
+                ph = self.playhead_val.value
+                if self.sent_abs is None:
+                    self.sent_abs = max(self.tail_abs,
+                                        int((ph - self.t0) /
+                                            self.raster_days) - 1)
+                sent_abs = self.sent_abs
+                head_abs = self.head_val.value
+                # Puffer-Ziel: 5 s Playback voraus (mind. 8 Raster)
+                target = max(8 * self.raster_days, self.sub_rate * 5.0)
+                sent_t = self.t0 + sent_abs * self.raster_days
+                if sent_t - ph > target or sent_abs >= head_abs:
+                    await asyncio.sleep(0.03)
+                    continue
+                # Adaptive Dichte (Videostreaming-Prinzip): Wunsch sind
+                # 20 Samples/s Anzeige, aber die GEMESSENE Bandbreite
+                # deckelt — bei 55k Koerpern (1,2 MB/Sample) auf schmaler
+                # Leitung werden es z. B. 1-2 Samples/s mit grossem
+                # Sim-Abstand; der Client interpoliert dazwischen.
+                # (Raster-dicht ohne Ruecksicht = 1 Bild pro Transferzeit
+                # = Diashow.)
+                sps = min(20.0, max(0.5,
+                    self._bw * 0.7 / self.sample_bytes))
+                spacing = max(self.raster_days, self.sub_rate / sps)
+                step = max(1, int(round(spacing / self.raster_days)))
+                avail = head_abs - sent_abs
+                if avail < step:
+                    await asyncio.sleep(0.03)
+                    continue
+                max_count = max(1, min(
+                    24, (512 * 1024) // self.sample_bytes))
+                idxs = list(range(sent_abs, head_abs, step))[:max_count]
+                if not idxs:
+                    await asyncio.sleep(0.03)
+                    continue
+                frame = self.build_frame(idxs)
+                t_send = asyncio.get_event_loop().time()
+                await ws.send(frame)
+                dur = asyncio.get_event_loop().time() - t_send
+                # Bandbreiten-EWMA nur aus aussagekraeftigen Transfers
+                if len(frame) > 65536 and dur > 0.005:
+                    self._bw = 0.7 * self._bw + 0.3 * (len(frame) / dur)
+                self.sent_abs = idxs[-1] + step
+        except Exception:
+            pass
+
+    def resubscribe(self, t_days: float, rate: float) -> None:
+        self.playhead_val.value = t_days
+        self.sub_rate = max(0.1, rate)
+        # Stream-Position NUR bei echten Spruengen (Scrub) neu setzen —
+        # der 1-Hz-Heartbeat darf den laufenden Stream nicht anfassen
+        # (sonst jede Sekunde Neustart-Schluckauf -> leerer Client-Puffer).
+        if self.sent_abs is not None:
+            sent_t = self.t0 + self.sent_abs * self.raster_days
+            fenster = max(8 * self.raster_days, self.sub_rate * 6.0)
+            if abs(sent_t - t_days) > fenster:
+                self.sent_abs = None
+
+    def stop(self) -> None:
+        if self.stream_task:
+            self.stream_task.cancel()
+        self.running_val.value = 0
+        try:
+            self.proc.join(timeout=1.5)
+            if self.proc.is_alive():
+                self.proc.terminate()
+        except Exception:
+            pass
+        try:
+            self.shm.close()
+            self.shm.unlink()
+            self.ev_shm.close()
+            self.ev_shm.unlink()
+        except Exception:
+            pass
 
 
 def parse_film_start(buf: bytes):
@@ -367,11 +325,8 @@ async def handle(ws, sim: NBodyCuda):
                         visible, is_ast = parse_film_start(message)
                     if film:
                         film.stop()
-                    f_state = await asyncio.to_thread(
-                        sim.load_state, x, y, vx, vy, mass, visible, is_ast)
-                    film = FilmSession(sim, f_state, t0_days, raster_days,
-                                       mass, visible, real_r, is_ast)
-                    film.task = asyncio.create_task(film.produce())
+                    film = FilmSession(t0_days, raster_days, x, y, vx, vy,
+                                       mass, real_r, visible, is_ast)
                     fulls += 1
                     log.info("Film gestartet: N=%d, Raster %.2f Tage",
                              len(x), film.raster_days)
@@ -381,25 +336,14 @@ async def handle(ws, sim: NBodyCuda):
                         film.stop()
                         film = None
                     continue
-                if typ == MSG_FILM_REQ:
+                if typ == MSG_FILM_SUB:
                     if film is None:
                         raise ValueError("kein Film aktiv")
-                    # Layout: u32 typ | u32 count | f64 tTage | f64 spacingTage
-                    (spacing_days,) = struct.unpack_from(
-                        "<d", message, HEADER.size)
-                    # Playhead + Konsumtempo fuer das Vorlauf-Fenster:
-                    # ein Batch deckt ~3 s Playback -> Faktor 30 = ~90 s.
-                    # Direkte Zuweisung (kein max): nach einem Rueck-Scrub
-                    # muss der Eviction-Schutz die AKTUELLE Position decken.
-                    film.last_req_t = dt_years
-                    film.lookahead_days = min(
-                        36500.0, max(365.0, 30.0 * spacing_days * _n))
-                    # bei leerem Puffer kurz auf den Producer warten
-                    for _ in range(200):
-                        if film.samples or not film.running:
-                            break
-                        await asyncio.sleep(0.02)
-                    await ws.send(film.batch(dt_years, spacing_days, _n))
+                    (rate,) = struct.unpack_from("<d", message, HEADER.size)
+                    film.resubscribe(dt_years, rate)
+                    if film.stream_task is None:
+                        film.stream_task = asyncio.create_task(
+                            film.stream(ws))
                     frames += 1
                     continue
                 if typ == MSG_FULL:

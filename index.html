@@ -3712,74 +3712,59 @@ function initCudaBackend(urlIndex = 0) {
     }
     const buf = e.data;
     const status = new Uint32Array(buf, 0, 2)[0];
-    if (status === 2) {
-      // Film-Batch: u32 status | u32 N | u32 count | u32 pad |
-      // f64 tail, head | count x f64 zeiten | count x sample (4N f32)
+    if (status === 3) {
+      // v3-Punkte-Frame: u32 status | u32 N | u32 count | u32 evCount |
+      // f64 tail, head | count x f64 zeiten | count x (2N f32 Positionen) |
+      // evCount x Ereignis (f64 t | u32 a | u32 b | f32 masse | u32 pad)
       const hdr = new Uint32Array(buf, 0, 4);
-      const n = hdr[1], count = hdr[2], collCount = hdr[3];
-      // Stale-Response-Schutz: Antwort einer VORHERIGEN Film-Session
-      // (z. B. nach Inject-Neustart) hat eine andere Koerperzahl —
-      // verwerfen, sonst liest filmApply hinter dem Sample-Ende
-      // (undefined -> NaN -> Koerper verschwinden aus dem Rendering).
-      if (!filmRefs || n !== filmRefs.length) {
-        filmReqBusy = false;
-        return;
-      }
+      const n = hdr[1], count = hdr[2], evCount = hdr[3];
+      if (!filmRefs || n !== filmRefs.length) return;   // stale Session
       const dv = new DataView(buf);
       const tail = dv.getFloat64(16, true);
       const head = dv.getFloat64(24, true);
       const times = new Float64Array(buf, 32, count);
-      const samples = [];
+      if (!filmQueue) filmQueue = { times: [], samples: [], tail, head };
+      filmQueue.tail = tail;
+      filmQueue.head = head;
+      _filmMetaTail = tail;
+      _filmMetaHead = head;
       let off = 32 + 8 * count;
-      const visPad = (4 - (n % 4)) % 4;
+      let lastT = filmQueue.times.length
+        ? filmQueue.times[filmQueue.times.length - 1] : -Infinity;
       for (let i = 0; i < count; i++) {
-        samples.push({
-          f: new Float32Array(buf, off, 5 * n),          // x|y|vx|vy|Masse
-          v: new Uint8Array(buf, off + 20 * n, n),       // Sichtbarkeit
+        if (times[i] > lastT) {
+          filmQueue.times.push(times[i]);
+          filmQueue.samples.push({ f: new Float32Array(buf, off, 2 * n) });
+          lastT = times[i];
+        }
+        off += 8 * n;
+      }
+      for (let e = 0; e < evCount; e++) {
+        filmEvents.push({
+          t: dv.getFloat64(off, true),
+          a: dv.getUint32(off + 8, true),
+          b: dv.getUint32(off + 12, true),
+          mass: dv.getFloat32(off + 16, true),
         });
-        off += 20 * n + n + visPad;
+        off += 24;
       }
-      // Kollisionszaehler des Producers (Phase 2) in die Anzeige
-      if (collCount > 0 && filmActive) {
-        totalCollisions = collCount;
-        const cc = document.getElementById('collision-count');
-        if (cc) cc.textContent = collCount;
-        const cb = document.getElementById('collision-badge');
-        if (cb) cb.classList.add('show');
+      while (filmQueue.times.length > 2 &&
+             filmQueue.times[1] < filmPlayheadDays - 2 * filmRasterDays()) {
+        filmQueue.times.shift();
+        filmQueue.samples.shift();
       }
-      // Producer-Rate schaetzen (geglaettet) — Grundlage fuer fluessiges
-      // Live-Follow: der Playhead laeuft mit dieser Rate statt bei jeder
-      // Antwort an die Kante zu springen (wichtig bei WAN-Latenz).
+      // Producer-Raten-Schaetzung — NUR ueber Fenster >= 500 ms (pro
+      // Frame gemessen ist sie wildes Rauschen)
       const nowP = performance.now();
-      // Durchsatz-EWMA — nur aussagekraeftige Batches (>64 KB), sonst
-      // dominiert die RTT die Messung
-      if (_filmReqSentMs && buf.byteLength > 65536) {
-        const dur = (nowP - _filmReqSentMs) / 1000;
-        if (dur > 0.02) {
-          _filmThroughput = 0.7 * _filmThroughput + 0.3 * (buf.byteLength / dur);
-        }
-      }
-      if (_filmHeadPrevMs && head > _filmHeadPrev) {
+      if (!_filmHeadPrevMs) {
+        _filmHeadPrev = head;
+        _filmHeadPrevMs = nowP;
+      } else if (nowP - _filmHeadPrevMs >= 500 && head > _filmHeadPrev) {
         const r = (head - _filmHeadPrev) / ((nowP - _filmHeadPrevMs) / 1000);
-        _filmHeadRate = _filmHeadRate ? 0.7 * _filmHeadRate + 0.3 * r : r;
+        _filmHeadRate = _filmHeadRate ? 0.6 * _filmHeadRate + 0.4 * r : r;
+        _filmHeadPrev = head;
+        _filmHeadPrevMs = nowP;
       }
-      _filmHeadPrev = head;
-      _filmHeadPrevMs = nowP;
-      // Alte Anzeigepositionen merken — der Restfehler der Fortschreibung
-      // wird nach dem Wechsel weggeblendet statt sichtbar zu schnappen.
-      if (filmRefs && filmQueue) {
-        if (!_filmOffX || _filmOffX.length !== filmRefs.length) {
-          _filmOffX = new Float32Array(filmRefs.length);
-          _filmOffY = new Float32Array(filmRefs.length);
-        }
-        for (let k = 0; k < filmRefs.length; k++) {
-          _filmOffX[k] = filmRefs[k].x;
-          _filmOffY[k] = filmRefs[k].y;
-        }
-        _filmResync = true;
-      }
-      filmQueue = { times, samples, tail, head };
-      filmReqBusy = false;
       return;
     }
     if (status !== 0) {
@@ -4035,10 +4020,20 @@ function filmStart() {
   }
   cudaSocket.send(buf);
   filmRefs = src.slice();
+  filmEvents = [];
+  _filmEventsApplied = 0;
+  _filmBaseVis = new Uint8Array(N);
+  _filmBaseMass = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    _filmBaseVis[i] = src[i].visible ? 1 : 0;
+    _filmBaseMass[i] = src[i].mass;
+  }
   filmActive = true;
   filmQueue = null;
   filmReqBusy = false;
   filmLive = true;
+  // Erst-Abo (WebSocket ist geordnet — kommt nach dem FILM_START an)
+  setTimeout(() => filmSub(filmPlayheadDays), 0);
   filmPlayheadDays = simTime;
   _filmLastTrailT = simTime;
   _filmSentRev = _physRev;
@@ -4062,129 +4057,84 @@ function filmStop() {
   document.getElementById('film-bar').classList.remove('show');
 }
 
-function filmRequest(tDays) {
-  if (filmReqBusy || !cudaReady) return;
-  // Videoplayer-Prinzip: ganze Fenster in Playback-Aufloesung vorausholen.
-  // Zielaufloesung ~20 Samples/s Anzeige (Interpolation glaettet dazwischen),
-  // Fenster ~3 s Playback, Deckel 80 Samples pro Batch.
-  // Leistbare Sample-Rate aus gemessenem Durchsatz (2..20 Samples/s);
-  // Batch-Groesse zusaetzlich auf ~1,5 s Transferzeit deckeln.
-  const sampleBytes = 16 * bodies.length + 8;
-  const affordableSps = Math.max(2, Math.min(20,
-    (_filmThroughput * 0.5) / sampleBytes));
-  const spacing = Math.max(filmRasterDays(), _filmRate / affordableSps);
-  let count = Math.min(80, Math.max(4, Math.ceil(_filmRate * 3 / spacing)));
-  count = Math.max(4, Math.min(count,
-    Math.floor((_filmThroughput * 1.5) / sampleBytes) || 4));
+function filmSub(tDays) {
+  // Abo/Heartbeat: Playhead + Playback-Tempo an den Server — der streamt
+  // daraufhin kontinuierlich (Push mit TCP-Backpressure) und haelt den
+  // Puffer ~5 s voll. Kein Anfrage-Roundtrip pro Batch mehr.
+  if (!cudaReady || !filmActive) return;
   const buf = new ArrayBuffer(24);
   const dv = new DataView(buf);
-  dv.setUint32(0, 5, true);                    // MSG_FILM_REQ
-  dv.setUint32(4, count, true);
+  dv.setUint32(0, 6, true);                    // MSG_FILM_SUB
   dv.setFloat64(8, tDays, true);
-  dv.setFloat64(16, spacing, true);
-  filmReqBusy = true;
-  _filmReqSentMs = performance.now();
+  dv.setFloat64(16, _filmRate, true);
+  _filmLastSubMs = performance.now();
   cudaSocket.send(buf);
 }
+let _filmLastSubMs = 0;
+let _filmMetaTail = 0;       // Server-Puffergrenzen (aus jedem Push-Frame)
+let _filmMetaHead = 0;
+let filmEvents = [];         // Merge/Kill-Ereignisse { t, a, b, mass }
+let _filmEventsApplied = 0;
+let _filmBaseVis = null;     // Baseline fuer Rueckspulen ueber Ereignisse
+let _filmBaseMass = null;
 
 function filmApply(t) {
   const q = filmQueue;
   if (!q || !filmRefs || q.times.length === 0) return;
   const n = filmRefs.length;
-  if (q.samples[0].f.length !== 5 * n) return; // Sample passt nicht zur Session
-  // Masse + Sichtbarkeit vom Floor-Sample uebernehmen (Kollisions-Merges
-  // des Producers werden so beim Abspielen an der richtigen Timeline-
-  // Position sichtbar — und beim Zurueckspulen wieder rueckgaengig).
-  const applyMeta = (s) => {
-    for (let k = 0; k < n; k++) {
-      const b = filmRefs[k];
-      const m = s.f[4 * n + k];
-      if (m !== b.mass && m > 0) {
-        b.mass = m;
-        b.radius = massToRadius(m);
-      }
-      b.visible = s.v[k] !== 0;
-    }
-  };
-  // Jenseits des letzten Samples (Playhead an der extrapolierten Kante,
-  // naechster Batch noch unterwegs): mit den Sample-Geschwindigkeiten
-  // linear fortschreiben — durch das Kanten-Polster auf <=2 Raster
-  // begrenzt, dann ersetzt der naechste Batch alles.
-  const lastI = q.times.length - 1;
-  if (t > q.times[lastI]) {
-    // Kruemmungs-korrigierte Fortschreibung (quadratisch): Beschleunigung
-    // aus den letzten beiden Samples — rein lineares Fortschreiben laesst
-    // Planeten tangential von der Bahn laufen, und der naechste Batch
-    // "zuckt" sie zurueck.
-    const s = q.samples[lastI];
-    const sp = q.samples[Math.max(0, lastI - 1)];
-    const dtPrevY = lastI > 0
-      ? (q.times[lastI] - q.times[lastI - 1]) / 365.25 : 0;
-    // Fortschreibung hart deckeln: max. 2 Raster UND ~T_min/20 (wie die
-    // Pipeline-Extrapolation). Alles darueber laesst das ganze System
-    // sichtbar tangential "nach aussen pulsen", bis der Batch es
-    // zurueckzieht — lieber kurz stehenbleiben.
-    const maxDays = Math.min(2 * filmRasterDays(), 6 * trailIntervalDays);
-    const dtY = Math.min((t - q.times[lastI]) / 365.25, maxDays / 365.25);
-    for (let k = 0; k < n; k++) {
-      const b = filmRefs[k];
-      const vx1 = s.f[2 * n + k], vy1 = s.f[3 * n + k];
-      let axk = 0, ayk = 0;
-      if (dtPrevY > 0) {
-        axk = (vx1 - sp.f[2 * n + k]) / dtPrevY;
-        ayk = (vy1 - sp.f[3 * n + k]) / dtPrevY;
-      }
-      b.vx = vx1 + axk * dtY;
-      b.vy = vy1 + ayk * dtY;
-      b.x = s.f[k] + vx1 * dtY + 0.5 * axk * dtY * dtY;
-      b.y = s.f[n + k] + vy1 * dtY + 0.5 * ayk * dtY * dtY;
-    }
-    applyMeta(s);
-    _filmSmooth();
-    return;
-  }
-  // Bracketing-Paar in der Queue suchen (Zeiten aufsteigend)
+  if (q.samples[0].f.length !== 2 * n) return;  // Sample passt nicht zur Session
+  // Naechstliegendes Sample suchen (keine Interpolation — User-Wunsch:
+  // reines Punkte-Streaming, angezeigt wird nur exakt Berechnetes)
   let i = 0;
   while (i < q.times.length - 1 && q.times[i + 1] < t) i++;
   const j = Math.min(i + 1, q.times.length - 1);
-  const s0 = q.samples[i], s1 = q.samples[j];
-  const span = q.times[j] - q.times[i];
-  const f = span > 0 ? Math.min(Math.max((t - q.times[i]) / span, 0), 1) : 0;
+  const s0 = q.samples[(t - q.times[i]) > (q.times[j] - t) ? j : i];
   for (let k = 0; k < n; k++) {
     const b = filmRefs[k];
-    b.x  = s0.f[k]         + (s1.f[k]         - s0.f[k])         * f;
-    b.y  = s0.f[n + k]     + (s1.f[n + k]     - s0.f[n + k])     * f;
-    b.vx = s0.f[2 * n + k] + (s1.f[2 * n + k] - s0.f[2 * n + k]) * f;
-    b.vy = s0.f[3 * n + k] + (s1.f[3 * n + k] - s0.f[3 * n + k]) * f;
+    b.x = s0.f[k];
+    b.y = s0.f[n + k];
   }
-  applyMeta(s0);
-  _filmSmooth();
+  filmApplyEvents(t);
 }
 
-// Restfehler nach Batch-Wechsel ueber ~10 Frames wegblenden — die Anzeige
-// gleitet auf die authoritative Bahn, statt sichtbar zu schnappen.
-function _filmSmooth() {
-  if (!_filmOffX || !filmRefs) return;
-  const n = filmRefs.length;
-  if (_filmResync) {
-    _filmResync = false;
-    for (let k = 0; k < n; k++) {
-      _filmOffX[k] -= filmRefs[k].x;   // alt(Anzeige) - neu(authoritativ)
-      _filmOffY[k] -= filmRefs[k].y;
+// Merge/Kill-Ereignisse bis Zeitpunkt t anwenden — und beim Rueckspulen
+// aus der Baseline wieder aufbauen (Ereignisse sind zeitsortiert).
+function filmApplyEvents(t) {
+  if (!filmRefs || !_filmBaseVis) return;
+  if (_filmEventsApplied > 0 &&
+      filmEvents[_filmEventsApplied - 1].t > t) {
+    for (let k = 0; k < filmRefs.length; k++) {
+      const b = filmRefs[k];
+      b.visible = _filmBaseVis[k] === 1;
+      if (b.mass !== _filmBaseMass[k]) {
+        b.mass = _filmBaseMass[k];
+        b.radius = massToRadius(b.mass);
+      }
     }
+    _filmEventsApplied = 0;
   }
-  let aktiv = false;
-  for (let k = 0; k < n; k++) {
-    const ox = _filmOffX[k], oy = _filmOffY[k];
-    if (ox === 0 && oy === 0) continue;
-    if (ox * ox + oy * oy < 1e-12) { _filmOffX[k] = 0; _filmOffY[k] = 0; continue; }
-    filmRefs[k].x += ox;
-    filmRefs[k].y += oy;
-    _filmOffX[k] = ox * 0.75;
-    _filmOffY[k] = oy * 0.75;
-    aktiv = true;
+  let changed = false;
+  while (_filmEventsApplied < filmEvents.length &&
+         filmEvents[_filmEventsApplied].t <= t) {
+    const ev = filmEvents[_filmEventsApplied++];
+    const loser = filmRefs[ev.b];
+    if (loser) loser.visible = false;
+    if (ev.a !== 0xFFFFFFFF && ev.mass > 0) {
+      const surv = filmRefs[ev.a];
+      if (surv) {
+        surv.mass = ev.mass;
+        surv.radius = massToRadius(ev.mass);
+      }
+    }
+    changed = true;
   }
-  return aktiv;
+  if (changed || totalCollisions !== _filmEventsApplied) {
+    totalCollisions = _filmEventsApplied;
+    const cc = document.getElementById('collision-count');
+    if (cc) cc.textContent = _filmEventsApplied;
+    const cb = document.getElementById('collision-badge');
+    if (cb) cb.classList.toggle('show', _filmEventsApplied > 0);
+  }
 }
 
 function filmTick(dtDays, slowFactor, nowMs) {
@@ -4205,11 +4155,12 @@ function filmTick(dtDays, slowFactor, nowMs) {
   // Schub-Ruckeln, sobald man schneller abspielt als produziert wird.
   let kante = Infinity;
   if (filmQueue && filmQueue.times.length) {
-    // Der Playhead zeigt NIE etwas Unberechnetes: Deckel ist das letzte
-    // real empfangene Sample (Livestream-Prinzip — man haengt ein
-    // Latenz-Polster hinter der Kante, dafuer ist zwischen zwei echten
-    // Samples immer sauber interpolierbar; kein Fortschreiben, kein
-    // Pulsen). Die GPU produziert ohnehin schneller als 60 fps Anzeige.
+    // Livestream-Prinzip: Der Playhead haengt ein ZEITBASIERTES Polster
+    // (~1,5 Echtzeit-Sekunden Playback) hinter dem letzten empfangenen
+    // Sample. So haelt der Client-Puffer immer genug Zukunfts-Samples,
+    // um Netz-Jitter zu schlucken — ein festes 2-Raster-Polster war
+    // remote nur ~0,3 s und lief bei jedem Schluckauf leer
+    // (Sekundentakt-Ruckeln). Angezeigt wird weiterhin nur Berechnetes.
     kante = Math.max(filmQueue.tail,
                      filmQueue.times[filmQueue.times.length - 1]);
   }
@@ -4217,21 +4168,40 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // Der Kante mit Producer-Rate folgen — STRIKT MONOTON: laeuft die
     // (geschaetzte) Rate der echten Kante voraus, bleibt der Playhead
     // stehen, bis die Kante nachkommt. Nie rueckwaerts schnappen.
-    let next = filmPlayheadDays +
-      (_filmHeadRate > 0 ? _filmHeadRate * delta / 1000 : 0);
+    // Puffer-Aufbau ueber die Folge-Rate: unter 1,5 s Vorlauf minimal
+    // langsamer folgen (85%), damit der Client-Puffer waechst und
+    // Netz-Jitter schlucken kann (Videoplayer-Rebuffering-Prinzip).
+    let follow = _filmHeadRate > 0 ? _filmHeadRate : 0;
+    if (follow > 0 && filmQueue.times.length) {
+      const aheadS = (filmQueue.times[filmQueue.times.length - 1] -
+                      filmPlayheadDays) / follow;
+      if (aheadS < 1.5) follow *= 0.85;
+    }
+    let next = filmPlayheadDays + follow * delta / 1000;
     next = Math.min(next, kante);
     if (next < filmPlayheadDays) next = filmPlayheadDays;   // stehenbleiben
-    // Grosser Rueckstand (Tab-Wechsel): nach vorn aufholen ist erlaubt
-    if (kante - next > 60 * filmRasterDays()) next = kante;
+    // Aufhol-Snap NUR bei echtem Rueckstand (z. B. Tab-Wechsel): Schwelle
+    // weit ueber dem Puffer-Ziel (10 s Playback), sonst frisst der Snap
+    // die absichtliche 1,5-s-Puffer-Luecke sofort wieder auf.
+    const snapSchwelle = Math.max(60 * filmRasterDays(),
+                                  (follow > 0 ? follow : _filmRate) * 10);
+    if (kante - next > snapSchwelle) next = kante;
     filmPlayheadDays = next;
   } else if (!filmScrubbing) {
     filmPlayheadDays += rate * delta / 1000;
-    // Kante eingeholt (Playback schneller als Producer) -> automatisch
-    // in den LIVE-Modus: ab hier producer-getaktet statt Clamp-Ruckeln.
-    // Der rot leuchtende LIVE-Knopf macht den Zustand sichtbar.
-    if (filmQueue && filmPlayheadDays >= kante) filmLive = true;
+    // Kante eingeholt -> automatisch LIVE, aber NUR wenn das Queue-Ende
+    // auch die echte Server-Kante ist (sonst stand der Playhead nur am
+    // Download-Ende, obwohl der Puffer weiterreicht — falsches "LIVE").
+    if (filmQueue && filmPlayheadDays >= kante &&
+        kante >= _filmMetaHead - 4 * filmRasterDays()) {
+      filmLive = true;
+    }
   }
-  if (filmQueue) {
+  if (filmScrubbing && _filmMetaHead > 0) {
+    // Beim Scrubben zaehlt der GESAMTE Server-Puffer als Spielraum
+    filmPlayheadDays = Math.min(Math.max(filmPlayheadDays, _filmMetaTail),
+                                _filmMetaHead);
+  } else if (filmQueue) {
     const vorher = simTime;   // Playhead des letzten Frames
     filmPlayheadDays = Math.min(Math.max(filmPlayheadDays, filmQueue.tail),
                                 kante);
@@ -4243,23 +4213,10 @@ function filmTick(dtDays, slowFactor, nowMs) {
     }
   }
   simTime = filmPlayheadDays;
-  // Prefetch: neuen Batch anfordern, wenn die Queue fehlt, der Playhead
-  // sie verlassen hat oder weniger als 1/3 Fenster Vorlauf bleibt.
-  if (!filmQueue || filmQueue.times.length === 0) {
-    filmRequest(filmPlayheadDays);
-  } else {
-    const tEnd = filmQueue.times[filmQueue.times.length - 1];
-    const tStart = filmQueue.times[0];
-    const fensterRest = tEnd - filmPlayheadDays;
-    const fenster = tEnd - tStart;
-    // WICHTIG: <= und Mindest-Vorlauf von einem Raster — an der Live-Kante
-    // schrumpft der Batch auf 1 Sample (fenster=0) und der Playhead klemmt
-    // exakt auf dessen Zeit; mit < 0-Vergleichen fragt dann nie wieder
-    // jemand nach und der Player friert ein (Deadlock).
-    if (filmPlayheadDays < tStart ||
-        fensterRest <= Math.max(fenster / 3, filmRasterDays())) {
-      filmRequest(filmPlayheadDays);
-    }
+  // Heartbeat-Abo (1 Hz oder bei Tempo-Wechsel): haelt den Server-Stream
+  // und den Producer-Ueberschreibschutz auf der aktuellen Position.
+  if (nowMs - _filmLastSubMs > 1000) {
+    filmSub(filmPlayheadDays);
   }
   filmApply(filmPlayheadDays);
   filmFeedTrails();
@@ -4282,18 +4239,25 @@ function filmTick(dtDays, slowFactor, nowMs) {
 });
 document.getElementById('film-live').addEventListener('click', () => {
   filmLive = true;
+  filmQueue = null;
+  filmSub(filmQueue && filmQueue.head ? filmQueue.head : filmPlayheadDays);
 });
 {
   const scrub = document.getElementById('film-scrub');
   scrub.addEventListener('input', function() {
-    if (!filmQueue) return;
+    if (_filmMetaHead <= 0) return;
     filmScrubbing = true;
     filmLive = false;
     const frac = parseInt(this.value, 10) / 10000;
-    filmPlayheadDays = filmQueue.tail +
-      frac * (filmQueue.head - filmQueue.tail);
+    filmPlayheadDays = _filmMetaTail +
+      frac * (_filmMetaHead - _filmMetaTail);
   });
-  scrub.addEventListener('change', () => { filmScrubbing = false; });
+  scrub.addEventListener('change', () => {
+    filmScrubbing = false;
+    // Stream auf die neue Position umlenken; alter Puffer ist obsolet
+    filmQueue = null;
+    filmSub(filmPlayheadDays);
+  });
   // Fallback: manche Browser feuern 'change' nicht zuverlaessig, wenn der
   // Regler ausserhalb losgelassen wird — sonst friert der Playhead ein.
   for (const ev of ['pointerup', 'mouseup', 'touchend']) {
@@ -4313,16 +4277,16 @@ document.getElementById('film-live').addEventListener('click', () => {
 
 // Zeitleisten-Anzeige aktualisieren (aus updateStats, ~1x/s)
 function updateFilmBar() {
-  if (!filmActive || !filmQueue) return;
-  const span = filmQueue.head - filmQueue.tail;
+  if (!filmActive || _filmMetaHead <= 0) return;
+  const span = _filmMetaHead - _filmMetaTail;
   document.getElementById('film-range').textContent =
     fmtDE(filmPlayheadDays / 365.25, 2) + ' / ' +
-    fmtDE(filmQueue.head / 365.25, 2) + ' ' + t('stats.years') +
+    fmtDE(_filmMetaHead / 365.25, 2) + ' ' + t('stats.years') +
     ' (' + t('film.buffer') + ': ' + fmtDE(span / 365.25, 2) + ')';
   document.getElementById('film-live').classList.toggle('live', filmLive);
   if (!filmScrubbing && span > 0) {
     document.getElementById('film-scrub').value =
-      Math.round((filmPlayheadDays - filmQueue.tail) / span * 10000);
+      Math.round((filmPlayheadDays - _filmMetaTail) / span * 10000);
   }
 }
 
@@ -6498,7 +6462,7 @@ function updateStats() {
       if (solidN) parts.push('\u{1FA90} ' + solidN);      // feste Koerper
       if (astN)   parts.push('\u{1FAA8} ' + astN);        // Asteroiden
       bcEl.innerHTML = '<span>' + t('stats.bodies') + ': ' + activeCount + '</span>'
-        + (parts.length ? '&nbsp;&nbsp;' + parts.join('&nbsp; ') : '');
+        + (parts.length ? '&nbsp;|&nbsp;' + parts.join('&nbsp;|&nbsp;') : '');
       bcEl.classList.add('show');
     } else {
       bcEl.classList.remove('show');
