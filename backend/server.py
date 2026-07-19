@@ -75,7 +75,7 @@ class FilmSession:
 
     def __init__(self, t0_days: float, raster_days: float,
                  x, y, vx, vy, mass, real_r, visible, is_ast,
-                 ast_bounce: bool = False):
+                 is_star_bh, ast_bounce: bool = False):
         self.raster_days = max(0.1, raster_days)
         self.t0 = t0_days
         self.n = len(x)
@@ -98,14 +98,29 @@ class FilmSession:
         self.ev_count_val = ctx.Value("q", 0, lock=False)
         self.dump_req_val = ctx.Value("b", 0, lock=False)
         self.running_val = ctx.Value("b", 1, lock=False)
-        # Sichtbarkeits-Spiegel (aus dem Event-Strom gepflegt) — tote
-        # Koerper werden beim Streamen mitgecullt
-        self._vis = np.array(visible, dtype=np.uint8, copy=True) != 0
+        # Zerbersten (Koerper x Koerper, vImp >= 1,5 vEsc): der Producer
+        # erkennt nur, dumpt seinen f64-Zustand und stoppt sich selbst —
+        # die Shatter-PHYSIK fuehrt der Client mit seinem shatter() aus
+        # (SSOT) und startet den Film mit den Fragmenten neu.
+        self.shatter_flag = ctx.Value("b", 0, lock=False)
+        self.shatter_a = ctx.Value("q", 0, lock=False)
+        self.shatter_b = ctx.Value("q", 0, lock=False)
+        self.shatter_t = ctx.Value("d", 0.0, lock=False)
+        # Kill-Zeitpunkte (aus dem Event-Strom gepflegt): ein Sample
+        # cullt nur Koerper, die zu SEINER Sim-Zeit schon tot sind.
+        # Ein sofortiger bool-Spiegel liess Opfer aus dem Stream
+        # verschwinden, lange bevor der Playhead den Kollisionszeitpunkt
+        # erreichte — ihre Client-Position fror unterwegs ein und die
+        # Explosion blitzte spaeter irgendwo im Leeren.
+        self._kill_t = np.where(
+            np.array(visible, dtype=np.uint8) != 0, np.inf, -np.inf)
+        self._is_ast = np.array(is_ast, dtype=np.uint8, copy=True) != 0
         self.view = (0.0, 0.0, -1.0, -1.0)   # cx, cy, halbW, halbH (Auto)
         state = {k: np.array(v, copy=True) for k, v in
                  (("x", x), ("y", y), ("vx", vx), ("vy", vy),
                   ("mass", mass), ("realR", real_r),
-                  ("visible", visible), ("isAst", is_ast))}
+                  ("visible", visible), ("isAst", is_ast),
+                  ("isStarBH", is_star_bh))}
         self.proc = ctx.Process(
             target=film_producer.producer_main,
             args=(self.shm.name, self.sample_bytes, self.capacity,
@@ -113,7 +128,9 @@ class FilmSession:
                   self.dump_shm.name, self.dump_req_val,
                   self.head_val, self.playhead_val, self.coll_val,
                   self.running_val, state, self.raster_days, t0_days,
-                  bool(ast_bounce)),
+                  bool(ast_bounce),
+                  self.shatter_flag, self.shatter_a, self.shatter_b,
+                  self.shatter_t),
             daemon=True)
         self.proc.start()
 
@@ -192,9 +209,10 @@ class FilmSession:
             raw = bytes(self.ev_shm.buf[(e % self.ev_cap) * eb:
                                         (e % self.ev_cap) * eb + eb])
             ev_parts.append(raw)
+            (t_ev,) = struct.unpack_from("<d", raw, 0)
             b_idx, _m, kind = struct.unpack_from("<IfI", raw, 12)
             if kind == 0 and b_idx < self.n:
-                self._vis[b_idx] = False
+                self._kill_t[b_idx] = min(self._kill_t[b_idx], t_ev)
         self.sent_ev = ev_from + ev_n
 
         cx, cy, hw, hh = self.view
@@ -207,6 +225,8 @@ class FilmSession:
         for i in idxs:
             raw = np.frombuffer(buf, "<f4", 2 * self.n,
                                 (i % self.capacity) * s)
+            t_i = self.t0 + (i + 1) * self.raster_days
+            alive_i = self._kill_t > t_i
             x = raw[0:self.n]
             y = raw[self.n:2 * self.n]
             if box is None:
@@ -225,8 +245,23 @@ class FilmSession:
                            max(4 * hw, 1e-6), max(4 * hh, 1e-6))
             x0, y0, spanx, spany = box
             sel = np.flatnonzero(
-                self._vis & (x >= x0) & (x <= x0 + spanx)
+                alive_i & (x >= x0) & (x <= x0 + spanx)
                 & (y >= y0) & (y <= y0 + spany))
+            # Dichte-LOD: mehr sichtbare Punkte, als Bandbreite und
+            # Client-Dekodierung bei 20 Samples/s verkraften -> nur jeden
+            # stride-ten Asteroiden streamen (deterministisch ueber den
+            # ORIGINAL-Index: dieselben Koerper bleiben ueber Samples
+            # stabil gestreamt, die Interpolation reisst nicht). Massive
+            # Koerper werden nie ausgeduennt; nicht gestreamte versteckt
+            # der Client ueber die vorhandene _filmInView-Mechanik.
+            # Physik und Ereignisse bleiben exakt — reine Darstellung.
+            # Obergrenze 120k: mehr Punkte pro Sample schafft der
+            # Client-Dekodier-/Interpolations-Loop nicht bei 60 FPS.
+            lod_max = min(120_000,
+                          max(20000, int(self._bw * 0.7 / 20.0 / 8.0)))
+            if len(sel) > lod_max:
+                stride = int(np.ceil(len(sel) / lod_max))
+                sel = sel[(sel % stride == 0) | ~self._is_ast[sel]]
             qx = np.clip((x[sel] - x0) / spanx * 65535.0,
                          0, 65535).astype("<u2")
             qy = np.clip((y[sel] - y0) / spany * 65535.0,
@@ -248,6 +283,17 @@ class FilmSession:
         await send drosselt automatisch auf Leitungstempo."""
         try:
             while self.running_val.value:
+                if self.shatter_flag.value == 1:
+                    self.shatter_flag.value = 2
+                    # status=7: Zerberst-Meldung + f64-Dump — der Client
+                    # fuehrt shatter() aus und startet den Film neu.
+                    pkt = struct.pack(
+                        "<IIIId", 7, self.n,
+                        int(self.shatter_a.value),
+                        int(self.shatter_b.value),
+                        self.shatter_t.value) + \
+                        bytes(self.dump_shm.buf[0:4 * 8 * self.n])
+                    await ws.send(pkt)
                 ph = self.playhead_val.value
                 if self.sent_abs is None:
                     self.sent_abs = max(self.tail_abs,
@@ -318,6 +364,11 @@ class FilmSession:
 
     async def dump_state(self) -> bytes | None:
         """Exakten f64-Zustand vom Producer anfordern (Engine-Uebergabe)."""
+        if self.dump_req_val.value == 2 and not self.proc.is_alive():
+            # Producer hat sich selbst beendet (Zerbersten) — sein
+            # letzter Dump liegt bereit, niemand wuerde noch antworten.
+            return struct.pack("<IId", 5, self.n, self.head) + \
+                bytes(self.dump_shm.buf[0:4 * 8 * self.n])
         self.dump_req_val.value = 1
         for _ in range(150):
             if self.dump_req_val.value == 2:
@@ -361,13 +412,16 @@ def parse_film_start(buf: bytes):
     off += n
     is_ast = np.frombuffer(buf, np.uint8, n, off)
     off += n
+    is_star_bh = np.frombuffer(buf, np.uint8, n, off)
+    off += n
     ast_bounce = False
     if off + 1 == len(buf):               # optionales Flag-Byte
         ast_bounce = buf[off] != 0
         off += 1
     if off != len(buf):
         raise ValueError(f"Protokollfehler: {len(buf)} Bytes, erwartet {off}")
-    return raster_days, t0_days, arrays, visible, is_ast, ast_bounce
+    return (raster_days, t0_days, arrays, visible, is_ast, is_star_bh,
+            ast_bounce)
 
 
 def parse_full(buf: bytes):
@@ -450,13 +504,13 @@ async def handle(ws):
                 typ, _n, dt_years = HEADER.unpack_from(message, 0)
                 if typ == MSG_FILM_START:
                     raster_days, t0_days, (x, y, vx, vy, mass, real_r), \
-                        visible, is_ast, ast_bounce = \
+                        visible, is_ast, is_star_bh, ast_bounce = \
                         parse_film_start(message)
                     if film:
                         film.stop()
                     film = FilmSession(t0_days, raster_days, x, y, vx, vy,
                                        mass, real_r, visible, is_ast,
-                                       ast_bounce)
+                                       is_star_bh, ast_bounce)
                     fulls += 1
                     log.info("Film gestartet: N=%d, Raster %.2f Tage",
                              len(x), film.raster_days)
@@ -550,7 +604,12 @@ async def main() -> None:
                 stop.set()
                 return
 
-    serve_kwargs = dict(max_size=64 * 1024 * 1024, ping_interval=None)
+    # permessage-deflate AUS: die websockets-Default-Kompression jagt
+    # jeden Frame durch zlib (~20-50 MB/s single-thread) — DAS war der
+    # Stream-Durchsatz-Deckel. u16-Punktwolken komprimieren ohnehin
+    # kaum; Bandbreite spart stattdessen das Dichte-LOD.
+    serve_kwargs = dict(max_size=64 * 1024 * 1024, ping_interval=None,
+                        compression=None)
     if sock is not None:
         server_ctx = websockets.serve(handle, sock=sock, **serve_kwargs)
     else:

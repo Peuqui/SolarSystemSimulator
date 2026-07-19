@@ -3827,6 +3827,28 @@ function initCudaBackend(urlIndex = 0) {
       }
       return;
     }
+    if (status === 7) {
+      // Zerbersten erkannt (Koerper x Koerper, vImp >= 1,5 vEsc): der
+      // Producer hat seinen f64-Zustand gedumpt und sich gestoppt. Wir
+      // merken das vor und fuehren den Shatter erst aus, wenn der
+      // Playhead den Ereignis-Zeitpunkt erreicht — bis dahin spielt der
+      // Rest-Puffer normal weiter. Die Fragment-Physik macht das lokale
+      // shatter() (SSOT mit den Live-Engines), dann Film-Neustart.
+      const dv = new DataView(buf);
+      const n = dv.getUint32(4, true);
+      if (filmRefs && filmRefs.length === n) {
+        _filmShatterPending = {
+          a: dv.getUint32(8, true),
+          b: dv.getUint32(12, true),
+          t: dv.getFloat64(16, true),
+          x:  new Float64Array(buf.slice(24, 24 + 8 * n)),
+          y:  new Float64Array(buf.slice(24 + 8 * n, 24 + 16 * n)),
+          vx: new Float64Array(buf.slice(24 + 16 * n, 24 + 24 * n)),
+          vy: new Float64Array(buf.slice(24 + 24 * n, 24 + 32 * n)),
+        };
+      }
+      return;
+    }
     if (status !== 0) {
       console.warn('CUDA-Backend-Fehler:',
         new TextDecoder().decode(new Uint8Array(buf, 8)));
@@ -4068,7 +4090,7 @@ function filmStart() {
   if (!cudaReady) return;
   const src = bodies;
   const N = src.length;
-  const buf = new ArrayBuffer(24 + N * (6 * 8 + 2) + 1);
+  const buf = new ArrayBuffer(24 + N * (6 * 8 + 3) + 1);
   const dv = new DataView(buf);
   dv.setUint32(0, 3, true);                    // MSG_FILM_START
   dv.setUint32(4, N, true);
@@ -4082,6 +4104,9 @@ function filmStart() {
   const realR = new Float64Array(buf, 24 + 40 * N, N);
   const visible = new Uint8Array(buf, 24 + 48 * N, N);
   const isAst   = new Uint8Array(buf, 24 + 49 * N, N);
+  // Stern/Schwarzes Loch: fuer die Shatter-Entscheidung des Producers
+  // (Stern/SL-Kollisionen mergen IMMER, nur Koerper x Koerper zerbirst).
+  const isStarBH = new Uint8Array(buf, 24 + 50 * N, N);
   for (let i = 0; i < N; i++) {
     const b = src[i];
     x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
@@ -4089,16 +4114,19 @@ function filmStart() {
     realR[i] = b.realR;
     visible[i] = b.visible ? 1 : 0;
     isAst[i] = b.isAsteroid ? 1 : 0;
+    isStarBH[i] = (b.isStar || b.isBlackHole) ? 1 : 0;
   }
   // Flag-Byte: Asteroid-x-Asteroid-Bounce im Producer (UI-Toggle).
-  // Offset NACH beiden u8-Arrays: 24 + 48N (f64) + N (visible) + N (isAst).
-  // (Ein frueherer 49N-Tippfehler ueberschrieb isAst[0] — die SONNE wurde
-  // zum Asteroiden erklaert und der Waechter killte alle Astis sofort.)
-  new Uint8Array(buf, 24 + 50 * N, 1)[0] = astAstCollisions ? 1 : 0;
+  // Offset NACH den DREI u8-Arrays: 24 + 48N (f64) + N (visible) +
+  // N (isAst) + N (isStarBH). (Ein frueherer 49N-Tippfehler ueberschrieb
+  // isAst[0] — die SONNE wurde zum Asteroiden erklaert und der Waechter
+  // killte alle Astis sofort.)
+  new Uint8Array(buf, 24 + 51 * N, 1)[0] = astAstCollisions ? 1 : 0;
   cudaSocket.send(buf);
   filmRefs = src.slice();
   filmEvents = [];
   _filmEventsApplied = 0;
+  _filmCollBase = totalCollisions;   // Neustart: bisherige Zaehlung behalten
   _filmBaseVis = new Uint8Array(N);
   _filmBaseMass = new Float64Array(N);
   _filmEvVis = new Uint8Array(N);
@@ -4209,6 +4237,8 @@ function filmSub(tDays, jump) {
 let _filmSubCam = null;
 let _filmHandover = false;   // Engine-Uebergabe: warten bis f64-Dump da ist
 let _filmRestartPending = false;   // Film-Neustart wartet auf f64-Dump
+let _filmShatterPending = null;    // { a, b, t, x, y, vx, vy } (status=7)
+let _filmCollBase = 0;             // Zaehlerstand vor der aktuellen Session
 
 let _filmLastSubMs = 0;
 let _filmMetaTail = 0;       // Server-Puffergrenzen (aus jedem Push-Frame)
@@ -4290,7 +4320,7 @@ function filmApplyEvents(t) {
       // Farb-/Ring-Marker fuer JEDES Paar (wie live) — nur die
       // Explosions-Blitze sind gegen Scrub-Fluten gedeckelt.
       if (ha && hb) _markBouncePair(ha, hb);
-      if (ha && hb && flashes < 8) {
+      if (ha && hb && flashes < 8 && collisionFlashes.length < 64) {
         collisionFlashes.push({
           x: ha.x, y: ha.y,
           scale: Math.max(ha.realR || 0, hb.realR || 0),
@@ -4316,10 +4346,13 @@ function filmApplyEvents(t) {
     // Engines. Gedeckelt auf 8 pro Frame, damit Scrub-Vorspulen (viele
     // Ereignisse auf einmal) den Canvas nicht mit Blitzen flutet.
     const loser = filmRefs[ev.b];
-    if (loser && flashes < 8) {
+    if (loser && flashes < 8 && collisionFlashes.length < 64) {
+      // Skala wie live: realR (nicht Display-Radius — der machte
+      // Riesen-Explosionen). Deckel 64 lebende Flashes: die Gradient-
+      // Kreise sind teuer und drueckten bei Event-Stuermen die FPS.
       collisionFlashes.push({
         x: loser.x, y: loser.y,
-        scale: Math.max(loser.radius || 2, surv ? surv.radius : 2),
+        scale: Math.max(loser.realR || 0, surv ? surv.realR : 0),
         t: performance.now(),
         asteroid: loser.isAsteroid,
         track: surv || null,
@@ -4328,16 +4361,60 @@ function filmApplyEvents(t) {
     }
     changed = true;
   }
-  if (changed || totalCollisions !== _filmEventsApplied) {
-    totalCollisions = _filmEventsApplied;
+  if (changed ||
+      totalCollisions !== _filmCollBase + _filmEventsApplied) {
+    // Basis + Session-Events: Zaehlerstaende ueberleben so die Film-
+    // Neustarts (Inject, Zerbersten), statt auf 0 zu springen.
+    totalCollisions = _filmCollBase + _filmEventsApplied;
     const cc = document.getElementById('collision-count');
-    if (cc) cc.textContent = _filmEventsApplied;
+    if (cc) cc.textContent = totalCollisions;
     const cb = document.getElementById('collision-badge');
-    if (cb) cb.classList.toggle('show', _filmEventsApplied > 0);
+    if (cb) cb.classList.toggle('show', totalCollisions > 0);
   }
 }
 
 function filmTick(dtDays, slowFactor, nowMs) {
+  // Zerbersten (status=7): sobald der Playhead den Ereignis-Zeitpunkt
+  // erreicht, exakten f64-Zustand uebernehmen, shatter() ausfuehren
+  // (SSOT mit den Live-Engines) und den Film mit den Fragmenten neu
+  // starten. Bis dahin spielt der Rest-Puffer normal.
+  if (_filmShatterPending && filmRefs &&
+      filmPlayheadDays >= _filmShatterPending.t - 1e-9) {
+    const sp = _filmShatterPending;
+    _filmShatterPending = null;
+    const live = new Set(bodies);
+    for (let i = 0; i < filmRefs.length; i++) {
+      const b = filmRefs[i];
+      if (!live.has(b)) continue;
+      b.x = sp.x[i]; b.y = sp.y[i]; b.vx = sp.vx[i]; b.vy = sp.vy[i];
+      if (_filmEvVis && _filmEvVis[i] === 0) b.visible = false;
+    }
+    simTime = sp.t;
+    const A = filmRefs[sp.a], B = filmRefs[sp.b];
+    if (A && B && live.has(A) && live.has(B) && A.visible && B.visible) {
+      collisionFlashes.push({
+        x: A.x, y: A.y, scale: Math.max(A.realR, B.realR),
+        t: performance.now(), asteroid: false, track: null,
+      });
+      shatter(A, B);
+      totalCollisions++;
+      const cc = document.getElementById('collision-count');
+      if (cc) cc.textContent = totalCollisions;
+    }
+    // Neustart ueber den bewaehrten Dump-Mechanismus (der Server
+    // antwortet auf FILM_STOP mit dem Shatter-Dump als status=5).
+    _filmRestartPending = true;
+    _filmHandover = true;
+    setTimeout(() => {
+      if (_filmRestartPending) {
+        _filmRestartPending = false;
+        _filmHandover = false;
+        filmStart();
+      }
+    }, 2500);
+    filmStop();
+    return;
+  }
   // Mutation (Inject, Edit, Loeschen) -> vorgerechnete Zukunft ist
   // ungueltig, Film ab aktuellem Zustand neu starten.
   if (bodies.length !== _filmSentN || _physRev !== _filmSentRev) {

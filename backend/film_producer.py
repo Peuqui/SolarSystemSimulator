@@ -35,7 +35,9 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   dump_name: str, dump_req_val,
                   head_val, playhead_val, coll_val, running_val,
                   state: dict, raster_days: float, t0_days: float,
-                  ast_bounce: bool = False) -> None:
+                  ast_bounce: bool = False,
+                  shatter_flag=None, shatter_a=None, shatter_b=None,
+                  shatter_t=None) -> None:
     # CUDA erst IM Kindprozess initialisieren (spawn-Kontext!)
     from multiprocessing import shared_memory
 
@@ -73,6 +75,9 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     real_r = np.array(state["realR"], dtype=np.float64, copy=True)
     vis = np.array(state["visible"], dtype=np.uint8, copy=True)
     is_ast = np.array(state["isAst"], dtype=np.uint8, copy=True) != 0
+    is_star_bh = np.array(state.get("isStarBH",
+                                    np.zeros(len(is_ast), np.uint8)),
+                          dtype=np.uint8, copy=True) != 0
     st = sim.load_state(x, y, vx, vy, mass, vis, state["isAst"])
     n = len(x)
     collisions = 0
@@ -183,6 +188,28 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         svy = sample[3 * n:4 * n]
         changed = False
         for mi, j in pairs:
+            # Zerbersten (wie _tryCollide im JS): Koerper x Koerper ohne
+            # Stern/SL bei vImp >= 1,5 vEsc. Der Producer erkennt NUR:
+            # Zustand einfrieren, f64-Dump, Selbst-Stopp — die Fragment-
+            # Physik macht der Client mit seinem shatter() (SSOT) und
+            # startet den Film neu.
+            if (shatter_flag is not None
+                    and not is_ast[mi] and not is_ast[j]
+                    and not is_star_bh[mi] and not is_star_bh[j]
+                    and vis[mi] and vis[j]
+                    and mass[mi] > 0 and mass[j] > 0):
+                v_imp = float(np.hypot(sample[2 * n + j] - sample[2 * n + mi],
+                                       sample[3 * n + j] - sample[3 * n + mi]))
+                touch = max(1e-12, real_r[mi] + real_r[j])
+                v_esc = float(np.sqrt(
+                    2.0 * G_AU * (mass[mi] + mass[j]) / touch))
+                if v_imp >= 1.5 * v_esc:
+                    shatter_a.value = int(mi)
+                    shatter_b.value = int(j)
+                    shatter_t.value = t0_days + (k_ev + 1) * raster_days
+                    dump_state()
+                    shatter_flag.value = 1
+                    return
             if not vis[mi] or not vis[j] or mass[mi] <= 0:
                 continue
             a, b = (mi, j) if mass[mi] >= mass[j] else (j, mi)
@@ -454,6 +481,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     K = 4
     try:
         while running_val.value:
+            if shatter_flag is not None and shatter_flag.value:
+                break        # Zerbersten erkannt — Client uebernimmt
             # Pipeline: Erkennungs-Ergebnisse des VORIGEN Batches
             # einsammeln und anwenden, bevor der naechste Launch startet.
             if future is not None:
@@ -488,14 +517,21 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 print(f"[film] {bounce_count} asti-bounces nach "
                       f"{k} samples", flush=True)
     finally:
-        # Letzter Zustand fuer die Engine-Uebergabe, dann sauber schliessen
+        # Letzter Zustand fuer die Engine-Uebergabe, dann sauber schliessen.
+        # Nach einem Zerbersten ist der SHATTER-Dump massgeblich — dann
+        # weder ausstehende Analysen anwenden noch neu dumpen.
         try:
-            if future is not None:
-                for res in future.result():
-                    apply_analysis(res)
             executor.shutdown(wait=False)
-            dump_state()
-            dump_req_val.value = 2
+            if shatter_flag is not None and shatter_flag.value:
+                # Shatter-Dump liegt bereits — nur als bereit markieren,
+                # damit der FILM_STOP-Pfad des Servers nicht wartet.
+                dump_req_val.value = 2
+            else:
+                if future is not None:
+                    for res in future.result():
+                        apply_analysis(res)
+                dump_state()
+                dump_req_val.value = 2
         except Exception:
             pass
         shm.close()
