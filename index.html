@@ -560,7 +560,7 @@ input[type=range] {
 
   <label data-i18n="sec.cloud" style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
   <label><span data-i18n="lbl.cloud-count">Anzahl</span> <span class="val" id="cloud-n-val">50</span></label>
-  <input type="range" autocomplete="off" id="cloud-n" min="0.7" max="4" step="0.01" value="1.7">
+  <input type="range" autocomplete="off" id="cloud-n" min="0.7" max="4.7" step="0.01" value="1.7">
   <label data-i18n-title="tt.cloud-mass"><span data-i18n="lbl.cloud-mass">Gesamtmasse (M⊕)</span> <span class="val" id="cloud-mass-val">0,001</span></label>
   <input type="range" autocomplete="off" id="cloud-mass" min="-5" max="2" step="0.05" value="-3">
   <label data-i18n-title="tt.density"><span data-i18n="lbl.cloud-density-au2">Dichte (1/AE²)</span> <span class="val" id="cloud-density-val">10</span></label>
@@ -728,7 +728,7 @@ input[type=range] {
 
   <label data-i18n="sec.cloud" style="color:#7af; margin-top:10px; font-size:12px;">&#x1FAA8; Asteroiden-Wolke</label>
   <label><span data-i18n="lbl.cloud-count">Anzahl</span> <span class="val" id="mob-cloud-n-val">50</span></label>
-  <input type="range" autocomplete="off" id="mob-cloud-n" min="0.7" max="4" step="0.01" value="1.7">
+  <input type="range" autocomplete="off" id="mob-cloud-n" min="0.7" max="4.7" step="0.01" value="1.7">
   <label data-i18n-title="tt.cloud-mass"><span data-i18n="lbl.cloud-mass">Gesamtmasse (M⊕)</span> <span class="val" id="mob-cloud-mass-val">0,001</span></label>
   <input type="range" autocomplete="off" id="mob-cloud-mass" min="-5" max="2" step="0.05" value="-3">
   <label><span data-i18n="lbl.cloud-density-au2">Dichte (1/AE²)</span> <span class="val" id="mob-cloud-density-val">10</span></label>
@@ -2388,8 +2388,18 @@ let _starPattern = null;
 let _baryDirty = true;
 let _baryCacheX = 0, _baryCacheY = 0;
 
+let _baryFilmMs = 0;
 function barycenter() {
   if (!_baryDirty) return [_baryCacheX, _baryCacheY];
+  // Film-Modus setzt _baryDirty jeden Frame — die volle O(N)-Summe bei
+  // 250k Koerpern kostete ~13% der Frame-Zeit. 150-ms-Aktualitaet reicht
+  // auch fuer die Schwerpunkt-Zentrierung: der Gesamtimpuls ist ~0, der
+  // Schwerpunkt wandert traege — Kamera-Spruenge sind unmerklich.
+  if (typeof filmActive !== 'undefined' && filmActive) {
+    const now = performance.now();
+    if (now - _baryFilmMs < 150) return [_baryCacheX, _baryCacheY];
+    _baryFilmMs = now;
+  }
   let mx = 0, my = 0, mt = 0;            // Hauptsystem mit escapeScore-Filter
   let mxR = 0, myR = 0, mtR = 0;         // Hauptsystem OHNE Filter (Fallback)
   let mxA = 0, myA = 0, mtA = 0;         // alle Bodies inkl. Rogues, voll
@@ -2705,18 +2715,12 @@ function _hexToRgb(hex) {
 function renderAsteroidsGL() {
   if (!astGL.enabled) return false;
   const gl = astGL.ctx;
-  // Zaehle und packe in einem Durchgang.
-  let n = 0;
-  for (let i = 0; i < bodies.length; i++) {
-    if (bodies[i].visible && bodies[i].isAsteroid) n++;
-  }
-  // Canvas immer clearen, auch wenn n=0 (sonst bleibt der alte Frame).
+  // Canvas immer clearen (sonst bleibt der alte Frame).
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
-  if (n === 0) return true;
-
-  // Vertex-Buffer ggf. vergroessern (2× Wachstum).
-  const need = n * 5;   // pro Vertex: x, y, r, g, b
+  // Obere Schranke statt Vorab-Zaehl-Loop — der kostete bei 250k
+  // Koerpern einen kompletten zweiten Property-Read-Durchlauf pro Frame.
+  const need = bodies.length * 5;   // pro Vertex: x, y, r, g, b
   if (astGL.vertexData.length < need) {
     let newSize = astGL.vertexData.length;
     while (newSize < need) newSize *= 2;
@@ -2907,7 +2911,10 @@ function draw() {
     const K_AST = 5;
     const ALPHAS_AST = [0.06, 0.145, 0.23, 0.315, 0.40];   // hinten -> vorne
     const astByColor = new Map();   // color -> K_AST Buckets mit [x1,y1,x2,y2,...]
-    for (let i = 0; i < bodies.length; i++) {
+    // Ohne Asti-Trails den ganzen Loop skippen: trails[b.name] ist ein
+    // String-Key-Lookup und kostete bei 250k Koerpern pro FRAME mehr als
+    // das komplette Asteroiden-Rendering.
+    for (let i = 0; MAX_TRAIL_AST > 0 && i < bodies.length; i++) {
       const b = bodies[i];
       if (!b.visible || !b.isAsteroid) continue;
       const trail = trails[b.name];
@@ -3801,6 +3808,11 @@ function initCudaBackend(urlIndex = 0) {
       // Exakter f64-Endzustand des Producers (Engine-Uebergabe): sonst
       // starten Worker/CPU nach dem Film mit den beim Filmstart
       // eingefrorenen Geschwindigkeiten — alles stuerzt in die Sonne.
+      // VERSPAETETE Dumps (Fallback-Neustart lief schon, Film laeuft
+      // wieder) verwerfen: sie gehoeren zur alten Session, und ihr
+      // markBodiesMutated wuerde sofort den NAECHSTEN Neustart ausloesen
+      // — bei grossen N eine endlose Neustart-Schleife (0,0 Tage/s).
+      if (filmActive && !_filmRestartPending && !_filmHandover) return;
       const dv = new DataView(buf);
       const n = dv.getUint32(4, true);
       const tDays = dv.getFloat64(8, true);
@@ -4317,10 +4329,15 @@ function filmApplyEvents(t) {
       // Bounce: niemand stirbt, keine Massenaenderung — nur Zaehler und
       // Visuals wie in den Live-Engines (Farb-Marker + Explosions-Flash).
       const ha = filmRefs[ev.a], hb = filmRefs[ev.b];
-      // Farb-/Ring-Marker fuer JEDES Paar (wie live) — nur die
-      // Explosions-Blitze sind gegen Scrub-Fluten gedeckelt.
-      if (ha && hb) _markBouncePair(ha, hb);
-      if (ha && hb && flashes < 8 && collisionFlashes.length < 64) {
+      // Visuals NUR, wenn beide Partner aktuell gestreamt werden — mit
+      // Dichte-LOD haben nicht gestreamte Koerper eingefrorene Alt-
+      // Positionen und die Marker saessen irgendwo im Leeren. Der
+      // Zaehler zaehlt unabhaengig davon jedes Ereignis.
+      const imBild = _filmInView && _filmInView[ev.a] === 1 &&
+                     _filmInView[ev.b] === 1;
+      if (ha && hb && imBild) _markBouncePair(ha, hb);
+      if (ha && hb && imBild && flashes < 8 &&
+          collisionFlashes.length < 64) {
         collisionFlashes.push({
           x: ha.x, y: ha.y,
           scale: Math.max(ha.realR || 0, hb.realR || 0),
@@ -4346,7 +4363,8 @@ function filmApplyEvents(t) {
     // Engines. Gedeckelt auf 8 pro Frame, damit Scrub-Vorspulen (viele
     // Ereignisse auf einmal) den Canvas nicht mit Blitzen flutet.
     const loser = filmRefs[ev.b];
-    if (loser && flashes < 8 && collisionFlashes.length < 64) {
+    if (loser && _filmInView && _filmInView[ev.b] === 1 &&
+        flashes < 8 && collisionFlashes.length < 64) {
       // Skala wie live: realR (nicht Display-Radius — der machte
       // Riesen-Explosionen). Deckel 64 lebende Flashes: die Gradient-
       // Kreise sind teuer und drueckten bei Event-Stuermen die FPS.
@@ -4411,7 +4429,7 @@ function filmTick(dtDays, slowFactor, nowMs) {
         _filmHandover = false;
         filmStart();
       }
-    }, 2500);
+    }, 8000);
     filmStop();
     return;
   }
@@ -4432,7 +4450,7 @@ function filmTick(dtDays, slowFactor, nowMs) {
         filmReconstructVelocities();
         filmStart();
       }
-    }, 2500);
+    }, 8000);
     filmStop();
     return;
   }
@@ -5946,7 +5964,9 @@ document.getElementById('mob-p-angle').addEventListener('input', function() {
 // Linear-Slider deckelte bei 500.
 function cloudCountFromSlider(id) {
   const v = Math.pow(10, parseFloat(document.getElementById(id).value));
-  return Math.max(1, Math.round(v));
+  // Grosse Werte auf runde Schritte glaetten (50000 statt 50003)
+  const step = v >= 10000 ? 1000 : v >= 1000 ? 100 : v >= 100 ? 10 : 1;
+  return Math.max(1, Math.round(v / step) * step);
 }
 
 function updateCloudDerived() {
@@ -5959,7 +5979,7 @@ function updateCloudDerived() {
 }
 ['cloud-n', 'mob-cloud-n'].forEach(id => {
   document.getElementById(id).addEventListener('input', function() {
-    const n = Math.max(1, Math.round(Math.pow(10, parseFloat(this.value))));
+    const n = cloudCountFromSlider(this.id);
     document.getElementById('cloud-n-val').textContent = n;
     document.getElementById('mob-cloud-n-val').textContent = n;
     document.getElementById('cloud-n').value = this.value;
@@ -6237,7 +6257,7 @@ function applyEngine(mode, persist) {
     // sonst rechnet die neue Engine mit alten Impulsen los und ihr
     // (korruptes) erstes Ergebnis ueberschreibt den guten Dump (Race).
     _filmHandover = true;
-    setTimeout(() => { _filmHandover = false; }, 2500);
+    setTimeout(() => { _filmHandover = false; }, 8000);
     filmStop();
     useFilm = false;
     for (const id of ['chk-film', 'mob-chk-film']) {

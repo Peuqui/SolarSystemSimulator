@@ -259,8 +259,16 @@ class FilmSession:
             # Client-Dekodier-/Interpolations-Loop nicht bei 60 FPS.
             lod_max = min(120_000,
                           max(20000, int(self._bw * 0.7 / 20.0 / 8.0)))
-            if len(sel) > lod_max:
-                stride = int(np.ceil(len(sel) / lod_max))
+            # Hysterese: den Ausduennungsfaktor nur wechseln, wenn die
+            # Punktzahl deutlich aus dem Zielband laeuft — sonst pendelt
+            # er bei wandernden Wolken zwischen zwei Stufen und die
+            # Dichte springt sichtbar hin und her.
+            stride = getattr(self, "_lod_stride", 1)
+            n_mit_altem = len(sel) / stride
+            if n_mit_altem > lod_max * 1.15 or n_mit_altem < lod_max * 0.5:
+                stride = max(1, int(np.ceil(len(sel) / lod_max)))
+                self._lod_stride = stride
+            if stride > 1:
                 sel = sel[(sel % stride == 0) | ~self._is_ast[sel]]
             qx = np.clip((x[sel] - x0) / spanx * 65535.0,
                          0, 65535).astype("<u2")
@@ -345,8 +353,13 @@ class FilmSession:
                 # die Stream-Dichte bleibt bei grossen N grundlos duenn
                 # (Playhead reitet auf der Download-Kante: Ruckeln).
                 if len(frame) > 65536:
-                    self._bw = 0.7 * self._bw + \
-                        0.3 * (len(frame) / max(dur, 0.002))
+                    # Warmup: die ersten Messungen staerker gewichten,
+                    # damit die Dichte nicht sekundenlang auf dem
+                    # konservativen Startwert verharrt (LOD "springt").
+                    self._bw_n = getattr(self, "_bw_n", 0) + 1
+                    w = 0.5 if self._bw_n <= 8 else 0.3
+                    self._bw = (1 - w) * self._bw + \
+                        w * (len(frame) / max(dur, 0.002))
                 self.sent_abs = idxs[-1] + step
         except Exception:
             pass
