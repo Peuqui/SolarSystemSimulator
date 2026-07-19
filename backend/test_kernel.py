@@ -187,12 +187,43 @@ def main() -> None:
               f"max |Δvel| = {e_v:.3e}")
         assert e_p < 5e-6 and e_v < 5e-6, f"{ng}-GPU-Physik weicht ab!"
 
+    # --- Hierarchie: Sonnentaucher — kein Katapult, Bahn nahe Referenz.
+    # Die CPU-Referenz integriert ASTAD-exakt (alle fein); der Kernel
+    # nutzt fuer die Heissen die private Feinschleife mit interpolierten
+    # Massiv-Positionen — kleine, bewusste Naeherung.
+    rng = np.random.default_rng(3)
+    nd = 20
+    x = np.zeros(1 + nd); y = np.zeros(1 + nd)
+    vx = np.zeros(1 + nd); vy = np.zeros(1 + nd)
+    mass = np.full(1 + nd, 1e-12); mass[0] = 1.0
+    vis = np.ones(1 + nd, np.uint8)
+    is_ast = np.ones(1 + nd, np.uint8); is_ast[0] = 0
+    th = rng.random(nd) * 2 * np.pi
+    r0 = 0.25 + 0.1 * rng.random(nd)
+    x[1:] = r0 * np.cos(th); y[1:] = r0 * np.sin(th)
+    dt8 = 8 / 365.25
+    st = sim.load_state(x, y, vx, vy, mass, vis, is_ast)
+    out = sim.step(st, dt8)
+    rx, ry, rvx, rvy = reference_advance(dt8, x, y, vx, vy, mass, vis,
+                                         is_ast)
+    n1 = 1 + nd
+    dp = np.max(np.hypot(out[0:n1] - rx, out[n1:2*n1] - ry))
+    r_now = np.hypot(out[1:n1] - out[0], out[n1+1:2*n1] - out[n1])
+    print(f"Taucher (8 Tage Fall): max |Δpos| vs Referenz = {dp:.2e} AU, "
+          f"max r = {r_now.max():.3f} AU (kein Katapult)")
+    assert dp < 2e-3 and r_now.max() < 0.5, "Taucher-Physik weicht ab!"
+
     # --- Benchmark: Tage/s (dt=50 Tage/Frame), 1 GPU vs voller Verbund
     for label, simb in (("1 GPU", sim),
                         (f"{len(devs)} GPUs", NBodyCuda(devs))
                         if len(devs) > 1 else (("1 GPU", sim),)):
         for n_ast in (7000, 50000, 200000):
             state = make_system(n_ast)
+            # 100 Sonnentaucher untermischen — frueher zogen sie ALLE
+            # Koerper auf den dt-Floor (Rate brach auf <10 Tage/s ein)
+            xs, ys, vxs, vys, ms, vs, ia = state
+            xs[10:110] = 0.3; ys[10:110] = 0.0
+            vxs[10:110] = 0.0; vys[10:110] = 0.0
             dtf = 50 / 365.25
             st = simb.load_state(*state)
             simb.step(st, dtf)                    # Warmup

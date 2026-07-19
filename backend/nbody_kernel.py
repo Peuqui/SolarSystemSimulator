@@ -133,6 +133,8 @@ extern "C" __global__ void frame_kernel(
     const unsigned char* __restrict__ mVis,
     double* mAccX, double* mAccY,
     double* backX, double* backY,        // device-lokale Gegenkraft-Akkus
+    unsigned char* __restrict__ hot,     // Klassifikation je Shard-Asti
+    double* mx0, double* my0,            // Massiv-Pos am Segment-Anfang
     GSync* gs, Ctrl* ctrl,
     // Batch-Snapshots: kompakt [K][4][nAst] f32; GPU 0 schreibt die
     // Massiven zusaetzlich nach snapM [K][4][M].
@@ -227,6 +229,18 @@ extern "C" __global__ void frame_kernel(
     const double wDts[3] = { w1, w0, w1 };
 
     // ================= Batch: K Raster-Samples pro Launch =================
+    // HIERARCHISCHE ZEITSCHRITTE: dtH (grob, max. maxSubDt) wird nur von
+    // massiv-x-massiv-Paaren gedrueckt — jede Karte berechnet ihn aus den
+    // replizierten Massiven IDENTISCH, ohne Austausch. Pro dtH werden die
+    // Asteroiden klassifiziert: tEnc/20 < dtH -> "heiss" (enge Begegnung).
+    // Ruhige + Massive machen EIN Yoshida(dtH) wie bisher; jeder heisse
+    // Asteroid integriert sein Segment in einer PRIVATEN, synchronisations-
+    // freien Feinschleife (eigenes adaptives dt, Yoshida, Floor
+    // maxSubDt/1000), die Massiv-Positionen linear im Segment
+    // interpoliert. Bewusste Naeherungen ggue. dem Live-Algo: Massiv-
+    // Interpolation statt Fein-Mitintegration, Gegenkraefte heisser Astis
+    // nur an Segmentgrenzen (~1e-12 M_sun), Ruhige bleiben beim groben
+    // Schritt — dafuer bricht EIN Sonnentaucher nicht mehr die Rate aller.
     for (int ks = 0; ks < K; ks++) {
         if (tid == 0) {
             ctrl->remaining = dtRaster;
@@ -234,102 +248,77 @@ extern "C" __global__ void frame_kernel(
         }
         grid.sync();
 
-        // ---- Frame-Loop: adaptiver Substep, Yoshida = 3 Verlets ----
         for (;;) {
-            // adaptDt in Hybrid-Worker-Semantik (ASTAD): massive Paare
-            // (nur GPU 0) UND Asteroid-x-massiv (jeder Shard) druecken dt.
-            // Globales Minimum ueber alle Karten via atomicMin_system auf
-            // der Bit-Repraesentation (fuer positive doubles ordnungs-
-            // erhaltend). Alle Karten lesen dasselbe dt -> replizierte
-            // Massiv-Integration bleibt bit-identisch.
+            // dtH: massiv-Paare (identisch auf jeder Karte) + Klemmen
             if (tid == 0) {
                 if (ctrl->remaining <= 1e-12 ||
                     ctrl->guard++ >= maxSubSteps) {
                     ctrl->done = 1;
+                } else {
+                    double dtH = maxSubDt;
+                    for (int i = 0; i < M; i++) {
+                        if (!mVis[i]) continue;
+                        for (int j = i + 1; j < M; j++) {
+                            if (!mVis[j]) continue;
+                            const double dx = mx[j] - mx[i];
+                            const double dy = my[j] - my[i];
+                            double dist = sqrt(dx * dx + dy * dy);
+                            if (dist < 1e-12) dist = 1e-12;
+                            const double dvx = mvx[j] - mvx[i];
+                            const double dvy = mvy[j] - mvy[i];
+                            const double vrel =
+                                sqrt(dvx * dvx + dvy * dvy);
+                            if (vrel > 1e-9) {
+                                const double tEnc = dist / vrel / 20.0;
+                                if (tEnc < dtH) dtH = tEnc;
+                            }
+                        }
+                    }
+                    if (dtH < maxSubDt / 1000.0) dtH = maxSubDt / 1000.0;
+                    if (dtH > ctrl->remaining) dtH = ctrl->remaining;
+                    ctrl->subDt = dtH;
+                    ctrl->remaining -= dtH;
                 }
-                ctrl->minEncDev = __double_as_longlong(maxSubDt);
             }
             grid.sync();
             if (ctrl->done) break;
-            if (threadIdx.x == 0) s_minEnc = __double_as_longlong(maxSubDt);
-            __syncthreads();
-            double best = maxSubDt;
+            const double dtH = ctrl->subDt;
+
+            // Klassifikation: heiss, wenn eine Begegnung mit einem
+            // massiven Koerper das alte adaptDt unter dtH gezogen haette.
             for (int i = tid; i < nAst; i += stride) {
-                if (!aVis[i]) continue;
-                const double px = ax[i], py = ay[i];
-                const double pvx = avx[i], pvy = avy[i];
-                for (int kk = 0; kk < M; kk++) {
-                    if (!mVis[kk]) continue;
-                    const double dx = mx[kk] - px, dy = my[kk] - py;
-                    double dist = sqrt(dx * dx + dy * dy);
-                    if (dist < 1e-12) dist = 1e-12;
-                    const double dvx = mvx[kk] - pvx, dvy = mvy[kk] - pvy;
-                    const double vrel = sqrt(dvx * dvx + dvy * dvy);
-                    if (vrel > 1e-9) {
-                        const double tEnc = dist / vrel / 20.0;
-                        if (tEnc < best) best = tEnc;
-                    }
-                }
-            }
-            if (gpuId == 0 && tid == 0) {
-                for (int i = 0; i < M; i++) {
-                    if (!mVis[i]) continue;
-                    for (int j = i + 1; j < M; j++) {
-                        if (!mVis[j]) continue;
-                        const double dx = mx[j] - mx[i], dy = my[j] - my[i];
+                unsigned char h = 0;
+                if (aVis[i]) {
+                    const double px = ax[i], py = ay[i];
+                    const double pvx = avx[i], pvy = avy[i];
+                    for (int kk = 0; kk < M; kk++) {
+                        if (!mVis[kk]) continue;
+                        const double dx = mx[kk] - px, dy = my[kk] - py;
                         double dist = sqrt(dx * dx + dy * dy);
                         if (dist < 1e-12) dist = 1e-12;
-                        const double dvx = mvx[j] - mvx[i];
-                        const double dvy = mvy[j] - mvy[i];
+                        const double dvx = mvx[kk] - pvx;
+                        const double dvy = mvy[kk] - pvy;
                         const double vrel = sqrt(dvx * dvx + dvy * dvy);
-                        if (vrel > 1e-9) {
-                            const double tEnc = dist / vrel / 20.0;
-                            if (tEnc < best) best = tEnc;
-                        }
+                        if (vrel > 1e-9 &&
+                            dist / vrel / 20.0 < dtH) { h = 1; break; }
                     }
                 }
+                hot[i] = h;
             }
-            if (best < maxSubDt)
-                atomicMin(&s_minEnc, __double_as_longlong(best));
-            __syncthreads();
-            if (threadIdx.x == 0 &&
-                s_minEnc != __double_as_longlong(maxSubDt))
-                atomicMin(&ctrl->minEncDev, s_minEnc);   // device-lokal
-            grid.sync();
-            if (nGpus > 1 && tid == 0)
-                ((volatile unsigned long long*)gs->minEnc)[gpuId * PAD] =
-                    ctrl->minEncDev;
-            sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
-            // dt bestimmen — tid 0 JEDER Karte liest alle Slots in fester
-            // Reihenfolge: identisches Minimum, replizierter Loop-Zustand
-            // bleibt bit-identisch.
-            if (tid == 0) {
-                unsigned long long mv = ctrl->minEncDev;
-                if (nGpus > 1) {
-                    mv = __double_as_longlong(maxSubDt);
-                    for (int g = 0; g < nGpus; g++) {
-                        const unsigned long long v =
-                            ((volatile unsigned long long*)
-                                 gs->minEnc)[g * PAD];
-                        if (v < mv) mv = v;
-                    }
-                }
-                double dt = __longlong_as_double(mv);
-                if (dt < maxSubDt / 1000.0) dt = maxSubDt / 1000.0;
-                if (dt > ctrl->remaining) dt = ctrl->remaining;
-                ctrl->subDt = dt;
-                ctrl->remaining -= dt;
-            }
-            grid.sync();
-            const double subDt = ctrl->subDt;
+            // (kein sync noetig: Phase A liest hot[i] im selben Thread)
 
             for (int w = 0; w < 3; w++) {
-                const double dt = wDts[w] * subDt;
-                // Phase A: Positionen — Astis (Shard, Grid-Stride) und
-                // Massive (jede Karte identisch, Thread 0). Eigenen
-                // Gegenkraft-Slot fuer Phase B nullen.
+                const double dt = wDts[w] * dtH;
+                // Segment-Anfang der Massiven fuer die Interpolation
+                if (tid == 0) {
+                    for (int j = 0; j < M; j++) {
+                        mx0[j] = mx[j]; my0[j] = my[j];
+                    }
+                }
+                grid.sync();
+                // Phase A: Positionen — nur RUHIGE Astis + Massive
                 for (int i = tid; i < nAst; i += stride) {
-                    if (!aVis[i]) continue;
+                    if (!aVis[i] || hot[i]) continue;
                     ax[i] += avx[i] * dt + 0.5 * aAccX[i] * dt * dt;
                     ay[i] += avy[i] * dt + 0.5 * aAccY[i] * dt * dt;
                 }
@@ -344,8 +333,9 @@ extern "C" __global__ void frame_kernel(
                     }
                 }
                 grid.sync();
-                // Phase B: neue Asti-Beschleunigung + Velocity-Update +
-                // Gegenkraft-Reduktion in den eigenen GSync-Slot.
+                // Phase B: Beschleunigung + Velocity fuer RUHIGE;
+                // ALLE Astis (auch heisse, an ihrer Segment-Position)
+                // liefern Gegenkraefte auf die Massiven.
                 if (threadIdx.x < M) {
                     s_mx[threadIdx.x] = mx[threadIdx.x];
                     s_my[threadIdx.x] = my[threadIdx.x];
@@ -367,9 +357,11 @@ extern "C" __global__ void frame_kernel(
                         atomicAdd(&s_fx[kk], -f * pm * dx);
                         atomicAdd(&s_fy[kk], -f * pm * dy);
                     }
-                    avx[i] += 0.5 * (aAccX[i] + acx) * dt;
-                    avy[i] += 0.5 * (aAccY[i] + acy) * dt;
-                    aAccX[i] = acx; aAccY[i] = acy;
+                    if (!hot[i]) {
+                        avx[i] += 0.5 * (aAccX[i] + acx) * dt;
+                        avy[i] += 0.5 * (aAccY[i] + acy) * dt;
+                        aAccX[i] = acx; aAccY[i] = acy;
+                    }
                 }
                 __syncthreads();
                 if (threadIdx.x < M) {
@@ -384,9 +376,7 @@ extern "C" __global__ void frame_kernel(
                     }
                 }
                 sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
-                // Phase C: Massiv-Beschleunigung aus den Partialsummen
-                // ALLER Karten (feste Reihenfolge -> deterministisch) +
-                // Velocity — auf jeder Karte identisch.
+                // Phase C: Massiv-Beschleunigung aus allen Partialsummen
                 if (tid == 0) {
                     for (int i = 0; i < M; i++) {
                         double acx = 0.0, acy = 0.0;
@@ -411,6 +401,99 @@ extern "C" __global__ void frame_kernel(
                     }
                 }
                 sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+
+                // ---- Private Feinschleife der HEISSEN Astis ueber das
+                // Segment [0, dt] (dt kann negativ sein: Yoshida-w0).
+                // Massiv-Positionen linear interpoliert, kein Sync.
+                for (int i = tid; i < nAst; i += stride) {
+                    if (!aVis[i] || !hot[i]) continue;
+                    double px = ax[i], py = ay[i];
+                    double pvx = avx[i], pvy = avy[i];
+                    const double sgn = dt >= 0.0 ? 1.0 : -1.0;
+                    const double span = fabs(dt);
+                    double tau = 0.0;
+                    int guardF = 0;
+                    while (tau < span - 1e-15 && guardF++ < 8000) {
+                        // Feines dt aus tEnc gegen interpolierte Massive
+                        const double al = tau / span;
+                        double dtF = maxSubDt;
+                        for (int kk = 0; kk < M; kk++) {
+                            if (!s_mv[kk]) continue;
+                            const double mxi = mx0[kk] +
+                                (mx[kk] - mx0[kk]) * al;
+                            const double myi = my0[kk] +
+                                (my[kk] - my0[kk]) * al;
+                            const double dx = mxi - px, dy = myi - py;
+                            double dist = sqrt(dx * dx + dy * dy);
+                            if (dist < 1e-12) dist = 1e-12;
+                            const double dvx = mvx[kk] - pvx;
+                            const double dvy = mvy[kk] - pvy;
+                            const double vrel =
+                                sqrt(dvx * dvx + dvy * dvy);
+                            if (vrel > 1e-9) {
+                                const double tE = dist / vrel / 20.0;
+                                if (tE < dtF) dtF = tE;
+                            }
+                        }
+                        if (dtF < maxSubDt / 1000.0)
+                            dtF = maxSubDt / 1000.0;
+                        if (dtF > span - tau) dtF = span - tau;
+                        // Yoshida (3 Verlets) mit interpolierten Massiven
+                        double tSub = tau;
+                        for (int wf = 0; wf < 3; wf++) {
+                            const double df = wDts[wf] * dtF * sgn;
+                            const double a0 = tSub / span;
+                            double acx = 0.0, acy = 0.0;
+                            for (int kk = 0; kk < M; kk++) {
+                                if (!s_mv[kk]) continue;
+                                const double mxi = mx0[kk] +
+                                    (mx[kk] - mx0[kk]) * a0;
+                                const double myi = my0[kk] +
+                                    (my[kk] - my0[kk]) * a0;
+                                const double dx = mxi - px, dy = myi - py;
+                                const double r2 = dx * dx + dy * dy + soft;
+                                const double f = G / (r2 * sqrt(r2));
+                                acx += f * s_mm[kk] * dx;
+                                acy += f * s_mm[kk] * dy;
+                            }
+                            px += pvx * df + 0.5 * acx * df * df;
+                            py += pvy * df + 0.5 * acy * df * df;
+                            tSub += wDts[wf] * dtF;
+                            const double a1 = tSub / span;
+                            double ncx = 0.0, ncy = 0.0;
+                            for (int kk = 0; kk < M; kk++) {
+                                if (!s_mv[kk]) continue;
+                                const double mxi = mx0[kk] +
+                                    (mx[kk] - mx0[kk]) * a1;
+                                const double myi = my0[kk] +
+                                    (my[kk] - my0[kk]) * a1;
+                                const double dx = mxi - px, dy = myi - py;
+                                const double r2 = dx * dx + dy * dy + soft;
+                                const double f = G / (r2 * sqrt(r2));
+                                ncx += f * s_mm[kk] * dx;
+                                ncy += f * s_mm[kk] * dy;
+                            }
+                            pvx += 0.5 * (acx + ncx) * df;
+                            pvy += 0.5 * (acy + ncy) * df;
+                        }
+                        tau += dtF;
+                    }
+                    ax[i] = px; ay[i] = py;
+                    avx[i] = pvx; avy[i] = pvy;
+                    // Beschleunigung am Segment-Ende fuer die naechste
+                    // grobe Phase A (falls der Asti wieder ruhig wird)
+                    double acx = 0.0, acy = 0.0;
+                    for (int kk = 0; kk < M; kk++) {
+                        if (!s_mv[kk]) continue;
+                        const double dx = mx[kk] - px, dy = my[kk] - py;
+                        const double r2 = dx * dx + dy * dy + soft;
+                        const double f = G / (r2 * sqrt(r2));
+                        acx += f * s_mm[kk] * dx;
+                        acy += f * s_mm[kk] * dy;
+                    }
+                    aAccX[i] = acx; aAccY[i] = acy;
+                }
+                grid.sync();
             }
         }
 
@@ -502,8 +585,13 @@ class NBodyCuda:
         self._block = 256
         for d in self.devices:
             with cp.cuda.Device(d):
+                # Register-Limit: die private Feinschleife der heissen
+                # Asteroiden wuerde sonst den Registerbedarf des GANZEN
+                # Kernels aufblaehen und die Occupancy aller Phasen
+                # halbieren; Spills treffen nur die wenigen Heissen.
                 mod = cp.RawModule(
-                    code=_SRC, options=("--std=c++17",),
+                    code=_SRC,
+                    options=("--std=c++17", "--maxrregcount=64"),
                     enable_cooperative_groups=True)
                 self._mods[d] = mod
                 self._kerns[d] = mod.get_function("frame_kernel")
@@ -537,13 +625,19 @@ class NBodyCuda:
         n_ast = len(a_idx)
         ng = len(self.devices)
 
-        # Gewichtete Partition der Asteroiden-Indizes
+        # Gewichtete Partition der Asteroiden-Indizes — INTERLEAVED
+        # (Round-Robin ueber 16 Gewichtsquanten pro Karte) statt
+        # zusammenhaengender Slices: injizierte Wolken (zusammenhaengende
+        # Indexbloecke) verteilen sich so gleichmaessig auf alle Karten,
+        # sonst traegt EIN Shard alle heissen Feinschleifen und der Rest
+        # wartet an der Segment-Barrier.
         weights = np.array([_f64_score(d) for d in self.devices])
-        weights = weights / weights.sum()
-        cuts = np.floor(np.cumsum(weights) * n_ast).astype(np.int64)
-        cuts[-1] = n_ast
-        bounds = np.concatenate(([0], cuts))
-        shard_aidx = [a_idx[bounds[g]:bounds[g + 1]] for g in range(ng)]
+        quanta = np.maximum(1, np.round(
+            weights / weights.max() * 16).astype(np.int64))
+        wheel = np.concatenate([np.full(q, g, np.int64)
+                                for g, q in enumerate(quanta)])
+        assign = wheel[np.arange(n_ast) % len(wheel)]
+        shard_aidx = [a_idx[assign == g] for g in range(ng)]
 
         # GSync-Bereich: gemappter Host-Speicher bei >1 Karte (alle sehen
         # dieselben Bytes), sonst normaler Device-Speicher.
@@ -576,6 +670,8 @@ class NBodyCuda:
                       "aaccy": cp.zeros(len(sa), dd),
                       "maccx": cp.zeros(m, dd), "maccy": cp.zeros(m, dd),
                       "backx": cp.zeros(m, dd), "backy": cp.zeros(m, dd),
+                      "hot": cp.zeros(max(len(sa), 1), cp.uint8),
+                      "mx0": cp.zeros(m, dd), "my0": cp.zeros(m, dd),
                       "ctrl": cp.zeros(5, dtype=cp.float64),
                       "snap": cp.empty(K_MAX * 4 * max(len(sa), 1),
                                        cp.float32)}
@@ -644,6 +740,7 @@ class NBodyCuda:
                      sh["vis"][n_ast:],
                      sh["maccx"], sh["maccy"],
                      sh["backx"], sh["backy"],
+                     sh["hot"], sh["mx0"], sh["my0"],
                      sh["gs"], sh["ctrl"],
                      sh["snap"],
                      sh.get("snapM", sh["snap"]),
