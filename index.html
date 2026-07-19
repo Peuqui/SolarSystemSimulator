@@ -103,6 +103,18 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 #body-count-badge.show { display: inline-block; }
 #body-count-badge span { color: #7af; }
 
+#perf-badge {
+  background: rgba(20,55,35,0.85); color: #b8e6c8;
+  border: 1px solid #3a8a5f;
+  padding: 4px 10px; border-radius: 4px;
+  font-size: 12px; font-weight: bold;
+  font-family: 'Segoe UI', monospace;
+  display: none;
+  -webkit-user-select: none; user-select: none;
+}
+#perf-badge.show { display: inline-block; }
+#perf-badge span { color: #7fd9a3; }
+
 #help-toggle {
   position: absolute; top: 8px; right: 8px; z-index: 20;
   width: 32px; height: 32px; display: flex; align-items: center;
@@ -492,6 +504,9 @@ input[type=range] {
   <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;">
     <input type="checkbox" id="chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span>
   </label>
+  <label data-i18n-title="tt.cuda" id="lbl-engine-cuda" style="display:none;">
+    <input type="radio" name="engine" id="rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span>
+  </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
@@ -546,6 +561,7 @@ input[type=range] {
 <div id="toggle-sidebar" data-i18n-title="tt.toggle-sidebar">&#9664;</div>
 
 <div id="badge-row">
+  <div id="perf-badge" data-i18n-title="tt.perfbadge"></div>
   <div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><!-- &nbsp;|&nbsp; Bounces: <span id="bounce-count">0</span> --></div>
   <div id="body-count-badge" data-i18n-title="tt.bodycount"></div>
 </div>
@@ -657,6 +673,7 @@ input[type=range] {
   <label data-i18n-title="tt.gpu"><input type="radio" name="engine-mob" id="mob-rad-gpu" value="gpu"> <span data-i18n="lbl.worldgpu">Physik via WebGPU</span></label>
   <label data-i18n-title="tt.hybrid"><input type="radio" name="engine-mob" id="mob-rad-hybrid" value="hybrid"> <span data-i18n="lbl.worldhybrid">Hybrid (Körper f64 + Asteroiden GPU)</span></label>
   <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;"><input type="checkbox" id="mob-chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span></label>
+  <label data-i18n-title="tt.cuda" id="mob-lbl-engine-cuda" style="display:none;"><input type="radio" name="engine-mob" id="mob-rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
   <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">Flüchtende markieren</span></label>
@@ -863,6 +880,7 @@ const I18N = {
     'lbl.worldgpu': 'Physik via WebGPU',
     'lbl.worldhybrid': 'Hybrid (Körper f64 + Asteroiden GPU)',
     'lbl.hybrid-near': 'Enge Begegnungen präzise',
+    'lbl.enginecuda': 'CUDA-Backend (nativ, f64)',
     'lbl.inject-mass': 'Masse',
     'lbl.inject-speed': 'Geschwindigkeit (km/s)',
     'lbl.inject-angle': 'Kompass-Kurs (°)',
@@ -881,6 +899,7 @@ const I18N = {
     'tt.worker': 'Physik auf separatem Thread (WebWorker) — flüssiger bei vielen Bodies. Bei Problemen ausschalten.',
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
+    'tt.cuda': 'Natives CUDA-Backend auf Mini (Tesla V100, f64): volle Präzision UND Geschwindigkeit. Erscheint nur, wenn der lokale Backend-Server läuft (backend/server.py).',
     'tt.hybrid-near': 'Nur im Hybrid: Asteroiden, die einem schweren Körper zu nahe/schnell begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen f64-adaptiv im Worker statt grob auf der GPU. Präzise, kostet aber Tempo, wenn sehr viele Asteroiden gleichzeitig nahe sind. Aus = alle Asteroiden grob auf der GPU (schnell).',
     'tt.engine-help': 'Erklärung der Engine-Modi und Asteroiden-Optionen',
     'tt.time-help': 'Erklärung von Zeitschritt und Verlangsamung',
@@ -914,6 +933,12 @@ const I18N = {
     'tt.belt': 'Anzahl der Gürtel-Asteroiden. Wirkt nach erneutem Laden des "Sonnensystem mit Gürteln"-Szenarios.',
     // Stats
     'stats.time': 'Zeit',
+    'tt.perfbadge': 'Live-Performance: aktive Physik-Engine, Simulations-Frames pro Sekunde, simulierte Tage pro Echtzeit-Sekunde',
+    'stats.engine': 'Engine',
+    'stats.fps': 'Sim-FPS',
+    'stats.phys': 'Physik/Frame',
+    'stats.rate': 'Sim-Tempo',
+    'stats.rate-unit': 'Tage/s',
     'stats.years': 'Jahre',
     'stats.realtime': 'Echtzeit',
     'stats.bodies': 'Körper',
@@ -1093,6 +1118,7 @@ const I18N = {
     'lbl.engine-cpu': 'Main thread (CPU)',
     'lbl.worldgpu': 'Physics via WebGPU',
     'lbl.worldhybrid': 'Hybrid (bodies f64 + asteroids GPU)',
+    'lbl.enginecuda': 'CUDA backend (native, f64)',
     'lbl.hybrid-near': 'Precise close encounters',
     'lbl.inject-mass': 'Mass',
     'lbl.inject-speed': 'Speed (km/s)',
@@ -1111,6 +1137,7 @@ const I18N = {
     'tt.worker': 'Physics on a separate thread (WebWorker) — smoother with many bodies. Disable if problems occur.',
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
+    'tt.cuda': 'Native CUDA backend (Tesla V100, f64): full precision AND speed. Only appears when the local backend server is running (backend/server.py).',
     'tt.hybrid-near': 'Hybrid only: asteroids whose encounter with a massive body is too close/fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the worker instead of coarsely on the GPU. Precise, but costs speed when very many asteroids are close at once. Off = all asteroids run coarsely on the GPU (fast).',
     'tt.engine-help': 'Explanation of the engine modes and asteroid options',
     'tt.time-help': 'Explanation of time step and slowdown',
@@ -1143,6 +1170,12 @@ const I18N = {
     'lbl.belt-kb': 'Kuiper belt',
     'tt.belt': 'Number of belt asteroids. Takes effect when the "Solar System with Belts" scenario is reloaded.',
     'stats.time': 'Time',
+    'tt.perfbadge': 'Live performance: active physics engine, simulation frames per second, simulated days per real-time second',
+    'stats.engine': 'Engine',
+    'stats.fps': 'sim FPS',
+    'stats.phys': 'physics/frame',
+    'stats.rate': 'Sim rate',
+    'stats.rate-unit': 'days/s',
     'stats.years': 'years',
     'stats.realtime': 'Real time',
     'stats.bodies': 'Bodies',
@@ -3578,6 +3611,131 @@ function advanceWorker(dtYears, list) {
   });
 }
 
+// ============================================================
+//  CUDA-Backend (optional): natives f64-Backend auf localhost
+//  (backend/server.py, Tesla V100). Die Seite bleibt ohne Backend
+//  voll funktionsfaehig — der Engine-Eintrag erscheint erst nach
+//  erfolgreichem WebSocket-Connect (hardwareagnostisch).
+// ============================================================
+// Kandidaten in Prioritaetsreihenfolge: bei Remote-Zugriff (Seite kommt
+// per https von einem Server) zuerst die wss-Route ueber denselben Host
+// (nginx-Proxy -> Mini:8765), sonst/zusaetzlich direktes localhost.
+const CUDA_WS_URLS = (() => {
+  const urls = [];
+  const local = ['localhost', '127.0.0.1', ''].includes(location.hostname);
+  if (!local) {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    urls.push(proto + '://' + location.host + '/solar-cuda');
+  }
+  urls.push('ws://127.0.0.1:8765');   // Default-Port von backend/server.py
+  return urls;
+})();
+let cudaSocket = null;
+let cudaReady = false;
+let cudaBusy = false;
+let cudaResolver = null;
+let cudaInflightRefs = null;
+
+function _cudaSetVisible(visible) {
+  for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = visible ? '' : 'none';
+  }
+}
+
+function initCudaBackend(urlIndex = 0) {
+  if (urlIndex >= CUDA_WS_URLS.length) return;
+  let ws;
+  try { ws = new WebSocket(CUDA_WS_URLS[urlIndex]); } catch (e) {
+    initCudaBackend(urlIndex + 1);
+    return;
+  }
+  let connected = false;
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { connected = true; ws.send('ping'); };
+  ws.onmessage = (e) => {
+    if (typeof e.data === 'string') {
+      // Ping-Antwort mit Geraeteinfo — Backend ist da.
+      cudaSocket = ws;
+      cudaReady = true;
+      _cudaSetVisible(true);
+      if (useCuda) applyEngine('cuda', false);   // persistierten Modus nachziehen
+      console.log('CUDA-Backend verbunden:', e.data);
+      return;
+    }
+    const buf = e.data;
+    const status = new Uint32Array(buf, 0, 2)[0];
+    if (status !== 0) {
+      console.warn('CUDA-Backend-Fehler:',
+        new TextDecoder().decode(new Uint8Array(buf, 8)));
+      applyEngine('worker', false);
+    } else {
+      const refs = cudaInflightRefs || [];
+      const n = refs.length;
+      const x  = new Float64Array(buf, 8,          n);
+      const y  = new Float64Array(buf, 8 + 8 * n,  n);
+      const vx = new Float64Array(buf, 8 + 16 * n, n);
+      const vy = new Float64Array(buf, 8 + 24 * n, n);
+      const live = new Set(bodies);
+      for (let i = 0; i < n; i++) {
+        const b = refs[i];
+        if (!live.has(b)) continue;
+        b.x = x[i]; b.y = y[i]; b.vx = vx[i]; b.vy = vy[i];
+      }
+    }
+    cudaInflightRefs = null;
+    cudaBusy = false;
+    if (cudaResolver) { const r = cudaResolver; cudaResolver = null; r(); }
+  };
+  ws.onclose = () => {
+    // Verbindungsaufbau gescheitert -> naechsten Kandidaten probieren.
+    if (!connected) { initCudaBackend(urlIndex + 1); return; }
+    cudaReady = false;
+    cudaSocket = null;
+    cudaBusy = false;
+    cudaInflightRefs = null;
+    if (cudaResolver) { const r = cudaResolver; cudaResolver = null; r(); }
+    _cudaSetVisible(false);
+    if (useCuda) {
+      console.warn('CUDA-Backend getrennt — wechsle auf WebWorker-Engine.');
+      applyEngine('worker', false);
+    }
+  };
+}
+initCudaBackend();
+
+// Frame ans CUDA-Backend: kompletter Koerperzustand hin, neue Positionen/
+// Geschwindigkeiten zurueck. Protokoll siehe backend/server.py.
+function advanceCuda(dtYears) {
+  return new Promise((resolve) => {
+    if (cudaBusy || !cudaReady) { resolve(); return; }
+    const src = bodies;
+    const N = src.length;
+    const buf = new ArrayBuffer(16 + N * (5 * 8 + 2));
+    const dv = new DataView(buf);
+    dv.setFloat64(0, dtYears, true);
+    dv.setUint32(8, N, true);
+    const x    = new Float64Array(buf, 16,           N);
+    const y    = new Float64Array(buf, 16 + 8 * N,   N);
+    const vx   = new Float64Array(buf, 16 + 16 * N,  N);
+    const vy   = new Float64Array(buf, 16 + 24 * N,  N);
+    const mass = new Float64Array(buf, 16 + 32 * N,  N);
+    const visible = new Uint8Array(buf, 16 + 40 * N, N);
+    const isAst   = new Uint8Array(buf, 16 + 41 * N, N);
+    for (let i = 0; i < N; i++) {
+      const b = src[i];
+      x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
+      mass[i] = b.mass;
+      visible[i] = b.visible ? 1 : 0;
+      isAst[i] = b.isAsteroid ? 1 : 0;
+    }
+    cudaInflightRefs = src.slice();
+    cudaBusy = true;
+    cudaResolver = resolve;
+    cudaSocket.send(buf);
+  });
+}
+
 // Hybrid: massive Koerper (Planeten/Sterne/Choreografie) auf dem Worker in
 // f64 — fragile Systeme bleiben stabil. Asteroiden (Guertel/Wolken) als
 // Testteilchen auf der GPU in f32 — schnell, im Feld der massiven Koerper.
@@ -3635,7 +3793,13 @@ async function advanceAsync(dtYears) {
   // Szenarien aktiv, wo f32 unkritisch ist und die GPU echten Speed bringt.
   const sc = SCENARIOS[currentScenario];
   const needF64 = !!(sc && sc.precise);
-  if (useHybrid) {
+  if (useCuda && cudaReady) {
+    // CUDA rechnet f64 — auch fuer empfindliche Szenarien geeignet.
+    await advanceCuda(dtYears);
+  } else if (useCuda && !cudaReady) {
+    // Backend (noch) nicht verbunden — Worker als gleichwertiger f64-Pfad.
+    await advanceWorker(dtYears);
+  } else if (useHybrid) {
     await advanceHybrid(dtYears);
   } else if (useGPU && gpu && !needF64) {
     await advanceGPU(dtYears);
@@ -3659,6 +3823,7 @@ async function advanceAsync(dtYears) {
 // ============================================================
 var useGPU = DEFAULTS.useGPU;        // Toggle (default aus — experimentell)
 var useHybrid = false;               // Hybrid: massive Koerper Worker-f64, Asteroiden GPU-f32
+var useCuda = false;                 // natives CUDA-Backend (localhost, f64)
 var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
 var astEscape = DEFAULTS.astEscape;                // Toggle Asteroiden-Fluchterkennung
 var astEscapeMark = DEFAULTS.astEscapeMark;        // Toggle Ring-Markierung der Flucht-Asteroiden
@@ -4516,6 +4681,12 @@ function handleCollisions(dtFrame) {
 
 let centerInTransit = false;   // Kamera faehrt gerade auf ein neues Ziel
 
+// Live-Performance-Metriken (Rolling-Fenster ~1 s) fuer das Statistik-Panel:
+// echte Sim-Frames/s (nicht rAF!), Physikzeit pro Frame, Sim-Tage pro
+// Echtzeit-Sekunde. Grundlage fuer Live-Vergleich der Physik-Engines.
+const _perf = { frames: 0, physMs: 0, lastT: 0, lastSimTime: 0,
+                fps: 0, msPhys: 0, daysPerSec: 0 };
+
 async function simLoop() {
   // Browser drosseln rAF bei inaktivem Tab stark (oft 0–1 Hz). Eine
   // sinnvolle Simulation ist da nicht moeglich — also wird inaktiver
@@ -4575,6 +4746,7 @@ async function simLoop() {
   if (!effectivelyPaused) {
     const dtDays = parseFloat(document.getElementById('dt-slider').value);
     const slowFactor = Math.pow(10, parseFloat(document.getElementById('slow-slider').value));
+    const physT0 = performance.now();
     try {
       await advanceAsync(dtDays / 365.25 / slowFactor);
     } catch (err) {
@@ -4582,6 +4754,8 @@ async function simLoop() {
       // darf die ganze Simulation nicht einfrieren. Loggen, weitermachen.
       console.warn('advanceAsync warf — Frame uebersprungen:', err);
     }
+    _perf.physMs += performance.now() - physT0;
+    _perf.frames++;
   }
   // Fluchtkurs auswerten — barycenter() braucht die unbound-Flags.
   updateBoundState();
@@ -4607,6 +4781,23 @@ async function simLoop() {
       cam.cx = panLerpTarget.x;
       cam.cy = panLerpTarget.y;
       panLerpTarget = null;
+    }
+  }
+  // Rolling-Fenster einmal pro Sekunde auswerten
+  {
+    const perfNow = performance.now();
+    if (_perf.lastT === 0) {
+      _perf.lastT = perfNow;
+      _perf.lastSimTime = simTime;
+    } else if (perfNow - _perf.lastT >= 1000) {
+      const dtSec = (perfNow - _perf.lastT) / 1000;
+      _perf.fps = _perf.frames / dtSec;
+      _perf.msPhys = _perf.frames > 0 ? _perf.physMs / _perf.frames : 0;
+      _perf.daysPerSec = (simTime - _perf.lastSimTime) / dtSec;
+      _perf.frames = 0;
+      _perf.physMs = 0;
+      _perf.lastT = perfNow;
+      _perf.lastSimTime = simTime;
     }
   }
   draw();
@@ -5097,6 +5288,7 @@ function applyEngine(mode, persist) {
   useWorker = (mode === 'worker');
   useGPU    = (mode === 'gpu');
   useHybrid = (mode === 'hybrid');
+  useCuda   = (mode === 'cuda');
   for (const prefix of ['rad', 'mob-rad']) {
     const el = document.getElementById(prefix + '-' + mode);
     if (el) el.checked = true;
@@ -5110,8 +5302,8 @@ function applyEngine(mode, persist) {
     try { localStorage.setItem('sim_engine', mode); } catch (e) {}
   }
 }
-['rad-cpu', 'rad-worker', 'rad-gpu', 'rad-hybrid',
- 'mob-rad-cpu', 'mob-rad-worker', 'mob-rad-gpu', 'mob-rad-hybrid']
+['rad-cpu', 'rad-worker', 'rad-gpu', 'rad-hybrid', 'rad-cuda',
+ 'mob-rad-cpu', 'mob-rad-worker', 'mob-rad-gpu', 'mob-rad-hybrid', 'mob-rad-cuda']
   .forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', function() {
@@ -5619,15 +5811,30 @@ function updateStats() {
     }
   }
   const totalE = ke + pe;
+  const engineName = useCuda ? 'CUDA (f64)' : useHybrid ? 'Hybrid'
+    : (useGPU && gpu) ? 'WebGPU' : useWorker ? 'WebWorker' : 'CPU';
   const html =
     `${t('stats.time')}: <span>${years}</span> ${t('stats.years')}<br>` +
     `${t('stats.realtime')}: <span>${formatRealTime(realElapsedMs)}</span><br>` +
+    `${t('stats.engine')}: <span>${engineName}</span> — ` +
+    `<span>${fmtDE(_perf.fps, 1)}</span> ${t('stats.fps')}<br>` +
+    `${t('stats.phys')}: <span>${fmtDE(_perf.msPhys, 1)}</span> ms — ` +
+    `${t('stats.rate')}: <span>${fmtDE(_perf.daysPerSec, 1)}</span> ${t('stats.rate-unit')}<br>` +
     `${t('stats.bodies')}: <span>${activeCount}</span> ${t('stats.active')} / ${bodies.length} ${t('stats.total')} (${perturbers.length} ${t('stats.rogues')})<br>` +
     `${t('stats.ke')}: <span>${fmtDExp(ke, 2)}</span><br>` +
     `${t('stats.pe')}: <span>${fmtDExp(pe, 2)}</span><br>` +
     `${t('stats.te')}: <span>${fmtDExp(totalE, 2)}</span>`;
   document.getElementById('stats').innerHTML = html;
   document.getElementById('mob-stats').innerHTML = html;
+
+  // Performance-Badge oben rechts (links neben Kollisionen): Engine,
+  // Sim-FPS und Sim-Tempo — Live-Benchmarking beim Engine-Vergleich.
+  const perfEl = document.getElementById('perf-badge');
+  if (perfEl) {
+    perfEl.innerHTML = `${engineName} · <span>${fmtDE(_perf.fps, 1)}</span> FPS · ` +
+      `<span>${fmtDE(_perf.daysPerSec, 1)}</span> ${t('stats.rate-unit')}`;
+    perfEl.classList.add('show');
+  }
 
   // Body-Count-Badge oben rechts: Gesamtzahl + Typen in der Reihenfolge
   // schwarze Loecher, Sonnen, feste Koerper, Asteroiden. Nullwerte weg.
