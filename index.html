@@ -77,7 +77,8 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
    Reihenfolge im DOM = links->rechts: Kollisionen, dann Koerperzahl. */
 #badge-row {
   position: absolute; top: 12px; right: 48px; z-index: 18;
-  display: flex; flex-direction: row; align-items: center; gap: 8px;
+  display: flex; flex-direction: row; align-items: flex-start; gap: 8px;
+  flex-wrap: wrap; justify-content: flex-end;
   pointer-events: none;
 }
 #collision-badge {
@@ -342,6 +343,56 @@ body.is-mobile #float-inject { width: 65px; height: 65px; font-size: 26px; botto
   #float-recenter { display: none !important; }
   #mobile-sheet { display: block; }
   #mobile-menu-btn { display: flex; }
+  /* Badge-Zeile beginnt rechts vom Hamburger-Button (top-left, 44px + 8px
+     Rand = 52px) und endet vor dem Hilfe-Icon (right:48px). Sie bricht bei
+     Bedarf nach unten um, statt das Menue-Icon zu ueberlappen. */
+  #badge-row { left: 58px; }
+}
+
+/* Schmale Screens (Handys, Portrait): die untere Steuerung passt nicht in
+   eine Zeile (5 Navigations- + 3 Aktions-Buttons + Inject-FAB). Buttons
+   auf 48px (fingerfreundlich, WCAG-Minimum 44px erfuellt) und klare
+   horizontale Aufteilung: Navigation links (bricht in 2 Reihen um),
+   Aktionen rechts, Inject-FAB ganz rechts — keine Ueberlappung. */
+@media (max-width: 560px) {
+  body.is-mobile #mobile-controls button,
+  body.is-mobile #mobile-actions button,
+  #mobile-controls button, #mobile-actions button {
+    width: 46px; height: 46px; font-size: 19px; margin: 2px;
+  }
+  body.is-mobile #float-inject, #float-inject {
+    width: 46px; height: 46px; font-size: 19px; bottom: 46px; right: 6px;
+  }
+  /* Navigation links: exakt 3 pro Reihe (3x50=150) -> 5 Buttons als 3+2,
+     endet bei ~158 px, klar vor der rechten Aktionsgruppe. */
+  body.is-mobile #mobile-controls, #mobile-controls {
+    left: 8px; max-width: 150px;
+  }
+  /* Aktionen (3 Buttons ~150 px breit) links neben dem Inject-FAB
+     (46+6 rechts): right:60 -> rechte Kante 330, linke ~174 px. */
+  body.is-mobile #mobile-actions, #mobile-actions {
+    right: 60px; gap: 2px; max-width: 150px; flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}
+
+/* Sehr schmale Screens (<=400 px, z. B. iPhone SE): Buttons auf 42 px,
+   engere Gruppen-Grenzen — sonst beruehren sich Navigation und Aktionen. */
+@media (max-width: 400px) {
+  body.is-mobile #mobile-controls button,
+  body.is-mobile #mobile-actions button,
+  #mobile-controls button, #mobile-actions button {
+    width: 42px; height: 42px; font-size: 18px; margin: 2px;
+  }
+  body.is-mobile #float-inject, #float-inject {
+    width: 42px; height: 42px; font-size: 18px; right: 6px;
+  }
+  body.is-mobile #mobile-controls, #mobile-controls {
+    left: 6px; max-width: 138px;
+  }
+  body.is-mobile #mobile-actions, #mobile-actions {
+    right: 56px; max-width: 138px;
+  }
 }
 body.is-mobile #sidebar { display: none !important; }
 body.is-mobile #toggle-sidebar { display: none !important; }
