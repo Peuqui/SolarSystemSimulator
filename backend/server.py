@@ -69,6 +69,15 @@ class FilmSession:
         self.bytes = 0
         self.running = True
         self.task: asyncio.Task | None = None
+        # Vorlauf-Fenster (Videostreaming-Prinzip): der Producer rechnet
+        # nur begrenzt ueber den Player-Playhead hinaus und legt sich dann
+        # schlafen — statt ungebremst zukunft zu produzieren, die der
+        # naechste inject verwirft und deren eviction den zuschauer
+        # ueberholt. last_req_t = zuletzt angefragter Playhead;
+        # lookahead_days wird aus dem Konsumtempo der Batch-Anfragen
+        # abgeleitet (~90 s Playback beim aktuellen Tempo).
+        self.last_req_t = t0_days
+        self.lookahead_days = 730.0
 
     @property
     def tail(self) -> float:
@@ -82,11 +91,24 @@ class FilmSession:
         dt_years = self.raster_days / 365.25
         try:
             while self.running:
+                # Vorlauf voll -> schlafen, bis der Player aufholt
+                if self.head - self.last_req_t > self.lookahead_days:
+                    await asyncio.sleep(0.05)
+                    continue
                 out = await asyncio.to_thread(self.sim.step, self.state, dt_years)
                 self.samples.append(out)
                 self.bytes += out.nbytes
                 if self.bytes > self.MAX_BYTES and len(self.samples) > self.MIN_KEEP:
-                    drop = len(self.samples) // 8
+                    # Eviction-Schutz: nie ueber (Playhead - Vorlauf) hinaus
+                    # loeschen — Position und Rueckspul-Marge des Zuschauers
+                    # sind heilig. Ist nichts loeschbar, pausiert der
+                    # Producer (Speicher-Deckel statt Zuschauer-Ueberholen).
+                    guard_t = self.last_req_t - self.lookahead_days
+                    max_drop = int((guard_t - self.t0) / self.raster_days)
+                    drop = min(len(self.samples) // 8, max(0, max_drop))
+                    if drop == 0:
+                        await asyncio.sleep(0.2)
+                        continue
                     for s in self.samples[:drop]:
                         self.bytes -= s.nbytes
                     del self.samples[:drop]
@@ -205,6 +227,13 @@ async def handle(ws, sim: NBodyCuda):
                     # Layout: u32 typ | u32 count | f64 tTage | f64 spacingTage
                     (spacing_days,) = struct.unpack_from(
                         "<d", message, HEADER.size)
+                    # Playhead + Konsumtempo fuer das Vorlauf-Fenster:
+                    # ein Batch deckt ~3 s Playback -> Faktor 30 = ~90 s.
+                    # Direkte Zuweisung (kein max): nach einem Rueck-Scrub
+                    # muss der Eviction-Schutz die AKTUELLE Position decken.
+                    film.last_req_t = dt_years
+                    film.lookahead_days = min(
+                        36500.0, max(365.0, 30.0 * spacing_days * _n))
                     # bei leerem Puffer kurz auf den Producer warten
                     for _ in range(200):
                         if film.samples or not film.running:

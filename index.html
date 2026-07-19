@@ -3717,6 +3717,14 @@ function initCudaBackend(urlIndex = 0) {
       // f64 tail, head | count x f64 zeiten | count x sample (4N f32)
       const hdr = new Uint32Array(buf, 0, 4);
       const n = hdr[1], count = hdr[2];
+      // Stale-Response-Schutz: Antwort einer VORHERIGEN Film-Session
+      // (z. B. nach Inject-Neustart) hat eine andere Koerperzahl —
+      // verwerfen, sonst liest filmApply hinter dem Sample-Ende
+      // (undefined -> NaN -> Koerper verschwinden aus dem Rendering).
+      if (!filmRefs || n !== filmRefs.length) {
+        filmReqBusy = false;
+        return;
+      }
       const dv = new DataView(buf);
       const tail = dv.getFloat64(16, true);
       const head = dv.getFloat64(24, true);
@@ -4053,6 +4061,24 @@ function filmApply(t) {
   const q = filmQueue;
   if (!q || !filmRefs || q.times.length === 0) return;
   const n = filmRefs.length;
+  if (q.samples[0].length !== 4 * n) return;   // Sample passt nicht zur Session
+  // Jenseits des letzten Samples (Playhead an der extrapolierten Kante,
+  // naechster Batch noch unterwegs): mit den Sample-Geschwindigkeiten
+  // linear fortschreiben — durch das Kanten-Polster auf <=2 Raster
+  // begrenzt, dann ersetzt der naechste Batch alles.
+  const lastI = q.times.length - 1;
+  if (t > q.times[lastI]) {
+    const s = q.samples[lastI];
+    const dtY = (t - q.times[lastI]) / 365.25;
+    for (let k = 0; k < n; k++) {
+      const b = filmRefs[k];
+      b.vx = s[2 * n + k];
+      b.vy = s[3 * n + k];
+      b.x = s[k] + b.vx * dtY;
+      b.y = s[n + k] + b.vy * dtY;
+    }
+    return;
+  }
   // Bracketing-Paar in der Queue suchen (Zeiten aufsteigend)
   let i = 0;
   while (i < q.times.length - 1 && q.times[i + 1] < t) i++;
@@ -4081,26 +4107,37 @@ function filmTick(dtDays, slowFactor, nowMs) {
   _filmPrevMs = nowMs;
   const rate = dtDays * 60 / slowFactor;       // Tage pro Echtzeit-Sekunde
   _filmRate = rate;
+  // Live-Kante EXTRAPOLIEREN: filmQueue.head ist der Stand der letzten
+  // Antwort — dazwischen waechst der Puffer mit der geschaetzten
+  // Producer-Rate weiter. Am veralteten Head zu klemmen erzeugt
+  // Schub-Ruckeln, sobald man schneller abspielt als produziert wird.
+  let kante = Infinity;
+  if (filmQueue) {
+    const headNow = filmQueue.head + (_filmHeadRate > 0
+      ? _filmHeadRate * (nowMs - _filmHeadPrevMs) / 1000 : 0);
+    kante = Math.max(filmQueue.tail, headNow - 2 * filmRasterDays());
+  }
   if (filmLive && filmQueue) {
-    // Ziel: Live-Kante minus zwei Raster als Jitter-Polster. Dorthin mit
-    // der geschaetzten Producer-Rate laufen und sanft driften — harter
-    // Sprung nur bei grossem Rueckstand (z. B. nach Tab-Wechsel).
-    const ziel = Math.max(filmQueue.tail,
-                          filmQueue.head - 2 * filmRasterDays());
+    // Der Kante mit Producer-Rate folgen, sanft driften — harter Sprung
+    // nur bei grossem Rueckstand (z. B. nach Tab-Wechsel).
     if (_filmHeadRate > 0) {
       filmPlayheadDays += _filmHeadRate * delta / 1000;
-      const drift = ziel - filmPlayheadDays;
-      if (Math.abs(drift) > 8 * filmRasterDays()) filmPlayheadDays = ziel;
+      const drift = kante - filmPlayheadDays;
+      if (Math.abs(drift) > 8 * filmRasterDays()) filmPlayheadDays = kante;
       else filmPlayheadDays += drift * 0.05;
     } else {
-      filmPlayheadDays = ziel;
+      filmPlayheadDays = kante;
     }
   } else if (!filmScrubbing) {
     filmPlayheadDays += rate * delta / 1000;
+    // Kante eingeholt (Playback schneller als Producer) -> automatisch
+    // in den LIVE-Modus: ab hier producer-getaktet statt Clamp-Ruckeln.
+    // Der rot leuchtende LIVE-Knopf macht den Zustand sichtbar.
+    if (filmQueue && filmPlayheadDays >= kante) filmLive = true;
   }
   if (filmQueue) {
     filmPlayheadDays = Math.min(Math.max(filmPlayheadDays, filmQueue.tail),
-                                filmQueue.head);
+                                kante);
   }
   simTime = filmPlayheadDays;
   // Prefetch: neuen Batch anfordern, wenn die Queue fehlt, der Playhead
