@@ -355,6 +355,8 @@ class NBodyCuda:
             inv_pos[m_idx] = np.arange(m)
             st["inv_kind"] = inv_kind
             st["inv_pos"] = inv_pos
+            st["a_idx_h"] = a_idx
+            st["m_idx_h"] = m_idx
             return st
 
     def apply_updates(self, st: dict, idx: np.ndarray,
@@ -376,6 +378,39 @@ class NBodyCuda:
         with cp.cuda.Device(self.device):
             st["f64"][cp.asarray(np.concatenate(flats))] = \
                 cp.asarray(np.concatenate(values))
+
+    def apply_body_state(self, st: dict, idx: int,
+                         x: float, y: float, vx: float, vy: float,
+                         mass: float) -> None:
+        """Einen Koerper komplett setzen (x, y, vx, vy, Masse) — fuer
+        Kollisions-Merges im Film-Producer."""
+        kind = st["inv_kind"][idx]
+        pos = int(st["inv_pos"][idx])
+        n_ast, m = st["n_ast"], st["m"]
+        base = 5 * n_ast
+        if kind == 1:
+            flat = [pos, n_ast + pos, 2 * n_ast + pos,
+                    3 * n_ast + pos, 4 * n_ast + pos]
+        else:
+            flat = [base + pos, base + m + pos, base + 2 * m + pos,
+                    base + 3 * m + pos, base + 4 * m + pos]
+        with cp.cuda.Device(self.device):
+            st["f64"][cp.asarray(np.asarray(flat, np.int64))] = \
+                cp.asarray(np.asarray([x, y, vx, vy, mass]))
+
+    def deactivate_body(self, st: dict, idx: int) -> None:
+        """Koerper einfrieren und kraftlos machen (verschluckt): Masse 0,
+        visible 0. Position/Geschwindigkeit bleiben (letzter Stand)."""
+        kind = st["inv_kind"][idx]
+        pos = int(st["inv_pos"][idx])
+        n_ast, m = st["n_ast"], st["m"]
+        with cp.cuda.Device(self.device):
+            if kind == 1:
+                st["f64"][4 * n_ast + pos] = 0.0     # Masse
+                st["vis"][pos] = 0
+            else:
+                st["f64"][5 * n_ast + 4 * m + pos] = 0.0
+                st["vis"][n_ast + pos] = 0
 
     def step(self, st: dict, dt_years: float) -> np.ndarray:
         """Einen Frame auf dem residenten Zustand rechnen.

@@ -527,7 +527,7 @@ input[type=range] {
     <input type="radio" name="engine" id="rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span>
   </label>
   <label data-i18n-title="tt.film" id="lbl-film-mode" style="display:none; margin-left:20px;">
-    <input type="checkbox" id="chk-film"> <span data-i18n="lbl.film">Film-Modus (ohne Kollisionen)</span>
+    <input type="checkbox" id="chk-film"> <span data-i18n="lbl.film">Film-Modus</span>
   </label>
   <label data-i18n-title="tt.film-raster" id="lbl-film-raster" style="display:none; margin-left:20px;">
     <span data-i18n="lbl.film-raster">Sample-Raster (Tage)</span> <span class="val" id="film-raster-val">0,5</span>
@@ -706,7 +706,7 @@ input[type=range] {
   <label data-i18n-title="tt.hybrid"><input type="radio" name="engine-mob" id="mob-rad-hybrid" value="hybrid"> <span data-i18n="lbl.worldhybrid">Hybrid (Körper f64 + Asteroiden GPU)</span></label>
   <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;"><input type="checkbox" id="mob-chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span></label>
   <label data-i18n-title="tt.cuda" id="mob-lbl-engine-cuda" style="display:none;"><input type="radio" name="engine-mob" id="mob-rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span></label>
-  <label data-i18n-title="tt.film" id="mob-lbl-film-mode" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film"> <span data-i18n="lbl.film">Film-Modus (ohne Kollisionen)</span></label>
+  <label data-i18n-title="tt.film" id="mob-lbl-film-mode" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film"> <span data-i18n="lbl.film">Film-Modus</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
   <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">Flüchtende markieren</span></label>
@@ -933,8 +933,8 @@ const I18N = {
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
     'tt.cuda': 'Natives CUDA-Backend auf Mini (Tesla V100, f64): volle Präzision UND Geschwindigkeit. Erscheint nur, wenn der lokale Backend-Server läuft (backend/server.py).',
-    'lbl.film': 'Film-Modus (ohne Kollisionen)',
-    'tt.film': 'Compute und Darstellung entkoppelt: die GPU rechnet mit maximalem Durchsatz voraus (Ringpuffer), der Browser spielt die Timeline wie ein Video ab — scrubben, zurückspulen, live folgen. Kollisionen sind in diesem Modus deaktiviert.',
+    'lbl.film': 'Film-Modus',
+    'tt.film': 'Compute und Darstellung entkoppelt: die GPU rechnet mit maximalem Durchsatz voraus (Ringpuffer), der Browser spielt die Timeline wie ein Video ab — scrubben, zurückspulen, live folgen. Kollisionen verschmelzen serverseitig (immer Merge, kein Zerbersten/Abprallen).',
     'lbl.film-raster': 'Sample-Raster (Tage)',
     'tt.film-raster': 'Sim-Zeit-Abstand der aufgezeichneten Samples. Fein = weiche Zeitlupe, mehr Speicher; grob = längerer Rückspulpuffer.',
     'tt.film-live': 'Zur Live-Kante springen und folgen',
@@ -1177,8 +1177,8 @@ const I18N = {
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
     'tt.cuda': 'Native CUDA backend (Tesla V100, f64): full precision AND speed. Only appears when the local backend server is running (backend/server.py).',
-    'lbl.film': 'Film mode (no collisions)',
-    'tt.film': 'Compute and display decoupled: the GPU simulates ahead at full throughput (ring buffer), the browser plays the timeline like a video — scrub, rewind, follow live. Collisions are disabled in this mode.',
+    'lbl.film': 'Film mode',
+    'tt.film': 'Compute and display decoupled: the GPU simulates ahead at full throughput (ring buffer), the browser plays the timeline like a video — scrub, rewind, follow live. Collisions merge server-side (always merge, no shattering/bouncing).',
     'lbl.film-raster': 'Sample interval (days)',
     'tt.film-raster': 'Sim-time spacing of recorded samples. Fine = smooth slow-motion, more memory; coarse = longer rewind buffer.',
     'tt.film-live': 'Jump to the live edge and follow',
@@ -3716,7 +3716,7 @@ function initCudaBackend(urlIndex = 0) {
       // Film-Batch: u32 status | u32 N | u32 count | u32 pad |
       // f64 tail, head | count x f64 zeiten | count x sample (4N f32)
       const hdr = new Uint32Array(buf, 0, 4);
-      const n = hdr[1], count = hdr[2];
+      const n = hdr[1], count = hdr[2], collCount = hdr[3];
       // Stale-Response-Schutz: Antwort einer VORHERIGEN Film-Session
       // (z. B. nach Inject-Neustart) hat eine andere Koerperzahl —
       // verwerfen, sonst liest filmApply hinter dem Sample-Ende
@@ -3731,9 +3731,21 @@ function initCudaBackend(urlIndex = 0) {
       const times = new Float64Array(buf, 32, count);
       const samples = [];
       let off = 32 + 8 * count;
+      const visPad = (4 - (n % 4)) % 4;
       for (let i = 0; i < count; i++) {
-        samples.push(new Float32Array(buf, off, 4 * n));
-        off += 16 * n;
+        samples.push({
+          f: new Float32Array(buf, off, 5 * n),          // x|y|vx|vy|Masse
+          v: new Uint8Array(buf, off + 20 * n, n),       // Sichtbarkeit
+        });
+        off += 20 * n + n + visPad;
+      }
+      // Kollisionszaehler des Producers (Phase 2) in die Anzeige
+      if (collCount > 0 && filmActive) {
+        totalCollisions = collCount;
+        const cc = document.getElementById('collision-count');
+        if (cc) cc.textContent = collCount;
+        const cb = document.getElementById('collision-badge');
+        if (cb) cb.classList.add('show');
       }
       // Producer-Rate schaetzen (geglaettet) — Grundlage fuer fluessiges
       // Live-Follow: der Playhead laeuft mit dieser Rate statt bei jeder
@@ -3983,7 +3995,7 @@ function filmStart() {
   if (!cudaReady) return;
   const src = bodies;
   const N = src.length;
-  const buf = new ArrayBuffer(24 + N * (5 * 8 + 2));
+  const buf = new ArrayBuffer(24 + N * (6 * 8 + 2));
   const dv = new DataView(buf);
   dv.setUint32(0, 3, true);                    // MSG_FILM_START
   dv.setUint32(4, N, true);
@@ -3994,12 +4006,14 @@ function filmStart() {
   const vx   = new Float64Array(buf, 24 + 16 * N,  N);
   const vy   = new Float64Array(buf, 24 + 24 * N,  N);
   const mass = new Float64Array(buf, 24 + 32 * N,  N);
-  const visible = new Uint8Array(buf, 24 + 40 * N, N);
-  const isAst   = new Uint8Array(buf, 24 + 41 * N, N);
+  const realR = new Float64Array(buf, 24 + 40 * N, N);
+  const visible = new Uint8Array(buf, 24 + 48 * N, N);
+  const isAst   = new Uint8Array(buf, 24 + 49 * N, N);
   for (let i = 0; i < N; i++) {
     const b = src[i];
     x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
     mass[i] = b.mass;
+    realR[i] = b.realR;
     visible[i] = b.visible ? 1 : 0;
     isAst[i] = b.isAsteroid ? 1 : 0;
   }
@@ -4061,7 +4075,21 @@ function filmApply(t) {
   const q = filmQueue;
   if (!q || !filmRefs || q.times.length === 0) return;
   const n = filmRefs.length;
-  if (q.samples[0].length !== 4 * n) return;   // Sample passt nicht zur Session
+  if (q.samples[0].f.length !== 5 * n) return; // Sample passt nicht zur Session
+  // Masse + Sichtbarkeit vom Floor-Sample uebernehmen (Kollisions-Merges
+  // des Producers werden so beim Abspielen an der richtigen Timeline-
+  // Position sichtbar — und beim Zurueckspulen wieder rueckgaengig).
+  const applyMeta = (s) => {
+    for (let k = 0; k < n; k++) {
+      const b = filmRefs[k];
+      const m = s.f[4 * n + k];
+      if (m !== b.mass && m > 0) {
+        b.mass = m;
+        b.radius = massToRadius(m);
+      }
+      b.visible = s.v[k] !== 0;
+    }
+  };
   // Jenseits des letzten Samples (Playhead an der extrapolierten Kante,
   // naechster Batch noch unterwegs): mit den Sample-Geschwindigkeiten
   // linear fortschreiben — durch das Kanten-Polster auf <=2 Raster
@@ -4072,11 +4100,12 @@ function filmApply(t) {
     const dtY = (t - q.times[lastI]) / 365.25;
     for (let k = 0; k < n; k++) {
       const b = filmRefs[k];
-      b.vx = s[2 * n + k];
-      b.vy = s[3 * n + k];
-      b.x = s[k] + b.vx * dtY;
-      b.y = s[n + k] + b.vy * dtY;
+      b.vx = s.f[2 * n + k];
+      b.vy = s.f[3 * n + k];
+      b.x = s.f[k] + b.vx * dtY;
+      b.y = s.f[n + k] + b.vy * dtY;
     }
+    applyMeta(s);
     return;
   }
   // Bracketing-Paar in der Queue suchen (Zeiten aufsteigend)
@@ -4088,11 +4117,12 @@ function filmApply(t) {
   const f = span > 0 ? Math.min(Math.max((t - q.times[i]) / span, 0), 1) : 0;
   for (let k = 0; k < n; k++) {
     const b = filmRefs[k];
-    b.x  = s0[k]         + (s1[k]         - s0[k])         * f;
-    b.y  = s0[n + k]     + (s1[n + k]     - s0[n + k])     * f;
-    b.vx = s0[2 * n + k] + (s1[2 * n + k] - s0[2 * n + k]) * f;
-    b.vy = s0[3 * n + k] + (s1[3 * n + k] - s0[3 * n + k]) * f;
+    b.x  = s0.f[k]         + (s1.f[k]         - s0.f[k])         * f;
+    b.y  = s0.f[n + k]     + (s1.f[n + k]     - s0.f[n + k])     * f;
+    b.vx = s0.f[2 * n + k] + (s1.f[2 * n + k] - s0.f[2 * n + k]) * f;
+    b.vy = s0.f[3 * n + k] + (s1.f[3 * n + k] - s0.f[3 * n + k]) * f;
   }
+  applyMeta(s0);
 }
 
 function filmTick(dtDays, slowFactor, nowMs) {
@@ -4113,8 +4143,12 @@ function filmTick(dtDays, slowFactor, nowMs) {
   // Schub-Ruckeln, sobald man schneller abspielt als produziert wird.
   let kante = Infinity;
   if (filmQueue) {
+    // Extrapolation auf max. 2 s deckeln — bei einbrechender Producer-
+    // Rate wuerde eine unbegrenzte Prognose die Kante ueberschaetzen und
+    // die naechste Antwort den Playhead sichtbar ZURUECKZIEHEN.
+    const extraS = Math.min((nowMs - _filmHeadPrevMs) / 1000, 2);
     const headNow = filmQueue.head + (_filmHeadRate > 0
-      ? _filmHeadRate * (nowMs - _filmHeadPrevMs) / 1000 : 0);
+      ? _filmHeadRate * extraS : 0);
     kante = Math.max(filmQueue.tail, headNow - 2 * filmRasterDays());
   }
   if (filmLive && filmQueue) {
@@ -4136,8 +4170,16 @@ function filmTick(dtDays, slowFactor, nowMs) {
     if (filmQueue && filmPlayheadDays >= kante) filmLive = true;
   }
   if (filmQueue) {
+    const vorher = simTime;   // Playhead des letzten Frames
     filmPlayheadDays = Math.min(Math.max(filmPlayheadDays, filmQueue.tail),
                                 kante);
+    // Monotonie ausser beim bewussten Scrubben: eine korrigierte (zu
+    // optimistisch extrapolierte) Kante haelt den Playhead an, statt
+    // sichtbar rueckwaerts zu springen — der Producer holt auf.
+    if (!filmScrubbing && filmActive && filmPlayheadDays < vorher &&
+        vorher <= kante + 30 * filmRasterDays()) {
+      filmPlayheadDays = Math.min(vorher, kante + 2 * filmRasterDays());
+    }
   }
   simTime = filmPlayheadDays;
   // Prefetch: neuen Batch anfordern, wenn die Queue fehlt, der Playhead
