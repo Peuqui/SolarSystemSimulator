@@ -40,8 +40,98 @@ HEADER = struct.Struct("<IId")   # typ, N/pad, dtYears
 MSG_FULL = 0
 MSG_STEP = 1
 MSG_DELTA = 2
+MSG_FILM_START = 3   # u32 typ | u32 N | f64 rasterTage | f64 t0Tage | FULL-Arrays
+MSG_FILM_STOP = 4    # nur Header
+MSG_FILM_REQ = 5     # u32 typ | u32 pad | f64 tTage (gewuenschte Sim-Zeit)
 # Delta-Record: u32 idx | u32 pad | f64 x | f64 y | f64 vx | f64 vy
 DELTA_REC = np.dtype([("idx", "<u4"), ("pad", "<u4"), ("v", "<f8", (4,))])
+
+# Film-Antwort: u32 status=2 | u32 N | f64 t0 | f64 t1 | f64 tail | f64 head |
+#               sample(t0) 4N f32 | sample(t1) 4N f32
+FILM_HEAD = struct.Struct("<IIdddd")
+
+
+class FilmSession:
+    """Freilaufender Producer: rechnet die Simulation mit maximalem
+    Durchsatz voraus und fuellt einen Ringpuffer aus f32-Samples in festem
+    Sim-Zeit-Raster. Der Client liest daraus wie aus einem Video (Player).
+    Stufe 1: ohne Kollisionen — die Koerperliste bleibt konstant."""
+
+    MAX_BYTES = 4 << 30          # Ringpuffer-Obergrenze (~4 GB)
+    MIN_KEEP = 1000              # nie unter diese Sample-Zahl evikten
+
+    def __init__(self, sim: NBodyCuda, state: dict,
+                 t0_days: float, raster_days: float):
+        self.sim = sim
+        self.state = state
+        self.raster_days = max(0.1, raster_days)
+        self.t0 = t0_days        # Sim-Zeit des Startzustands
+        self.samples: list[np.ndarray] = []
+        self.bytes = 0
+        self.running = True
+        self.task: asyncio.Task | None = None
+
+    @property
+    def tail(self) -> float:
+        return self.t0
+
+    @property
+    def head(self) -> float:
+        return self.t0 + len(self.samples) * self.raster_days
+
+    async def produce(self) -> None:
+        dt_years = self.raster_days / 365.25
+        try:
+            while self.running:
+                out = await asyncio.to_thread(self.sim.step, self.state, dt_years)
+                self.samples.append(out)
+                self.bytes += out.nbytes
+                if self.bytes > self.MAX_BYTES and len(self.samples) > self.MIN_KEEP:
+                    drop = len(self.samples) // 8
+                    for s in self.samples[:drop]:
+                        self.bytes -= s.nbytes
+                    del self.samples[:drop]
+                    self.t0 += drop * self.raster_days
+        except Exception:
+            log.exception("Film-Producer abgebrochen")
+            self.running = False
+
+    def stop(self) -> None:
+        self.running = False
+        if self.task:
+            self.task.cancel()
+
+    def bracket(self, t_days: float) -> bytes:
+        """Antwort mit den zwei Raster-Samples um t herum (geklemmt)."""
+        n_s = len(self.samples)
+        if n_s == 0:
+            raise ValueError("Puffer noch leer")
+        i = int((t_days - self.t0) / self.raster_days)
+        i = max(0, min(i, n_s - 1))
+        j = min(i + 1, n_s - 1)
+        s0, s1 = self.samples[i], self.samples[j]
+        t0 = self.t0 + (i + 1) * self.raster_days
+        t1 = self.t0 + (j + 1) * self.raster_days
+        head = FILM_HEAD.pack(2, len(s0) // 4, t0, t1, self.tail, self.head)
+        return head + s0.tobytes() + s1.tobytes()
+
+
+def parse_film_start(buf: bytes):
+    _typ, n, raster_days = HEADER.unpack_from(buf, 0)
+    (t0_days,) = struct.unpack_from("<d", buf, HEADER.size)
+    off = HEADER.size + 8
+    f64 = np.dtype("<f8")
+    arrays = []
+    for _ in range(5):                      # x, y, vx, vy, mass
+        arrays.append(np.frombuffer(buf, f64, n, off))
+        off += 8 * n
+    visible = np.frombuffer(buf, np.uint8, n, off)
+    off += n
+    is_ast = np.frombuffer(buf, np.uint8, n, off)
+    off += n
+    if off != len(buf):
+        raise ValueError(f"Protokollfehler: {len(buf)} Bytes, erwartet {off}")
+    return raster_days, t0_days, arrays, visible, is_ast
 
 
 def parse_full(buf: bytes):
@@ -75,6 +165,7 @@ async def handle(ws, sim: NBodyCuda):
     # Residenter Zustand DIESER Verbindung — mehrere Clients (lokal +
     # remote) haben getrennte Zustaende und stoeren sich nicht.
     state = None
+    film: FilmSession | None = None
     frames = 0
     fulls = 0
     try:
@@ -85,6 +176,36 @@ async def handle(ws, sim: NBodyCuda):
                 continue
             try:
                 typ, _n, dt_years = HEADER.unpack_from(message, 0)
+                if typ == MSG_FILM_START:
+                    raster_days, t0_days, (x, y, vx, vy, mass), visible, \
+                        is_ast = parse_film_start(message)
+                    if film:
+                        film.stop()
+                    f_state = await asyncio.to_thread(
+                        sim.load_state, x, y, vx, vy, mass, visible, is_ast)
+                    film = FilmSession(sim, f_state, t0_days, raster_days)
+                    film.task = asyncio.create_task(film.produce())
+                    fulls += 1
+                    log.info("Film gestartet: N=%d, Raster %.2f Tage",
+                             len(x), film.raster_days)
+                    continue
+                if typ == MSG_FILM_STOP:
+                    if film:
+                        film.stop()
+                        film = None
+                    continue
+                if typ == MSG_FILM_REQ:
+                    if film is None:
+                        raise ValueError("kein Film aktiv")
+                    # dt-Feld traegt hier die gewuenschte Sim-Zeit (Tage);
+                    # bei leerem Puffer kurz auf den Producer warten.
+                    for _ in range(200):
+                        if film.samples or not film.running:
+                            break
+                        await asyncio.sleep(0.02)
+                    await ws.send(film.bracket(dt_years))
+                    frames += 1
+                    continue
                 if typ == MSG_FULL:
                     dt_years, (x, y, vx, vy, mass), visible, is_ast = \
                         parse_full(message)
@@ -105,6 +226,8 @@ async def handle(ws, sim: NBodyCuda):
                 log.exception("Frame-Fehler")
                 await ws.send(build_error(str(e)))
     finally:
+        if film:
+            film.stop()
         log.info("Client getrennt: %s (%d Frames, davon %d FULL-Uploads)",
                  peer, frames, fulls)
 

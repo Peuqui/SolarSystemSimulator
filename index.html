@@ -115,6 +115,25 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
 #perf-badge.show { display: inline-block; }
 #perf-badge span { color: #7fd9a3; }
 
+#film-bar {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: 14px; z-index: 5;
+  display: none; align-items: center; gap: 10px;
+  background: rgba(15,25,40,0.9); border: 1px solid #3a5f8a;
+  border-radius: 6px; padding: 6px 12px;
+  font-family: 'Segoe UI', monospace; font-size: 12px; color: #bcd6ff;
+  width: min(70vw, 900px);
+}
+#film-bar.show { display: flex; }
+#film-scrub { flex: 1; }
+#film-live {
+  background: #333; color: #ccc; border: 1px solid #666;
+  border-radius: 4px; padding: 3px 10px; cursor: pointer;
+  font-size: 12px; font-weight: bold; white-space: nowrap;
+}
+#film-live.live { background: #7a1f1f; color: #ffb3b3; border-color: #aa4444; }
+#film-range { white-space: nowrap; color: #8fb8e8; }
+
 #help-toggle {
   position: absolute; top: 8px; right: 8px; z-index: 20;
   width: 32px; height: 32px; display: flex; align-items: center;
@@ -507,6 +526,13 @@ input[type=range] {
   <label data-i18n-title="tt.cuda" id="lbl-engine-cuda" style="display:none;">
     <input type="radio" name="engine" id="rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span>
   </label>
+  <label data-i18n-title="tt.film" id="lbl-film-mode" style="display:none; margin-left:20px;">
+    <input type="checkbox" id="chk-film"> <span data-i18n="lbl.film">Film-Modus (ohne Kollisionen)</span>
+  </label>
+  <label data-i18n-title="tt.film-raster" id="lbl-film-raster" style="display:none; margin-left:20px;">
+    <span data-i18n="lbl.film-raster">Sample-Raster (Tage)</span> <span class="val" id="film-raster-val">0,5</span>
+    <input type="range" autocomplete="off" id="film-raster" min="-1" max="1" step="0.05" value="-0.3">
+  </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
@@ -564,6 +590,12 @@ input[type=range] {
   <div id="perf-badge" data-i18n-title="tt.perfbadge"></div>
   <div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><!-- &nbsp;|&nbsp; Bounces: <span id="bounce-count">0</span> --></div>
   <div id="body-count-badge" data-i18n-title="tt.bodycount"></div>
+</div>
+
+<div id="film-bar">
+  <button id="film-live" data-i18n-title="tt.film-live">&#x25CF; LIVE</button>
+  <input type="range" id="film-scrub" min="0" max="10000" step="1" value="10000">
+  <span id="film-range"></span>
 </div>
 
 <div id="help-toggle" data-i18n-title="tt.help">&#x1F4A1;</div>
@@ -674,6 +706,7 @@ input[type=range] {
   <label data-i18n-title="tt.hybrid"><input type="radio" name="engine-mob" id="mob-rad-hybrid" value="hybrid"> <span data-i18n="lbl.worldhybrid">Hybrid (Körper f64 + Asteroiden GPU)</span></label>
   <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;"><input type="checkbox" id="mob-chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span></label>
   <label data-i18n-title="tt.cuda" id="mob-lbl-engine-cuda" style="display:none;"><input type="radio" name="engine-mob" id="mob-rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span></label>
+  <label data-i18n-title="tt.film" id="mob-lbl-film-mode" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film"> <span data-i18n="lbl.film">Film-Modus (ohne Kollisionen)</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
   <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">Flüchtende markieren</span></label>
@@ -900,6 +933,12 @@ const I18N = {
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
     'tt.cuda': 'Natives CUDA-Backend auf Mini (Tesla V100, f64): volle Präzision UND Geschwindigkeit. Erscheint nur, wenn der lokale Backend-Server läuft (backend/server.py).',
+    'lbl.film': 'Film-Modus (ohne Kollisionen)',
+    'tt.film': 'Compute und Darstellung entkoppelt: die GPU rechnet mit maximalem Durchsatz voraus (Ringpuffer), der Browser spielt die Timeline wie ein Video ab — scrubben, zurückspulen, live folgen. Kollisionen sind in diesem Modus deaktiviert.',
+    'lbl.film-raster': 'Sample-Raster (Tage)',
+    'tt.film-raster': 'Sim-Zeit-Abstand der aufgezeichneten Samples. Fein = weiche Zeitlupe, mehr Speicher; grob = längerer Rückspulpuffer.',
+    'tt.film-live': 'Zur Live-Kante springen und folgen',
+    'film.buffer': 'Puffer',
     'tt.hybrid-near': 'Nur im Hybrid: Asteroiden, die einem schweren Körper zu nahe/schnell begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen f64-adaptiv im Worker statt grob auf der GPU. Präzise, kostet aber Tempo, wenn sehr viele Asteroiden gleichzeitig nahe sind. Aus = alle Asteroiden grob auf der GPU (schnell).',
     'tt.engine-help': 'Erklärung der Engine-Modi und Asteroiden-Optionen',
     'tt.time-help': 'Erklärung von Zeitschritt und Verlangsamung',
@@ -1138,6 +1177,12 @@ const I18N = {
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
     'tt.cuda': 'Native CUDA backend (Tesla V100, f64): full precision AND speed. Only appears when the local backend server is running (backend/server.py).',
+    'lbl.film': 'Film mode (no collisions)',
+    'tt.film': 'Compute and display decoupled: the GPU simulates ahead at full throughput (ring buffer), the browser plays the timeline like a video — scrub, rewind, follow live. Collisions are disabled in this mode.',
+    'lbl.film-raster': 'Sample interval (days)',
+    'tt.film-raster': 'Sim-time spacing of recorded samples. Fine = smooth slow-motion, more memory; coarse = longer rewind buffer.',
+    'tt.film-live': 'Jump to the live edge and follow',
+    'film.buffer': 'buffer',
     'tt.hybrid-near': 'Hybrid only: asteroids whose encounter with a massive body is too close/fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the worker instead of coarsely on the GPU. Precise, but costs speed when very many asteroids are close at once. Off = all asteroids run coarsely on the GPU (fast).',
     'tt.engine-help': 'Explanation of the engine modes and asteroid options',
     'tt.time-help': 'Explanation of time step and slowdown',
@@ -3637,10 +3682,12 @@ let cudaResolver = null;
 let cudaInflightRefs = null;
 
 function _cudaSetVisible(visible) {
-  for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda']) {
+  for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda',
+                    'lbl-film-mode', 'mob-lbl-film-mode', 'lbl-film-raster']) {
     const el = document.getElementById(id);
     if (el) el.style.display = visible ? '' : 'none';
   }
+  if (!visible && typeof filmActive !== 'undefined' && filmActive) filmStop();
 }
 
 function initCudaBackend(urlIndex = 0) {
@@ -3665,6 +3712,21 @@ function initCudaBackend(urlIndex = 0) {
     }
     const buf = e.data;
     const status = new Uint32Array(buf, 0, 2)[0];
+    if (status === 2) {
+      // Film-Sample-Paar: u32 status | u32 N | f64 t0, t1, tail, head
+      const n = new Uint32Array(buf, 0, 2)[1];
+      const dv = new DataView(buf);
+      filmCache = {
+        t0: dv.getFloat64(8, true),
+        t1: dv.getFloat64(16, true),
+        tail: dv.getFloat64(24, true),
+        head: dv.getFloat64(32, true),
+        s0: new Float32Array(buf, 40, 4 * n),
+        s1: new Float32Array(buf, 40 + 16 * n, 4 * n),
+      };
+      filmReqBusy = false;
+      return;
+    }
     if (status !== 0) {
       console.warn('CUDA-Backend-Fehler:',
         new TextDecoder().decode(new Uint8Array(buf, 8)));
@@ -3706,6 +3768,10 @@ function initCudaBackend(urlIndex = 0) {
     cudaSocket = null;
     cudaBusy = false;
     cudaInflightRefs = null;
+    filmActive = false;
+    filmCache = null;
+    filmReqBusy = false;
+    document.getElementById('film-bar').classList.remove('show');
     if (cudaResolver) { const r = cudaResolver; cudaResolver = null; r(); }
     _cudaSetVisible(false);
     if (useCuda) {
@@ -3801,6 +3867,193 @@ function advanceCuda(dtYears) {
   _cudaSentAt = performance.now();
   cudaBusy = true;
   cudaSocket.send(buf);
+}
+
+// ============================================================
+//  FILM-MODUS (Stufe 1, ohne Kollisionen): Compute und Darstellung
+//  komplett entkoppelt. Die V100 rechnet frei mit maximalem Durchsatz
+//  in einen Ringpuffer (Producer); der Browser ist ein Player, der die
+//  Timeline mit beliebigem Tempo abspielt, scrubbt oder live folgt.
+// ============================================================
+var useFilm = false;
+let filmActive = false;
+let filmReqBusy = false;
+let filmCache = null;        // { t0, t1, s0, s1, tail, head }
+let filmRefs = null;         // Body-Reihenfolge beim FILM_START
+let filmLive = true;         // Playhead folgt der Live-Kante
+let filmPlayheadDays = 0;
+let filmScrubbing = false;   // User zieht gerade am Regler
+let _filmSentRev = -1;
+let _filmSentN = -1;
+let _filmPrevMs = 0;
+
+function filmRasterDays() {
+  return Math.pow(10, parseFloat(document.getElementById('film-raster').value));
+}
+
+function filmStart() {
+  if (!cudaReady) return;
+  const src = bodies;
+  const N = src.length;
+  const buf = new ArrayBuffer(24 + N * (5 * 8 + 2));
+  const dv = new DataView(buf);
+  dv.setUint32(0, 3, true);                    // MSG_FILM_START
+  dv.setUint32(4, N, true);
+  dv.setFloat64(8, filmRasterDays(), true);    // Raster (Tage)
+  dv.setFloat64(16, simTime, true);            // t0 (Sim-Tage)
+  const x    = new Float64Array(buf, 24,           N);
+  const y    = new Float64Array(buf, 24 + 8 * N,   N);
+  const vx   = new Float64Array(buf, 24 + 16 * N,  N);
+  const vy   = new Float64Array(buf, 24 + 24 * N,  N);
+  const mass = new Float64Array(buf, 24 + 32 * N,  N);
+  const visible = new Uint8Array(buf, 24 + 40 * N, N);
+  const isAst   = new Uint8Array(buf, 24 + 41 * N, N);
+  for (let i = 0; i < N; i++) {
+    const b = src[i];
+    x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
+    mass[i] = b.mass;
+    visible[i] = b.visible ? 1 : 0;
+    isAst[i] = b.isAsteroid ? 1 : 0;
+  }
+  cudaSocket.send(buf);
+  filmRefs = src.slice();
+  filmActive = true;
+  filmCache = null;
+  filmReqBusy = false;
+  filmLive = true;
+  filmPlayheadDays = simTime;
+  _filmSentRev = _physRev;
+  _filmSentN = N;
+  _pendingDeltaBodies.clear();
+  document.getElementById('film-bar').classList.add('show');
+}
+
+function filmStop() {
+  if (filmActive && cudaReady && cudaSocket) {
+    const buf = new ArrayBuffer(16);
+    new DataView(buf).setUint32(0, 4, true);   // MSG_FILM_STOP
+    cudaSocket.send(buf);
+  }
+  filmActive = false;
+  filmCache = null;
+  filmReqBusy = false;
+  // Beim Verlassen ist der angezeigte (interpolierte) Zustand der neue
+  // Ist-Zustand — die normale Engine uebernimmt ab hier (FULL folgt).
+  _cudaStateStale = true;
+  document.getElementById('film-bar').classList.remove('show');
+}
+
+function filmRequest(tDays) {
+  if (filmReqBusy || !cudaReady) return;
+  const buf = new ArrayBuffer(16);
+  const dv = new DataView(buf);
+  dv.setUint32(0, 5, true);                    // MSG_FILM_REQ
+  dv.setFloat64(8, tDays, true);
+  filmReqBusy = true;
+  cudaSocket.send(buf);
+}
+
+function filmApply(t) {
+  const c = filmCache;
+  if (!c || !filmRefs) return;
+  const n = filmRefs.length;
+  const span = c.t1 - c.t0;
+  const f = span > 0 ? Math.min(Math.max((t - c.t0) / span, 0), 1) : 0;
+  for (let i = 0; i < n; i++) {
+    const b = filmRefs[i];
+    b.x  = c.s0[i]         + (c.s1[i]         - c.s0[i])         * f;
+    b.y  = c.s0[n + i]     + (c.s1[n + i]     - c.s0[n + i])     * f;
+    b.vx = c.s0[2 * n + i] + (c.s1[2 * n + i] - c.s0[2 * n + i]) * f;
+    b.vy = c.s0[3 * n + i] + (c.s1[3 * n + i] - c.s0[3 * n + i]) * f;
+  }
+}
+
+function filmTick(dtDays, slowFactor, nowMs) {
+  // Mutation (Inject, Edit, Loeschen) -> vorgerechnete Zukunft ist
+  // ungueltig, Film ab aktuellem Zustand neu starten.
+  if (bodies.length !== _filmSentN || _physRev !== _filmSentRev) {
+    filmApply(filmPlayheadDays);   // letzten Stand uebernehmen
+    filmStart();
+    return;
+  }
+  const delta = _filmPrevMs ? Math.min(nowMs - _filmPrevMs, 250) : 16.7;
+  _filmPrevMs = nowMs;
+  const rate = dtDays * 60 / slowFactor;       // Tage pro Echtzeit-Sekunde
+  if (filmLive && filmCache) {
+    // Live-Kante minus zwei Raster als Jitter-Polster
+    filmPlayheadDays = Math.max(filmCache.tail,
+                                filmCache.head - 2 * filmRasterDays());
+  } else if (!filmScrubbing) {
+    filmPlayheadDays += rate * delta / 1000;
+  }
+  if (filmCache) {
+    filmPlayheadDays = Math.min(Math.max(filmPlayheadDays, filmCache.tail),
+                                filmCache.head);
+  }
+  simTime = filmPlayheadDays;
+  // Bracketing-Samples nachladen, wenn der Playhead den Cache verlaesst
+  if (!filmCache || filmPlayheadDays > filmCache.t1 ||
+      filmPlayheadDays < filmCache.t0) {
+    filmRequest(filmPlayheadDays);
+  }
+  filmApply(filmPlayheadDays);
+  recordTrails();
+  _baryDirty = true;
+  _perf.frames++;
+}
+
+// --- Film-UI: Checkbox, Zeitleiste, LIVE-Knopf ---
+['chk-film', 'mob-chk-film'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', function() {
+    useFilm = this.checked;
+    for (const other of ['chk-film', 'mob-chk-film']) {
+      const o = document.getElementById(other);
+      if (o) o.checked = useFilm;
+    }
+    if (useFilm && useCuda && cudaReady) filmStart();
+    else filmStop();
+  });
+});
+document.getElementById('film-live').addEventListener('click', () => {
+  filmLive = true;
+});
+{
+  const scrub = document.getElementById('film-scrub');
+  scrub.addEventListener('input', function() {
+    if (!filmCache) return;
+    filmScrubbing = true;
+    filmLive = false;
+    const frac = parseInt(this.value, 10) / 10000;
+    filmPlayheadDays = filmCache.tail +
+      frac * (filmCache.head - filmCache.tail);
+  });
+  scrub.addEventListener('change', () => { filmScrubbing = false; });
+}
+['film-raster'].forEach(id => {
+  document.getElementById(id).addEventListener('input', function() {
+    document.getElementById('film-raster-val').textContent =
+      fmtDE(Math.pow(10, parseFloat(this.value)), 2);
+  });
+  // Raster-Aenderung waehrend eines laufenden Films: neu starten
+  document.getElementById(id).addEventListener('change', function() {
+    if (filmActive) { filmApply(filmPlayheadDays); filmStart(); }
+  });
+});
+
+// Zeitleisten-Anzeige aktualisieren (aus updateStats, ~1x/s)
+function updateFilmBar() {
+  if (!filmActive || !filmCache) return;
+  const span = filmCache.head - filmCache.tail;
+  document.getElementById('film-range').textContent =
+    fmtDE(filmPlayheadDays / 365.25, 2) + ' / ' +
+    fmtDE(filmCache.head / 365.25, 2) + ' ' + t('stats.years') +
+    ' (' + t('film.buffer') + ': ' + fmtDE(span / 365.25, 2) + ')';
+  document.getElementById('film-live').classList.toggle('live', filmLive);
+  if (!filmScrubbing && span > 0) {
+    document.getElementById('film-scrub').value =
+      Math.round((filmPlayheadDays - filmCache.tail) / span * 10000);
+  }
 }
 
 // Hybrid: massive Koerper (Planeten/Sterne/Choreografie) auf dem Worker in
@@ -4821,6 +5074,9 @@ async function simLoop() {
     const slowFactor = Math.pow(10, parseFloat(document.getElementById('slow-slider').value));
     const physT0 = performance.now();
     try {
+      if (useCuda && cudaReady && useFilm && filmActive) {
+        filmTick(dtDays, slowFactor, nowMs);
+      } else
       await advanceAsync(dtDays / 365.25 / slowFactor);
     } catch (err) {
       // Niemals den rAF-Loop kippen lassen — eine Race oder ein GPU-Hiccup
@@ -5934,7 +6190,8 @@ function updateStats() {
     }
   }
   const totalE = ke + pe;
-  const engineName = useCuda ? 'CUDA (f64)' : useHybrid ? 'Hybrid'
+  const engineName = (useCuda && useFilm && filmActive) ? 'CUDA-Film'
+    : useCuda ? 'CUDA (f64)' : useHybrid ? 'Hybrid'
     : (useGPU && gpu) ? 'WebGPU' : useWorker ? 'WebWorker' : 'CPU';
   const html =
     `${t('stats.time')}: <span>${years}</span> ${t('stats.years')}<br>` +
@@ -5949,6 +6206,7 @@ function updateStats() {
     `${t('stats.te')}: <span>${fmtDExp(totalE, 2)}</span>`;
   document.getElementById('stats').innerHTML = html;
   document.getElementById('mob-stats').innerHTML = html;
+  updateFilmBar();
 
   // Performance-Badge oben rechts (links neben Kollisionen): Engine,
   // Sim-FPS und Sim-Tempo — Live-Benchmarking beim Engine-Vergleich.
