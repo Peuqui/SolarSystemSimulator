@@ -2031,31 +2031,59 @@ function refreshScenarioOptions() {
   }
 }
 
+// Index-Liste der massiven (Nicht-Asteroid), sichtbaren Koerper.
+// Asteroid-Asteroid-Wechselwirkung wird vernachlaessigt (Massen ~1e-6 M☉,
+// 6+ Groessenordnungen unter der Sternanziehung) — deshalb duerfen die
+// Paar-Schleifen strukturell nur ueber massive×alle laufen statt alle×alle.
+// Bei 7000 Asteroiden: ~70 000 statt ~24 500 000 Schleifendurchlaeufe.
+const _massIdx = [];
+function collectMassiveIndices() {
+  _massIdx.length = 0;
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    if (b.visible && !b.isAsteroid) _massIdx.push(i);
+  }
+  return _massIdx;
+}
+
 function computeAccelerations() {
   const G = G_AU;
   const softening = 1e-6;
-  for (let i = 0; i < bodies.length; i++) {
+  const N = bodies.length;
+  for (let i = 0; i < N; i++) {
     bodies[i].ax = 0; bodies[i].ay = 0;
   }
-  for (let i = 0; i < bodies.length; i++) {
-    if (!bodies[i].visible) continue;
-    const aIsAst = bodies[i].isAsteroid;
-    for (let j = i + 1; j < bodies.length; j++) {
-      if (!bodies[j].visible) continue;
-      // Asteroid-Asteroid-Wechselwirkung vernachlaessigen: ihre Massen
-      // sind typischerweise ~1e-6 M☉, ihre Beschleunigung aufeinander
-      // ist 6+ Groessenordnungen unter der vom Stern. Spart bei 500
-      // Asteroiden ~125 000 von ~130 000 Paaren pro Frame.
-      if (aIsAst && bodies[j].isAsteroid) continue;
-      const dx = bodies[j].x - bodies[i].x;
-      const dy = bodies[j].y - bodies[i].y;
+  const mIdx = collectMassiveIndices();
+  const mCount = mIdx.length;
+  for (let mi = 0; mi < mCount; mi++) {
+    const i = mIdx[mi];
+    const bi = bodies[i];
+    // massive × massive — jedes Paar einmal, symmetrisch
+    for (let mj = mi + 1; mj < mCount; mj++) {
+      const bj = bodies[mIdx[mj]];
+      const dx = bj.x - bi.x;
+      const dy = bj.y - bi.y;
       const r2 = dx*dx + dy*dy + softening;
       const r = Math.sqrt(r2);
       const f = G / (r2 * r);
-      bodies[i].ax += f * bodies[j].mass * dx;
-      bodies[i].ay += f * bodies[j].mass * dy;
-      bodies[j].ax -= f * bodies[i].mass * dx;
-      bodies[j].ay -= f * bodies[i].mass * dy;
+      bi.ax += f * bj.mass * dx;
+      bi.ay += f * bj.mass * dy;
+      bj.ax -= f * bi.mass * dx;
+      bj.ay -= f * bi.mass * dy;
+    }
+    // massive × Asteroiden — symmetrisch (Asteroid zieht auch am Planeten)
+    for (let j = 0; j < N; j++) {
+      const bj = bodies[j];
+      if (!bj.isAsteroid || !bj.visible) continue;
+      const dx = bj.x - bi.x;
+      const dy = bj.y - bi.y;
+      const r2 = dx*dx + dy*dy + softening;
+      const r = Math.sqrt(r2);
+      const f = G / (r2 * r);
+      bi.ax += f * bj.mass * dx;
+      bi.ay += f * bj.mass * dy;
+      bj.ax -= f * bi.mass * dx;
+      bj.ay -= f * bi.mass * dy;
     }
   }
 }
@@ -2064,6 +2092,12 @@ function computeAccelerations() {
 // Setzt voraus, dass die Beschleunigungen fuer die aktuellen Positionen
 // gueltig sind, und hinterlaesst sie ebenso aktuell — damit die drei
 // Yoshida-Teilschritte lueckenlos aneinander anschliessen.
+// Scratch-Buffer fuer die alten Beschleunigungen — wachsen bei Bedarf.
+// Ersetzt zwei bodies.map()-Allokationen pro Verlet-Aufruf (bei engen
+// Begegnungen hunderte Substeps × 3 Verlets pro Frame = GC-Druck).
+let _oldAxBuf = new Float64Array(256);
+let _oldAyBuf = new Float64Array(256);
+
 function verletStep(dt) {
   const N = bodies.length;
   for (let i = 0; i < N; i++) {
@@ -2071,8 +2105,12 @@ function verletStep(dt) {
     bodies[i].x += bodies[i].vx * dt + 0.5 * bodies[i].ax * dt * dt;
     bodies[i].y += bodies[i].vy * dt + 0.5 * bodies[i].ay * dt * dt;
   }
-  const oldAx = bodies.map(b => b.ax);
-  const oldAy = bodies.map(b => b.ay);
+  if (_oldAxBuf.length < N) {
+    _oldAxBuf = new Float64Array(N);
+    _oldAyBuf = new Float64Array(N);
+  }
+  const oldAx = _oldAxBuf, oldAy = _oldAyBuf;
+  for (let i = 0; i < N; i++) { oldAx[i] = bodies[i].ax; oldAy[i] = bodies[i].ay; }
   computeAccelerations();
   for (let i = 0; i < N; i++) {
     if (!bodies[i].visible) continue;
@@ -2238,6 +2276,24 @@ const stars = [];
     });
   }
 })();
+
+// Sternen-Tile einmal vorrendern — draw() kachelt es dann als Pattern
+// mit 1 fillRect statt ~380 fillRects × sichtbare Tiles pro Frame.
+const _starTile = document.createElement('canvas');
+_starTile.width = STAR_TILE;
+_starTile.height = STAR_TILE;
+(function renderStarTile() {
+  const c = _starTile.getContext('2d');
+  for (const s of stars) {
+    c.fillStyle = `rgba(220,220,255,${s.a})`;
+    c.fillRect(s.x, s.y, s.s, s.s);
+    // Sterne am Tile-Rand auf die Gegenseite spiegeln, damit beim
+    // Kacheln keine abgeschnittenen Pixel entstehen.
+    if (s.x + s.s > STAR_TILE) c.fillRect(s.x - STAR_TILE, s.y, s.s, s.s);
+    if (s.y + s.s > STAR_TILE) c.fillRect(s.x, s.y - STAR_TILE, s.s, s.s);
+  }
+})();
+let _starPattern = null;
 
 // Massenschwerpunkt des gebundenen Systems. Solange ein Koerper an die
 // Sonne gebunden ist, zaehlt er voll mit — auch ein sehr massereicher.
@@ -2650,26 +2706,19 @@ function draw() {
   if (showStars) {
     // Sterne laufen gleichsinnig und exakt mit dem Welt-Achsenkreuz —
     // der Hintergrund (Sterne + Welt-Ursprung-Kreuz) ist als ein
-    // zusammenhaengender Referenzrahmen sichtbar.
+    // zusammenhaengender Referenzrahmen sichtbar. Gezeichnet als
+    // wiederholtes Pattern des vorgerenderten Tiles (1 fillRect).
     const [oxw, oyw] = worldToScreen(0, 0);
     const ox = oxw - viewCX;
     const oy = oyw - H/2;
-    for (const s of stars) {
-      let sx = ((s.x + ox) % STAR_TILE + STAR_TILE) % STAR_TILE;
-      let sy = ((s.y + oy) % STAR_TILE + STAR_TILE) % STAR_TILE;
-      // Tile horizontal/vertikal wrappen, damit auch grosse Bildschirme
-      // ohne Luecken gefuellt werden.
-      for (let tx = 0; tx < W + STAR_TILE; tx += STAR_TILE) {
-        const dx = sx + tx;
-        if (dx < -2 || dx > W + 2) continue;
-        for (let ty = 0; ty < H + STAR_TILE; ty += STAR_TILE) {
-          const dy = sy + ty;
-          if (dy < -2 || dy > H + 2) continue;
-          ctx.fillStyle = `rgba(220,220,255,${s.a})`;
-          ctx.fillRect(dx, dy, s.s, s.s);
-        }
-      }
-    }
+    if (!_starPattern) _starPattern = ctx.createPattern(_starTile, 'repeat');
+    const tx = ((ox % STAR_TILE) + STAR_TILE) % STAR_TILE;
+    const ty = ((oy % STAR_TILE) + STAR_TILE) % STAR_TILE;
+    ctx.save();
+    ctx.translate(tx - STAR_TILE, ty - STAR_TILE);
+    ctx.fillStyle = _starPattern;
+    ctx.fillRect(0, 0, W + 2 * STAR_TILE, H + 2 * STAR_TILE);
+    ctx.restore();
   }
 
   if (showWorldGrid) {
@@ -3228,17 +3277,17 @@ document.addEventListener('visibilitychange', () => {
 // Schritten "uebersprungen" wird (Tunneling).
 function adaptiveSubDt() {
   let dt = MAX_SUB_DT_YEARS;
-  for (let i = 0; i < bodies.length; i++) {
-    if (!bodies[i].visible) continue;
-    const aIsAst = bodies[i].isAsteroid;
-    for (let j = i+1; j < bodies.length; j++) {
-      if (!bodies[j].visible) continue;
-      // Asteroiden komplett aus adaptiveSubDt — ihre Naehe zu Planeten
-      // wuerde sonst dt drastisch nach unten ziehen und den Browser
-      // ausbremsen. Trade-off: ein Asteroid kann bei extrem nahem
-      // Vorbeiflug zwischen 2 Frames durch einen Planeten tunneln.
-      if (aIsAst || bodies[j].isAsteroid) continue;
-      const a = bodies[i], b = bodies[j];
+  // Asteroiden komplett aus adaptiveSubDt — ihre Naehe zu Planeten
+  // wuerde sonst dt drastisch nach unten ziehen und den Browser
+  // ausbremsen. Trade-off: ein Asteroid kann bei extrem nahem
+  // Vorbeiflug zwischen 2 Frames durch einen Planeten tunneln.
+  // Schleife daher nur ueber die massiven Koerper (Index-Liste) statt
+  // alle Paare durchzugehen und fast alle zu ueberspringen.
+  const mIdx = collectMassiveIndices();
+  const mCount = mIdx.length;
+  for (let mi = 0; mi < mCount; mi++) {
+    for (let mj = mi + 1; mj < mCount; mj++) {
+      const a = bodies[mIdx[mi]], b = bodies[mIdx[mj]];
       const dx = b.x-a.x, dy = b.y-a.y;
       const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
       const gap = dist - (a.realR + b.realR);   // Luft bis zur Beruehrung
@@ -3317,25 +3366,66 @@ function createPhysWorker() {
     const YOSHIDA_W0 = -Math.cbrt(2) / (2 - Math.cbrt(2));
     let X, Y, VX, VY, AX, AY, M, V, A;
     let N = 0;
+    // Wiederverwendbare Buffer: Index-Liste der massiven Koerper (die
+    // Paar-Schleifen laufen nur ueber massive×alle statt alle×alle —
+    // Asteroid×Asteroid ist vernachlaessigt) und Scratch fuer die alten
+    // Beschleunigungen im Verlet (statt 2 Allokationen pro Teilschritt).
+    let MI = new Int32Array(0), mCount = 0;
+    let oAx = new Float64Array(0), oAy = new Float64Array(0);
+    // Lokaler Cache der massiven Koerper (Position, Masse, Accel) — die
+    // Asteroiden-Schleife liest sie cache-hot statt quer durch X/Y/M zu
+    // springen, und akkumuliert die Gegenkraft in kleinen Arrays.
+    let MX = new Float64Array(0), MY = new Float64Array(0), MM = new Float64Array(0);
+    let MAX_ = new Float64Array(0), MAY_ = new Float64Array(0);
+    function collectMassive() {
+      mCount = 0;
+      for (let i = 0; i < N; i++) if (V[i] && !A[i]) MI[mCount++] = i;
+    }
     function computeAccel() {
       for (let i = 0; i < N; i++) { AX[i] = 0; AY[i] = 0; }
-      for (let i = 0; i < N; i++) {
-        if (!V[i]) continue;
-        const ai = A[i];
-        const xi = X[i], yi = Y[i], mi = M[i];
-        for (let j = i + 1; j < N; j++) {
-          if (!V[j]) continue;
-          if (ai && A[j]) continue;
-          const dx = X[j] - xi;
-          const dy = Y[j] - yi;
+      collectMassive();
+      for (let k = 0; k < mCount; k++) {
+        const i = MI[k];
+        MX[k] = X[i]; MY[k] = Y[i]; MM[k] = M[i];
+        MAX_[k] = 0; MAY_[k] = 0;
+      }
+      // massive × massive — jedes Paar einmal, symmetrisch
+      for (let a = 0; a < mCount; a++) {
+        for (let b = a + 1; b < mCount; b++) {
+          const dx = MX[b] - MX[a];
+          const dy = MY[b] - MY[a];
           const r2 = dx*dx + dy*dy + 1e-6;
           const r = Math.sqrt(r2);
           const f = G_AU / (r2 * r);
-          AX[i] += f * M[j] * dx;
-          AY[i] += f * M[j] * dy;
-          AX[j] -= f * mi * dx;
-          AY[j] -= f * mi * dy;
+          MAX_[a] += f * MM[b] * dx;
+          MAY_[a] += f * MM[b] * dy;
+          MAX_[b] -= f * MM[a] * dx;
+          MAY_[b] -= f * MM[a] * dy;
         }
+      }
+      // Asteroiden aussen (sequenzieller Durchlauf), massive innen aus dem
+      // lokalen Cache — Kraft auf den Asteroiden in Registern akkumuliert,
+      // Gegenkraft auf den massiven Koerper in MAX_/MAY_ (symmetrisch).
+      for (let j = 0; j < N; j++) {
+        if (!A[j] || !V[j]) continue;
+        const xj = X[j], yj = Y[j], mj = M[j];
+        let axj = 0, ayj = 0;
+        for (let k = 0; k < mCount; k++) {
+          const dx = MX[k] - xj;
+          const dy = MY[k] - yj;
+          const r2 = dx*dx + dy*dy + 1e-6;
+          const r = Math.sqrt(r2);
+          const f = G_AU / (r2 * r);
+          axj += f * MM[k] * dx;
+          ayj += f * MM[k] * dy;
+          MAX_[k] -= f * mj * dx;
+          MAY_[k] -= f * mj * dy;
+        }
+        AX[j] = axj; AY[j] = ayj;
+      }
+      for (let k = 0; k < mCount; k++) {
+        const i = MI[k];
+        AX[i] = MAX_[k]; AY[i] = MAY_[k];
       }
     }
     function verlet(dt) {
@@ -3344,7 +3434,6 @@ function createPhysWorker() {
         X[i] += VX[i] * dt + 0.5 * AX[i] * dt * dt;
         Y[i] += VY[i] * dt + 0.5 * AY[i] * dt * dt;
       }
-      const oAx = new Float64Array(N), oAy = new Float64Array(N);
       for (let i = 0; i < N; i++) { oAx[i] = AX[i]; oAy[i] = AY[i]; }
       computeAccel();
       for (let i = 0; i < N; i++) {
@@ -3360,13 +3449,17 @@ function createPhysWorker() {
     }
     function adaptDt() {
       let dt = MAX_SUB_DT_YEARS;
-      for (let i = 0; i < N; i++) {
-        if (!V[i]) continue;
-        const ai = A[i];
-        for (let j = i+1; j < N; j++) {
-          if (!V[j]) continue;
-          if (ai && A[j]) continue;
-          const dx = X[j]-X[i], dy = Y[j]-Y[i];
+      // Auch massive × Asteroid zaehlt hier (anders als im Main-Pfad):
+      // enge Planet-Asteroid-Begegnungen verkleinern den Schritt.
+      collectMassive();
+      for (let mi = 0; mi < mCount; mi++) {
+        const i = MI[mi];
+        const xi = X[i], yi = Y[i];
+        for (let j = 0; j < N; j++) {
+          if (j === i || !V[j]) continue;
+          // massive Partner nur einmal pro Paar (ueber die MI-Ordnung)
+          if (!A[j] && j < i) continue;
+          const dx = X[j]-xi, dy = Y[j]-yi;
           const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
           const dvx = VX[j]-VX[i], dvy = VY[j]-VY[i];
           const vrel = Math.sqrt(dvx*dvx + dvy*dvy);
@@ -3383,6 +3476,13 @@ function createPhysWorker() {
       X = d.x; Y = d.y; VX = d.vx; VY = d.vy; AX = d.ax; AY = d.ay;
       M = d.mass; V = d.visible; A = d.isAst;
       N = X.length;
+      if (MI.length < N) {
+        MI = new Int32Array(N);
+        oAx = new Float64Array(N);
+        oAy = new Float64Array(N);
+        MX = new Float64Array(N); MY = new Float64Array(N); MM = new Float64Array(N);
+        MAX_ = new Float64Array(N); MAY_ = new Float64Array(N);
+      }
       let remaining = d.dt, guard = 0;
       computeAccel();
       while (remaining > 1e-12 && guard++ < ${MAX_SUB_STEPS_PER_FRAME}) {
@@ -3390,8 +3490,12 @@ function createPhysWorker() {
         step(sub);
         remaining -= sub;
       }
-      self.postMessage({ x: X, y: Y, vx: VX, vy: VY, ax: AX, ay: AY },
-        [X.buffer, Y.buffer, VX.buffer, VY.buffer, AX.buffer, AY.buffer]);
+      // Alle Buffer zuruecktransferieren — der Main-Thread recycelt sie
+      // fuer den naechsten Frame (Ping-Pong statt 9 Allokationen/Frame).
+      self.postMessage({ x: X, y: Y, vx: VX, vy: VY, ax: AX, ay: AY,
+                         mass: M, visible: V, isAst: A },
+        [X.buffer, Y.buffer, VX.buffer, VY.buffer, AX.buffer, AY.buffer,
+         M.buffer, V.buffer, A.buffer]);
     };
   `;
   const blob = new Blob([src], { type: 'application/javascript' });
@@ -3409,6 +3513,7 @@ function createPhysWorker() {
       b.ax = d.ax[i]; b.ay = d.ay[i];
     }
     workerInflightRefs = null;
+    _workerBufPool = d;   // zurueckerhaltene Buffer fuer den naechsten Frame
     workerBusy = false;
     if (workerResolver) { const r = workerResolver; workerResolver = null; r(); }
   };
@@ -3427,6 +3532,10 @@ function createPhysWorker() {
 // in einen TypeError laufen laesst.
 let workerInflightRefs = null;
 
+// Ping-Pong-Pool: die vom Worker zuruecktransferierten Buffer des letzten
+// Frames. Passt N noch, werden sie wiederverwendet statt neu allokiert.
+let _workerBufPool = null;
+
 function advanceWorker(dtYears, list) {
   return new Promise((resolve) => {
     if (workerBusy) { resolve(); return; }
@@ -3434,12 +3543,14 @@ function advanceWorker(dtYears, list) {
     // Optionaler Subset (Hybrid: nur massive Koerper) — sonst alle Bodies.
     const src = list || bodies;
     const N = src.length;
-    const x = new Float64Array(N), y = new Float64Array(N);
-    const vx = new Float64Array(N), vy = new Float64Array(N);
-    const ax = new Float64Array(N), ay = new Float64Array(N);
-    const mass = new Float64Array(N);
-    const visible = new Uint8Array(N);
-    const isAst = new Uint8Array(N);
+    const pool = (_workerBufPool && _workerBufPool.x.length === N) ? _workerBufPool : null;
+    _workerBufPool = null;
+    const x = pool ? pool.x : new Float64Array(N), y = pool ? pool.y : new Float64Array(N);
+    const vx = pool ? pool.vx : new Float64Array(N), vy = pool ? pool.vy : new Float64Array(N);
+    const ax = pool ? pool.ax : new Float64Array(N), ay = pool ? pool.ay : new Float64Array(N);
+    const mass = pool ? pool.mass : new Float64Array(N);
+    const visible = pool ? pool.visible : new Uint8Array(N);
+    const isAst = pool ? pool.isAst : new Uint8Array(N);
     for (let i = 0; i < N; i++) {
       const b = src[i];
       x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
