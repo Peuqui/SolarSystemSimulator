@@ -3731,6 +3731,14 @@ function initCudaBackend(urlIndex = 0) {
       // Live-Follow: der Playhead laeuft mit dieser Rate statt bei jeder
       // Antwort an die Kante zu springen (wichtig bei WAN-Latenz).
       const nowP = performance.now();
+      // Durchsatz-EWMA — nur aussagekraeftige Batches (>64 KB), sonst
+      // dominiert die RTT die Messung
+      if (_filmReqSentMs && buf.byteLength > 65536) {
+        const dur = (nowP - _filmReqSentMs) / 1000;
+        if (dur > 0.02) {
+          _filmThroughput = 0.7 * _filmThroughput + 0.3 * (buf.byteLength / dur);
+        }
+      }
       if (_filmHeadPrevMs && head > _filmHeadPrev) {
         const r = (head - _filmHeadPrev) / ((nowP - _filmHeadPrevMs) / 1000);
         _filmHeadRate = _filmHeadRate ? 0.7 * _filmHeadRate + 0.3 * r : r;
@@ -3897,6 +3905,11 @@ let _filmRate = 60;          // aktuelles Playback-Tempo (Tage/s) fuer Batch-Dic
 let _filmHeadRate = 0;       // geschaetzte Producer-Rate (Tage/s) fuer glattes Live-Follow
 let _filmHeadPrev = 0;
 let _filmHeadPrevMs = 0;
+// Adaptives Streaming (wie Videoplayer-Qualitaetsstufen): gemessener
+// Durchsatz bestimmt, wie viele Samples/s wir uns leisten koennen —
+// bei 25k Koerpern remote sonst Diashow (400 KB pro Sample!).
+let _filmThroughput = 2e6;   // Bytes/s, EWMA-gemessen (Startannahme 2 MB/s)
+let _filmReqSentMs = 0;
 let filmRefs = null;         // Body-Reihenfolge beim FILM_START
 let filmLive = true;         // Playhead folgt der Live-Kante
 let filmPlayheadDays = 0;
@@ -3904,6 +3917,55 @@ let filmScrubbing = false;   // User zieht gerade am Regler
 let _filmSentRev = -1;
 let _filmSentN = -1;
 let _filmPrevMs = 0;
+let _filmLastTrailT = -1;    // Sim-Zeit des letzten Bahnspur-Samples
+
+function filmClearTrails() {
+  for (const k in trails) {
+    const tr = trails[k];
+    while (tr.length) _trailPool.push(tr.pop());
+  }
+  _filmLastTrailT = filmPlayheadDays;
+}
+
+// Bahnspuren aus den ueberquerten Timeline-Samples speisen — pro
+// Anzeige-Frame koennen bei hohem Tempo viele Sim-Tage vergehen; die
+// Samples liefern die Zwischenpunkte in Raster-Aufloesung (sonst werden
+// Umlaufbahnen zu Polygonen). Nur massive Koerper — Asteroiden-Spuren
+// sind im Film-Modus aus Kostengruenden aus.
+function filmFeedTrails() {
+  const q = filmQueue;
+  if (!q || !filmRefs) return;
+  // Ruecksprung (Scrubbing/Restart): Spuren trennen statt Teleport-Linie
+  if (filmPlayheadDays < _filmLastTrailT - 1e-9) {
+    filmClearTrails();
+    return;
+  }
+  const n = filmRefs.length;
+  let fed = 0;
+  for (let k = 0; k < q.times.length && fed < 240; k++) {
+    const tS = q.times[k];
+    if (tS <= _filmLastTrailT || tS > filmPlayheadDays) continue;
+    const s = q.samples[k];
+    for (let i = 0; i < n; i++) {
+      const b = filmRefs[i];
+      if (b.isAsteroid || !b.visible) continue;
+      const tr = trails[b.name];
+      if (!tr) continue;
+      const pt = _trailPool.length > 0 ? _trailPool.pop() : { x: 0, y: 0 };
+      pt.x = s[i];
+      pt.y = s[n + i];
+      tr.push(pt);
+      while (tr.length > MAX_TRAIL) _trailPool.push(tr.shift());
+    }
+    _filmLastTrailT = tS;
+    fed++;
+  }
+  // Grosser Vorwaertssprung ohne Samples dazwischen (LIVE-Knopf):
+  // Spuren zuruecksetzen, statt eine Teleport-Gerade zu ziehen.
+  if (filmPlayheadDays - _filmLastTrailT > 60 * filmRasterDays()) {
+    filmClearTrails();
+  }
+}
 
 function filmRasterDays() {
   return Math.pow(10, parseFloat(document.getElementById('film-raster').value));
@@ -3940,6 +4002,7 @@ function filmStart() {
   filmReqBusy = false;
   filmLive = true;
   filmPlayheadDays = simTime;
+  _filmLastTrailT = simTime;
   _filmSentRev = _physRev;
   _filmSentN = N;
   _pendingDeltaBodies.clear();
@@ -3966,8 +4029,15 @@ function filmRequest(tDays) {
   // Videoplayer-Prinzip: ganze Fenster in Playback-Aufloesung vorausholen.
   // Zielaufloesung ~20 Samples/s Anzeige (Interpolation glaettet dazwischen),
   // Fenster ~3 s Playback, Deckel 80 Samples pro Batch.
-  const spacing = Math.max(filmRasterDays(), _filmRate / 20);
-  const count = Math.min(80, Math.max(10, Math.ceil(_filmRate * 3 / spacing)));
+  // Leistbare Sample-Rate aus gemessenem Durchsatz (2..20 Samples/s);
+  // Batch-Groesse zusaetzlich auf ~1,5 s Transferzeit deckeln.
+  const sampleBytes = 16 * bodies.length + 8;
+  const affordableSps = Math.max(2, Math.min(20,
+    (_filmThroughput * 0.5) / sampleBytes));
+  const spacing = Math.max(filmRasterDays(), _filmRate / affordableSps);
+  let count = Math.min(80, Math.max(4, Math.ceil(_filmRate * 3 / spacing)));
+  count = Math.max(4, Math.min(count,
+    Math.floor((_filmThroughput * 1.5) / sampleBytes) || 4));
   const buf = new ArrayBuffer(24);
   const dv = new DataView(buf);
   dv.setUint32(0, 5, true);                    // MSG_FILM_REQ
@@ -3975,6 +4045,7 @@ function filmRequest(tDays) {
   dv.setFloat64(8, tDays, true);
   dv.setFloat64(16, spacing, true);
   filmReqBusy = true;
+  _filmReqSentMs = performance.now();
   cudaSocket.send(buf);
 }
 
@@ -4041,15 +4112,17 @@ function filmTick(dtDays, slowFactor, nowMs) {
     const tStart = filmQueue.times[0];
     const fensterRest = tEnd - filmPlayheadDays;
     const fenster = tEnd - tStart;
-    if (filmPlayheadDays < tStart || fensterRest < fenster / 3) {
-      // nahtlos: neuer Batch beginnt am Playhead (leichte Ueberlappung).
-      // Im Live-Follow entsteht so ein kontinuierlicher Poll an der
-      // wachsenden Kante — genau das ist der Live-Stream.
+    // WICHTIG: <= und Mindest-Vorlauf von einem Raster — an der Live-Kante
+    // schrumpft der Batch auf 1 Sample (fenster=0) und der Playhead klemmt
+    // exakt auf dessen Zeit; mit < 0-Vergleichen fragt dann nie wieder
+    // jemand nach und der Player friert ein (Deadlock).
+    if (filmPlayheadDays < tStart ||
+        fensterRest <= Math.max(fenster / 3, filmRasterDays())) {
       filmRequest(filmPlayheadDays);
     }
   }
   filmApply(filmPlayheadDays);
-  recordTrails();
+  filmFeedTrails();
   _baryDirty = true;
   _perf.frames++;
 }
@@ -4081,6 +4154,11 @@ document.getElementById('film-live').addEventListener('click', () => {
       frac * (filmQueue.head - filmQueue.tail);
   });
   scrub.addEventListener('change', () => { filmScrubbing = false; });
+  // Fallback: manche Browser feuern 'change' nicht zuverlaessig, wenn der
+  // Regler ausserhalb losgelassen wird — sonst friert der Playhead ein.
+  for (const ev of ['pointerup', 'mouseup', 'touchend']) {
+    window.addEventListener(ev, () => { filmScrubbing = false; });
+  }
 }
 ['film-raster'].forEach(id => {
   document.getElementById(id).addEventListener('input', function() {

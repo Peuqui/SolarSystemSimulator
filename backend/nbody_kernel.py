@@ -298,7 +298,6 @@ class NBodyCuda:
                 enable_cooperative_groups=True)
             self._kern = self._mod.get_function("frame_kernel")
             self._block = 256
-            self._ctrl = cp.zeros(4, dtype=cp.float64)  # Ctrl-Struct (32 B)
 
     def name(self) -> str:
         return cp.cuda.runtime.getDeviceProperties(self.device)["name"].decode()
@@ -341,7 +340,11 @@ class NBodyCuda:
                   "aaccx": cp.zeros(n_ast, d), "aaccy": cp.zeros(n_ast, d),
                   "maccx": cp.zeros(m, d), "maccy": cp.zeros(m, d),
                   "backx": cp.zeros(m, d), "backy": cp.zeros(m, d),
-                  "out_f32": cp.empty(4 * len(x), cp.float32)}
+                  "out_f32": cp.empty(4 * len(x), cp.float32),
+                  # Kernel-Steuerpuffer PRO SESSION — mehrere gleichzeitige
+                  # Producer (mehrere Clients) duerfen sich den Loop-Zustand
+                  # nicht teilen.
+                  "ctrl": cp.zeros(4, dtype=cp.float64)}
             # Inverse Abbildung Originalindex -> (Kategorie, Position) fuer
             # punktuelle Delta-Updates (Bounces) ohne FULL-Upload.
             n = len(x)
@@ -419,7 +422,7 @@ class NBodyCuda:
                 (g_ax, g_ay, g_avx, g_avy, g_aaccx, g_aaccy, g_am, g_avis,
                  g_mx, g_my, g_mvx, g_mvy, g_mm, g_mvis,
                  g_maccx, g_maccy, g_backx, g_backy,
-                 self._ctrl,
+                 st["ctrl"],
                  cp.int32(n_ast), cp.int32(m),
                  cp.float64(G_AU), cp.float64(SOFTENING),
                  cp.float64(dt_years), cp.float64(MAX_SUB_DT_YEARS),
