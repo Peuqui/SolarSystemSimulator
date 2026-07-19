@@ -28,7 +28,11 @@ import argparse
 import asyncio
 import logging
 import multiprocessing as mp
+import os
+import socket
 import struct
+import threading
+import time
 from multiprocessing import shared_memory
 
 import numpy as np
@@ -282,9 +286,14 @@ class FilmSession:
                 t_send = asyncio.get_event_loop().time()
                 await ws.send(frame)
                 dur = asyncio.get_event_loop().time() - t_send
-                # Bandbreiten-EWMA nur aus aussagekraeftigen Transfers
-                if len(frame) > 65536 and dur > 0.005:
-                    self._bw = 0.7 * self._bw + 0.3 * (len(frame) / dur)
+                # Bandbreiten-EWMA. Blitzschnelle lokale Sends (dur -> 0)
+                # als Untergrenzen-Schaetzung werten statt sie zu
+                # verwerfen — sonst klemmt _bw ewig auf dem Startwert und
+                # die Stream-Dichte bleibt bei grossen N grundlos duenn
+                # (Playhead reitet auf der Download-Kante: Ruckeln).
+                if len(frame) > 65536:
+                    self._bw = 0.7 * self._bw + \
+                        0.3 * (len(frame) / max(dur, 0.002))
                 self.sent_abs = idxs[-1] + step
         except Exception:
             pass
@@ -379,8 +388,43 @@ def build_error(msg: str) -> bytes:
     return struct.pack("<II", 1, 0) + msg.encode()
 
 
-async def handle(ws, sim: NBodyCuda):
+# Lazy-Kernel: der Serverprozess fasst die GPU erst an, wenn ein Client
+# wirklich den Live-CUDA-Pfad nutzt (MSG_FULL). Serverstart, Auto-
+# Detection-Ping und Film-Modus (Producer hat seinen eigenen Prozess +
+# Context) belegen dann keinerlei VRAM. Der Lock verhindert eine
+# Doppel-Kompilierung, wenn zwei Clients gleichzeitig den ersten
+# FULL-Frame schicken.
+_sim: NBodyCuda | None = None
+_sim_lock = threading.Lock()
+_device: int = 0
+
+
+def get_sim() -> NBodyCuda:
+    global _sim
+    with _sim_lock:
+        if _sim is None:
+            _sim = NBodyCuda(_device)
+            log.info("CUDA-Kernel initialisiert: Device %d (%s)",
+                     _device, _sim.name())
+        return _sim
+
+
+def device_name(dev: int) -> str:
+    # Reine Runtime-Abfrage — erzeugt keinen CUDA-Context.
+    import cupy as cp
+    return cp.cuda.runtime.getDeviceProperties(dev)["name"].decode()
+
+
+# Verbindungszaehler fuer den Idle-Exit (socket activation): systemd
+# startet den Server beim ersten Connect, wir beenden uns selbst, wenn
+# laenger niemand verbunden ist — GPU und RAM sind dann komplett frei.
+_active = [0]
+_last_disconnect = [time.monotonic()]
+
+
+async def handle(ws):
     peer = ws.remote_address
+    _active[0] += 1
     log.info("Client verbunden: %s", peer)
     # Residenter Zustand DIESER Verbindung — mehrere Clients (lokal +
     # remote) haben getrennte Zustaende und stoeren sich nicht.
@@ -392,7 +436,8 @@ async def handle(ws, sim: NBodyCuda):
         async for message in ws:
             if isinstance(message, str):
                 # Textnachricht = Ping des Frontends bei der Auto-Detection
-                await ws.send('{"backend":"cuda","device":"%s"}' % sim.name())
+                await ws.send('{"backend":"cuda","device":"%s"}'
+                              % device_name(_device))
                 continue
             try:
                 typ, _n, dt_years = HEADER.unpack_from(message, 0)
@@ -434,17 +479,18 @@ async def handle(ws, sim: NBodyCuda):
                 if typ == MSG_FULL:
                     dt_years, (x, y, vx, vy, mass), visible, is_ast = \
                         parse_full(message)
+                    sim = await asyncio.to_thread(get_sim)
                     state = await asyncio.to_thread(
                         sim.load_state, x, y, vx, vy, mass, visible, is_ast)
                     fulls += 1
                 elif typ == MSG_DELTA:
                     recs = np.frombuffer(message, DELTA_REC, _n, HEADER.size)
                     await asyncio.to_thread(
-                        sim.apply_updates, state,
+                        get_sim().apply_updates, state,
                         recs["idx"].astype(np.int64), recs["v"])
                 elif typ != MSG_STEP:
                     raise ValueError(f"unbekannter Nachrichtentyp {typ}")
-                out = await asyncio.to_thread(sim.step, state, dt_years)
+                out = await asyncio.to_thread(get_sim().step, state, dt_years)
                 frames += 1
                 await ws.send(build_response(len(out) // 4, out))
             except Exception as e:          # Fehler zum Client melden
@@ -453,6 +499,8 @@ async def handle(ws, sim: NBodyCuda):
     finally:
         if film:
             film.stop()
+        _active[0] -= 1
+        _last_disconnect[0] = time.monotonic()
         log.info("Client getrennt: %s (%d Frames, davon %d FULL-Uploads)",
                  peer, frames, fulls)
 
@@ -462,19 +510,51 @@ async def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--device", type=int, default=None,
                     help="CUDA-Device-Index (Default: beste f64-GPU)")
+    ap.add_argument("--idle-exit", type=int, default=0, metavar="SEK",
+                    help="Selbst beenden nach SEK ohne Client (fuer "
+                         "systemd socket activation); 0 = nie")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    device = args.device if args.device is not None else pick_device()
-    sim = NBodyCuda(device)
-    log.info("CUDA-Backend bereit auf Device %d (%s), Port %d",
-             device, sim.name(), args.port)
+    global _device
+    _device = args.device if args.device is not None else pick_device()
 
-    async with websockets.serve(
-            lambda ws: handle(ws, sim), "127.0.0.1", args.port,
-            max_size=64 * 1024 * 1024, ping_interval=None):
-        await asyncio.Future()
+    # systemd socket activation: LISTEN_FDS=1 -> der lauschende Socket
+    # kommt als fd 3 herein; ohne systemd binden wir selbst.
+    sock = None
+    if os.environ.get("LISTEN_FDS"):
+        sock = socket.socket(fileno=3)
+    log.info("CUDA-Backend bereit auf Device %d (%s), %s — "
+             "Kernel-Init lazy beim ersten Live-CUDA-Client",
+             _device, device_name(_device),
+             "socket-aktiviert" if sock else f"Port {args.port}")
+
+    stop = asyncio.Event()
+
+    async def idle_watch() -> None:
+        while True:
+            await asyncio.sleep(10)
+            if _active[0] == 0 and \
+                    time.monotonic() - _last_disconnect[0] > args.idle_exit:
+                log.info("%d s ohne Client — beende mich (socket "
+                         "activation startet bei Bedarf neu)",
+                         args.idle_exit)
+                stop.set()
+                return
+
+    serve_kwargs = dict(max_size=64 * 1024 * 1024, ping_interval=None)
+    if sock is not None:
+        server_ctx = websockets.serve(handle, sock=sock, **serve_kwargs)
+    else:
+        server_ctx = websockets.serve(handle, "127.0.0.1", args.port,
+                                      **serve_kwargs)
+    async with server_ctx:
+        if args.idle_exit > 0:
+            asyncio.create_task(idle_watch())
+            await stop.wait()
+        else:
+            await asyncio.Future()
 
 
 if __name__ == "__main__":

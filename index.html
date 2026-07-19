@@ -3684,6 +3684,11 @@ let cudaReady = false;
 let cudaBusy = false;
 let cudaResolver = null;
 let cudaInflightRefs = null;
+// true = WIR haben die Verbindung getrennt (Engine-Wechsel weg von CUDA,
+// damit der socket-aktivierte Server per Idle-Exit beenden kann) — dann
+// im onclose weder Option ausblenden noch auf Worker zurueckfallen.
+let _cudaIntentionalClose = false;
+let _cudaDisconnectTimer = null;
 
 function _cudaSetVisible(visible) {
   for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda',
@@ -3710,8 +3715,18 @@ function initCudaBackend(urlIndex = 0) {
       cudaSocket = ws;
       cudaReady = true;
       _cudaSetVisible(true);
-      if (useCuda) applyEngine('cuda', false);   // persistierten Modus nachziehen
       console.log('CUDA-Backend verbunden:', e.data);
+      if (useCuda) {
+        applyEngine('cuda', false);   // persistierten Modus nachziehen
+      } else {
+        // Reine Verfuegbarkeits-Probe: Verbindung sofort wieder trennen,
+        // damit der socket-aktivierte Server per Idle-Exit schlafen kann.
+        // Die CUDA-Wahl verbindet neu (und startet den Server on demand).
+        _cudaIntentionalClose = true;
+        cudaReady = false;
+        cudaSocket = null;
+        ws.close();
+      }
       return;
     }
     const buf = e.data;
@@ -3849,6 +3864,18 @@ function initCudaBackend(urlIndex = 0) {
   ws.onclose = () => {
     // Verbindungsaufbau gescheitert -> naechsten Kandidaten probieren.
     if (!connected) { initCudaBackend(urlIndex + 1); return; }
+    if (_cudaIntentionalClose) {
+      // Gewolltes Trennen: Backend bleibt verfuegbar (Option sichtbar),
+      // die naechste CUDA-Wahl verbindet neu und startet den Server
+      // per systemd socket activation.
+      _cudaIntentionalClose = false;
+      cudaReady = false;
+      cudaSocket = null;
+      cudaBusy = false;
+      cudaInflightRefs = null;
+      if (cudaResolver) { const r = cudaResolver; cudaResolver = null; r(); }
+      return;
+    }
     cudaReady = false;
     cudaSocket = null;
     cudaBusy = false;
@@ -6104,6 +6131,26 @@ function applyEngine(mode, persist) {
   // Nach Engine-Wechsel kennt das Backend den aktuellen Zustand nicht —
   // der naechste CUDA-Frame muss ein FULL-Frame sein.
   if (useCuda) _cudaStateStale = true;
+  // Volle Browser-Kontrolle ueber den GPU-Server: CUDA-Wahl verbindet
+  // (socket activation startet den Server on demand), Abwahl trennt nach
+  // kurzer Frist (f64-Dump des Film-Stops muss noch durch) — der Server
+  // beendet sich dann per Idle-Exit selbst und gibt die GPU frei.
+  if (useCuda) {
+    if (_cudaDisconnectTimer) {
+      clearTimeout(_cudaDisconnectTimer);
+      _cudaDisconnectTimer = null;
+    }
+    if (!cudaSocket || cudaSocket.readyState > 1) initCudaBackend();
+  } else if (cudaSocket && !_cudaDisconnectTimer) {
+    _cudaDisconnectTimer = setTimeout(() => {
+      _cudaDisconnectTimer = null;
+      if (!useCuda && !filmActive && cudaSocket &&
+          cudaSocket.readyState <= 1) {
+        _cudaIntentionalClose = true;
+        cudaSocket.close();
+      }
+    }, 3000);
+  }
   // Engine-Wechsel weg von CUDA bei laufendem Film: Film sauber beenden —
   // filmStop fordert den exakten f64-Endzustand (inkl. Impulse!) vom
   // Producer an; sonst rechnet die neue Engine mit den beim Filmstart
