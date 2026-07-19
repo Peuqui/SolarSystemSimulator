@@ -30,6 +30,7 @@ EV_BYTES = 24    # Ereignis: f64 tTage | u32 a (Ueberlebender/0xFFFFFFFF) |
 
 def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   ev_name: str, ev_cap: int, ev_count_val,
+                  dump_name: str, dump_req_val,
                   head_val, playhead_val, coll_val, running_val,
                   state: dict, raster_days: float, t0_days: float) -> None:
     # CUDA erst IM Kindprozess initialisieren (spawn-Kontext!)
@@ -66,7 +67,24 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     buf = shm.buf
     ev_shm = shared_memory.SharedMemory(name=ev_name)
     ev_buf = ev_shm.buf
+    dump_shm = shared_memory.SharedMemory(name=dump_name)
     k = 0
+
+    def dump_state() -> None:
+        # Exakten f64-Zustand (Originalreihenfolge) fuer die Uebergabe an
+        # andere Engines exportieren — sonst verlieren alle Koerper beim
+        # Verlassen des Film-Modus ihren Impuls (Samples tragen nur x,y).
+        f64 = cp.asnumpy(st["f64"])
+        a_idx = st["a_idx_h"]
+        m_idx = st["m_idx_h"]
+        na = len(a_idx)
+        m = len(m_idx)
+        base = 5 * na
+        out4 = np.empty(4 * n, dtype="<f8")
+        for f in range(4):
+            out4[f * n + a_idx] = f64[f * na:(f + 1) * na]
+            out4[f * n + m_idx] = f64[base + f * m:base + (f + 1) * m]
+        dump_shm.buf[0:out4.nbytes] = out4.tobytes()
 
     import struct as _struct
 
@@ -188,6 +206,9 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
 
     try:
         while running_val.value:
+            if dump_req_val.value == 1:
+                dump_state()
+                dump_req_val.value = 2
             # Ueberschreib-Schutz: Slot (k - capacity) wird gleich
             # ueberschrieben — er muss hinter dem Player-Playhead liegen.
             ph_abs = int((playhead_val.value - t0_days) / raster_days)
@@ -207,5 +228,12 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             k += 1
             head_val.value = k
     finally:
+        # Letzter Zustand fuer die Engine-Uebergabe, dann sauber schliessen
+        try:
+            dump_state()
+            dump_req_val.value = 2
+        except Exception:
+            pass
         shm.close()
         ev_shm.close()
+        dump_shm.close()

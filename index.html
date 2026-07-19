@@ -2744,6 +2744,10 @@ function renderAsteroidsGL() {
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible || !b.isAsteroid) continue;
+    // Film-Modus: server-gecullte Koerper (nicht im aktuellen Sample)
+    // haben eingefrorene Alt-Positionen — nicht zeichnen, sonst
+    // erscheint beim Rauszoomen Datenmuell alter Box-Epochen.
+    if (filmActive && _filmInView && !_filmInView[i]) continue;
     if (b.x < wxMin || b.x > wxMax || b.y < wyMin || b.y > wyMax) continue;
     let cached = b._glColor;
     if (!cached) {
@@ -3712,32 +3716,44 @@ function initCudaBackend(urlIndex = 0) {
     }
     const buf = e.data;
     const status = new Uint32Array(buf, 0, 2)[0];
-    if (status === 3) {
-      // v3-Punkte-Frame: u32 status | u32 N | u32 count | u32 evCount |
-      // f64 tail, head | count x f64 zeiten | count x (2N f32 Positionen) |
-      // evCount x Ereignis (f64 t | u32 a | u32 b | f32 masse | u32 pad)
+    if (status === 4) {
+      // v4-Frame: u32 status | u32 N | u32 count | u32 evCount |
+      // f64 tail, head, boxX0, boxY0, boxSpanX, boxSpanY |
+      // count x f64 zeiten | count x (u32 visCount | u32 idx[] |
+      // u16 qx[] | u16 qy[] | pad4) | evCount x Ereignis(24 B)
       const hdr = new Uint32Array(buf, 0, 4);
       const n = hdr[1], count = hdr[2], evCount = hdr[3];
       if (!filmRefs || n !== filmRefs.length) return;   // stale Session
       const dv = new DataView(buf);
       const tail = dv.getFloat64(16, true);
       const head = dv.getFloat64(24, true);
-      const times = new Float64Array(buf, 32, count);
+      const box = {
+        x0: dv.getFloat64(32, true),
+        y0: dv.getFloat64(40, true),
+        sx: dv.getFloat64(48, true),
+        sy: dv.getFloat64(56, true),
+      };
+      const times = new Float64Array(buf, 64, count);
       if (!filmQueue) filmQueue = { times: [], samples: [], tail, head };
       filmQueue.tail = tail;
       filmQueue.head = head;
       _filmMetaTail = tail;
       _filmMetaHead = head;
-      let off = 32 + 8 * count;
+      let off = 64 + 8 * count;
       let lastT = filmQueue.times.length
         ? filmQueue.times[filmQueue.times.length - 1] : -Infinity;
       for (let i = 0; i < count; i++) {
+        const visCount = dv.getUint32(off, true);
+        const idx = new Uint32Array(buf, off + 4, visCount);
+        const qx = new Uint16Array(buf, off + 4 + 4 * visCount, visCount);
+        const qy = new Uint16Array(buf, off + 4 + 6 * visCount, visCount);
+        const blockLen = 4 + 8 * visCount;
+        off += blockLen + ((4 - (blockLen % 4)) % 4);
         if (times[i] > lastT) {
           filmQueue.times.push(times[i]);
-          filmQueue.samples.push({ f: new Float32Array(buf, off, 2 * n) });
+          filmQueue.samples.push({ idx, qx, qy, box });
           lastT = times[i];
         }
-        off += 8 * n;
       }
       for (let e = 0; e < evCount; e++) {
         filmEvents.push({
@@ -3753,8 +3769,6 @@ function initCudaBackend(urlIndex = 0) {
         filmQueue.times.shift();
         filmQueue.samples.shift();
       }
-      // Producer-Raten-Schaetzung — NUR ueber Fenster >= 500 ms (pro
-      // Frame gemessen ist sie wildes Rauschen)
       const nowP = performance.now();
       if (!_filmHeadPrevMs) {
         _filmHeadPrev = head;
@@ -3765,6 +3779,32 @@ function initCudaBackend(urlIndex = 0) {
         _filmHeadPrev = head;
         _filmHeadPrevMs = nowP;
       }
+      return;
+    }
+    if (status === 5) {
+      // Exakter f64-Endzustand des Producers (Engine-Uebergabe): sonst
+      // starten Worker/CPU nach dem Film mit den beim Filmstart
+      // eingefrorenen Geschwindigkeiten — alles stuerzt in die Sonne.
+      const dv = new DataView(buf);
+      const n = dv.getUint32(4, true);
+      const tDays = dv.getFloat64(8, true);
+      const refs = filmRefs && filmRefs.length === n ? filmRefs : bodies;
+      if (refs.length === n) {
+        const x  = new Float64Array(buf, 16,           n);
+        const y  = new Float64Array(buf, 16 + 8 * n,   n);
+        const vx = new Float64Array(buf, 16 + 16 * n,  n);
+        const vy = new Float64Array(buf, 16 + 24 * n,  n);
+        const live = new Set(bodies);
+        for (let i = 0; i < n; i++) {
+          const b = refs[i];
+          if (!live.has(b)) continue;
+          b.x = x[i]; b.y = y[i]; b.vx = vx[i]; b.vy = vy[i];
+        }
+        simTime = tDays;
+        _cudaStateStale = true;
+        markBodiesMutated();
+      }
+      _filmHandover = false;   // Uebergabe abgeschlossen — Physik frei
       return;
     }
     if (status !== 0) {
@@ -4024,16 +4064,20 @@ function filmStart() {
   _filmEventsApplied = 0;
   _filmBaseVis = new Uint8Array(N);
   _filmBaseMass = new Float64Array(N);
+  _filmEvVis = new Uint8Array(N);
+  _filmInView = new Uint8Array(N);
   for (let i = 0; i < N; i++) {
     _filmBaseVis[i] = src[i].visible ? 1 : 0;
     _filmBaseMass[i] = src[i].mass;
+    _filmEvVis[i] = _filmBaseVis[i];
+    _filmInView[i] = 1;
   }
   filmActive = true;
   filmQueue = null;
   filmReqBusy = false;
   filmLive = true;
   // Erst-Abo (WebSocket ist geordnet — kommt nach dem FILM_START an)
-  setTimeout(() => filmSub(filmPlayheadDays), 0);
+  setTimeout(() => filmSub(filmPlayheadDays, true), 0);
   filmPlayheadDays = simTime;
   _filmLastTrailT = simTime;
   _filmSentRev = _physRev;
@@ -4057,19 +4101,36 @@ function filmStop() {
   document.getElementById('film-bar').classList.remove('show');
 }
 
-function filmSub(tDays) {
-  // Abo/Heartbeat: Playhead + Playback-Tempo an den Server — der streamt
-  // daraufhin kontinuierlich (Push mit TCP-Backpressure) und haelt den
-  // Puffer ~5 s voll. Kein Anfrage-Roundtrip pro Batch mehr.
+function filmSub(tDays, jump) {
+  // v4-Abo: Playhead + Tempo + Kamera-Viewport — der Server cullt auf
+  // eine Referenz-Box (2x Viewport) und streamt u16-Integerkoordinaten
+  // (User-Design). Log-Zoom: Auto-Box ueber alle Koerper (halbW = -1).
   if (!cudaReady || !filmActive) return;
-  const buf = new ArrayBuffer(24);
+  const buf = new ArrayBuffer(56);
   const dv = new DataView(buf);
-  dv.setUint32(0, 6, true);                    // MSG_FILM_SUB
+  dv.setUint32(0, 7, true);                    // MSG_FILM_SUB v4
+  dv.setUint32(4, jump ? 1 : 0, true);         // 1 = Sprung (Scrub/LIVE)
   dv.setFloat64(8, tDays, true);
   dv.setFloat64(16, _filmRate, true);
+  if (useLogZoom) {
+    dv.setFloat64(24, 0, true);
+    dv.setFloat64(32, 0, true);
+    dv.setFloat64(40, -1, true);
+    dv.setFloat64(48, -1, true);
+  } else {
+    const skala = cam.zoom * 80;               // px pro AE
+    dv.setFloat64(24, cam.cx, true);
+    dv.setFloat64(32, cam.cy, true);
+    dv.setFloat64(40, (W / 2) / skala, true);
+    dv.setFloat64(48, (H / 2) / skala, true);
+  }
   _filmLastSubMs = performance.now();
+  _filmSubCam = { cx: cam.cx, cy: cam.cy, zoom: cam.zoom };
   cudaSocket.send(buf);
 }
+let _filmSubCam = null;
+let _filmHandover = false;   // Engine-Uebergabe: warten bis f64-Dump da ist
+
 let _filmLastSubMs = 0;
 let _filmMetaTail = 0;       // Server-Puffergrenzen (aus jedem Push-Frame)
 let _filmMetaHead = 0;
@@ -4077,24 +4138,49 @@ let filmEvents = [];         // Merge/Kill-Ereignisse { t, a, b, mass }
 let _filmEventsApplied = 0;
 let _filmBaseVis = null;     // Baseline fuer Rueckspulen ueber Ereignisse
 let _filmBaseMass = null;
+let _filmEvVis = null;       // Ereignis-Sichtbarkeit (Kills angewendet)
+let _filmInView = null;      // im aktuellen Sample enthalten (Culling)
 
 function filmApply(t) {
   const q = filmQueue;
   if (!q || !filmRefs || q.times.length === 0) return;
-  const n = filmRefs.length;
-  if (q.samples[0].f.length !== 2 * n) return;  // Sample passt nicht zur Session
-  // Naechstliegendes Sample suchen (keine Interpolation — User-Wunsch:
-  // reines Punkte-Streaming, angezeigt wird nur exakt Berechnetes)
+  // v4-Dekodierung MIT Interpolation (Experiment beendet: ohne war die
+  // Anzeige Producer-Takt-Stop-Motion, bei 110k ~24 fps). u16 -> Welt,
+  // Lerp zwischen den Bracketing-Samples; Culling nur als Render-Skip.
   let i = 0;
   while (i < q.times.length - 1 && q.times[i + 1] < t) i++;
   const j = Math.min(i + 1, q.times.length - 1);
-  const s0 = q.samples[(t - q.times[i]) > (q.times[j] - t) ? j : i];
-  for (let k = 0; k < n; k++) {
-    const b = filmRefs[k];
-    b.x = s0.f[k];
-    b.y = s0.f[n + k];
+  const s0 = q.samples[i], s1 = q.samples[j];
+  const span = q.times[j] - q.times[i];
+  const f = span > 0 ? Math.min(Math.max((t - q.times[i]) / span, 0), 1) : 0;
+  if (!s1._pos) {
+    s1._pos = new Int32Array(filmRefs.length).fill(-1);
+    for (let m = 0; m < s1.idx.length; m++) s1._pos[s1.idx[m]] = m;
+  }
+  const b0 = s0.box, b1 = s1.box;
+  const fx0 = b0.sx / 65535, fy0 = b0.sy / 65535;
+  const fx1 = b1.sx / 65535, fy1 = b1.sy / 65535;
+  _filmInView.fill(0);
+  for (let m = 0; m < s0.idx.length; m++) {
+    const ki = s0.idx[m];
+    const b = filmRefs[ki];
+    if (!b) continue;
+    const x0 = b0.x0 + s0.qx[m] * fx0;
+    const y0 = b0.y0 + s0.qy[m] * fy0;
+    const m1 = s1._pos[ki];
+    if (m1 >= 0) {
+      b.x = x0 + (b1.x0 + s1.qx[m1] * fx1 - x0) * f;
+      b.y = y0 + (b1.y0 + s1.qy[m1] * fy1 - y0) * f;
+    } else {
+      b.x = x0;
+      b.y = y0;
+    }
+    _filmInView[ki] = 1;
   }
   filmApplyEvents(t);
+  for (let k = 0; k < filmRefs.length; k++) {
+    filmRefs[k].visible = _filmEvVis[k] === 1;
+  }
 }
 
 // Merge/Kill-Ereignisse bis Zeitpunkt t anwenden — und beim Rueckspulen
@@ -4105,7 +4191,7 @@ function filmApplyEvents(t) {
       filmEvents[_filmEventsApplied - 1].t > t) {
     for (let k = 0; k < filmRefs.length; k++) {
       const b = filmRefs[k];
-      b.visible = _filmBaseVis[k] === 1;
+      _filmEvVis[k] = _filmBaseVis[k];
       if (b.mass !== _filmBaseMass[k]) {
         b.mass = _filmBaseMass[k];
         b.radius = massToRadius(b.mass);
@@ -4117,8 +4203,7 @@ function filmApplyEvents(t) {
   while (_filmEventsApplied < filmEvents.length &&
          filmEvents[_filmEventsApplied].t <= t) {
     const ev = filmEvents[_filmEventsApplied++];
-    const loser = filmRefs[ev.b];
-    if (loser) loser.visible = false;
+    if (ev.b < _filmEvVis.length) _filmEvVis[ev.b] = 0;
     if (ev.a !== 0xFFFFFFFF && ev.mass > 0) {
       const surv = filmRefs[ev.a];
       if (surv) {
@@ -4187,7 +4272,10 @@ function filmTick(dtDays, slowFactor, nowMs) {
                                   (follow > 0 ? follow : _filmRate) * 10);
     if (kante - next > snapSchwelle) next = kante;
     filmPlayheadDays = next;
-  } else if (!filmScrubbing) {
+  } else if (!filmScrubbing && filmQueue && filmQueue.times.length) {
+    // Playhead laeuft NUR, wenn Daten da sind — nach einem Sprung wartet
+    // die Zeit mit der Anzeige zusammen auf den neuen Stream (Seek-
+    // Verhalten wie beim Videoplayer), statt blind weiterzulaufen.
     filmPlayheadDays += rate * delta / 1000;
     // Kante eingeholt -> automatisch LIVE, aber NUR wenn das Queue-Ende
     // auch die echte Server-Kante ist (sonst stand der Playhead nur am
@@ -4213,9 +4301,17 @@ function filmTick(dtDays, slowFactor, nowMs) {
     }
   }
   simTime = filmPlayheadDays;
-  // Heartbeat-Abo (1 Hz oder bei Tempo-Wechsel): haelt den Server-Stream
-  // und den Producer-Ueberschreibschutz auf der aktuellen Position.
-  if (nowMs - _filmLastSubMs > 1000) {
+  // Heartbeat-Abo (1 Hz) — oder sofort bei deutlicher Kamerabewegung
+  // (halber Viewport / Zoomfaktor 1,5): die Referenz-Box wandert mit.
+  let camMoved = false;
+  if (_filmSubCam && !useLogZoom) {
+    const halbW = (W / 2) / (cam.zoom * 80);
+    camMoved = Math.abs(cam.cx - _filmSubCam.cx) > halbW * 0.5 ||
+               Math.abs(cam.cy - _filmSubCam.cy) > halbW * 0.5 ||
+               cam.zoom / _filmSubCam.zoom > 1.5 ||
+               _filmSubCam.zoom / cam.zoom > 1.5;
+  }
+  if (nowMs - _filmLastSubMs > (camMoved ? 250 : 1000)) {
     filmSub(filmPlayheadDays);
   }
   filmApply(filmPlayheadDays);
@@ -4239,8 +4335,9 @@ function filmTick(dtDays, slowFactor, nowMs) {
 });
 document.getElementById('film-live').addEventListener('click', () => {
   filmLive = true;
+  filmPlayheadDays = _filmMetaHead > 0 ? _filmMetaHead : filmPlayheadDays;
   filmQueue = null;
-  filmSub(filmQueue && filmQueue.head ? filmQueue.head : filmPlayheadDays);
+  filmSub(filmPlayheadDays, true);
 });
 {
   const scrub = document.getElementById('film-scrub');
@@ -4256,7 +4353,7 @@ document.getElementById('film-live').addEventListener('click', () => {
     filmScrubbing = false;
     // Stream auf die neue Position umlenken; alter Puffer ist obsolet
     filmQueue = null;
-    filmSub(filmPlayheadDays);
+    filmSub(filmPlayheadDays, true);
   });
   // Fallback: manche Browser feuern 'change' nicht zuverlaessig, wenn der
   // Regler ausserhalb losgelassen wird — sonst friert der Playhead ein.
@@ -4347,6 +4444,7 @@ async function advanceAsync(dtYears) {
   // Szenarien aktiv, wo f32 unkritisch ist und die GPU echten Speed bringt.
   const sc = SCENARIOS[currentScenario];
   const needF64 = !!(sc && sc.precise);
+  if (_filmHandover) return;   // Engine-Uebergabe: auf f64-Dump warten
   if (useCuda && cudaReady) {
     // CUDA rechnet f64 — auch fuer empfindliche Szenarien geeignet.
     // Pipelined: kein await; Ergebnis-Anwendung, Kollisionen und
@@ -5900,6 +5998,23 @@ function applyEngine(mode, persist) {
   // Nach Engine-Wechsel kennt das Backend den aktuellen Zustand nicht —
   // der naechste CUDA-Frame muss ein FULL-Frame sein.
   if (useCuda) _cudaStateStale = true;
+  // Engine-Wechsel weg von CUDA bei laufendem Film: Film sauber beenden —
+  // filmStop fordert den exakten f64-Endzustand (inkl. Impulse!) vom
+  // Producer an; sonst rechnet die neue Engine mit den beim Filmstart
+  // eingefrorenen Geschwindigkeiten weiter (alles stuerzt in die Sonne).
+  if (!useCuda && typeof filmActive !== 'undefined' && filmActive) {
+    // Physik anhalten, bis der exakte f64-Endzustand angekommen ist —
+    // sonst rechnet die neue Engine mit alten Impulsen los und ihr
+    // (korruptes) erstes Ergebnis ueberschreibt den guten Dump (Race).
+    _filmHandover = true;
+    setTimeout(() => { _filmHandover = false; }, 2500);
+    filmStop();
+    useFilm = false;
+    for (const id of ['chk-film', 'mob-chk-film']) {
+      const el = document.getElementById(id);
+      if (el) el.checked = false;
+    }
+  }
   for (const prefix of ['rad', 'mob-rad']) {
     const el = document.getElementById(prefix + '-' + mode);
     if (el) el.checked = true;

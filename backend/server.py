@@ -45,7 +45,9 @@ MSG_STEP = 1
 MSG_DELTA = 2
 MSG_FILM_START = 3   # u32 typ | u32 N | f64 rasterTage | f64 t0Tage | FULL-Arrays
 MSG_FILM_STOP = 4    # nur Header
-MSG_FILM_SUB = 6     # u32 typ | u32 pad | f64 tTage | f64 rateTageProSek
+MSG_FILM_SUB = 7     # u32 typ | u32 pad | f64 tTage | f64 rateTageProSek |
+#                      f64 cx | f64 cy | f64 halbW | f64 halbH (Welt-AE;
+#                      halbW<=0 = Auto-Box ueber alle Koerper)
 #   Abo: Client meldet Playhead + Tempo (Start, Scrub, Tempo-Wechsel,
 #   1-Hz-Heartbeat). Der Server STREAMT daraufhin kontinuierlich kleine
 #   Frames (Push) und haelt den Client-Puffer ~5 s Playback voll —
@@ -81,12 +83,20 @@ class FilmSession:
         self.ev_cap = 65536
         self.ev_shm = shared_memory.SharedMemory(
             create=True, size=self.ev_cap * film_producer.EV_BYTES)
+        # Zustands-Dump fuer die Engine-Uebergabe (x,y,vx,vy als f64)
+        self.dump_shm = shared_memory.SharedMemory(
+            create=True, size=4 * 8 * self.n)
         ctx = mp.get_context("spawn")
         self.head_val = ctx.Value("q", 0, lock=False)
         self.playhead_val = ctx.Value("d", t0_days, lock=False)
         self.coll_val = ctx.Value("q", 0, lock=False)
         self.ev_count_val = ctx.Value("q", 0, lock=False)
+        self.dump_req_val = ctx.Value("b", 0, lock=False)
         self.running_val = ctx.Value("b", 1, lock=False)
+        # Sichtbarkeits-Spiegel (aus dem Event-Strom gepflegt) — tote
+        # Koerper werden beim Streamen mitgecullt
+        self._vis = np.array(visible, dtype=np.uint8, copy=True) != 0
+        self.view = (0.0, 0.0, -1.0, -1.0)   # cx, cy, halbW, halbH (Auto)
         state = {k: np.array(v, copy=True) for k, v in
                  (("x", x), ("y", y), ("vx", vx), ("vy", vy),
                   ("mass", mass), ("realR", real_r),
@@ -95,6 +105,7 @@ class FilmSession:
             target=film_producer.producer_main,
             args=(self.shm.name, self.sample_bytes, self.capacity,
                   self.ev_shm.name, self.ev_cap, self.ev_count_val,
+                  self.dump_shm.name, self.dump_req_val,
                   self.head_val, self.playhead_val, self.coll_val,
                   self.running_val, state, self.raster_days, t0_days),
             daemon=True)
@@ -158,25 +169,70 @@ class FilmSession:
     sent_ev = 0              # bereits gestreamte Ereignisse
 
     def build_frame(self, idxs: list) -> bytes:
-        times = np.asarray(
-            [self.t0 + (i + 1) * self.raster_days for i in idxs], "<f8")
-        # Neue Ereignisse seit dem letzten Frame mitschicken (max. 256)
+        """v4-Frame: pro Sample nur die Koerper in der Referenz-Box
+        (Culling!), Koordinaten als u16 relativ zur Box (User-Design:
+        Integer-Streaming). Der Client dekodiert zurueck in Welt-
+        koordinaten — die Kamera bleibt frei, die Box bestimmt nur
+        Culling und Praezision."""
+        # Neue Ereignisse einsammeln + lokalen vis-Spiegel pflegen
         ev_total = int(self.ev_count_val.value)
         ev_from = max(self.sent_ev, ev_total - self.ev_cap + 8)
         ev_n = min(256, ev_total - ev_from)
         eb = film_producer.EV_BYTES
-        ev_parts = [bytes(self.ev_shm.buf[(e % self.ev_cap) * eb:
-                                          (e % self.ev_cap) * eb + eb])
-                    for e in range(ev_from, ev_from + ev_n)]
+        ev_parts = []
+        for e in range(ev_from, ev_from + ev_n):
+            raw = bytes(self.ev_shm.buf[(e % self.ev_cap) * eb:
+                                        (e % self.ev_cap) * eb + eb])
+            ev_parts.append(raw)
+            b_idx = struct.unpack_from("<I", raw, 12)[0]
+            if b_idx < self.n:
+                self._vis[b_idx] = False
         self.sent_ev = ev_from + ev_n
-        head = struct.pack("<IIII", 3, self.n, len(idxs), ev_n)
-        meta = struct.pack("<dd", self.tail, self.head)
+
+        cx, cy, hw, hh = self.view
         s = self.sample_bytes
         buf = self.shm.buf
-        parts = [bytes(buf[(i % self.capacity) * s:
-                           (i % self.capacity) * s + s]) for i in idxs]
+        times = np.asarray(
+            [self.t0 + (i + 1) * self.raster_days for i in idxs], "<f8")
+        blocks = []
+        box = None
+        for i in idxs:
+            raw = np.frombuffer(buf, "<f4", 2 * self.n,
+                                (i % self.capacity) * s)
+            x = raw[0:self.n]
+            y = raw[self.n:2 * self.n]
+            if box is None:
+                if hw <= 0 or hh <= 0:
+                    # Auto-Box: gesamte Koerperverteilung (+5% Rand)
+                    bx0, bx1 = float(x.min()), float(x.max())
+                    by0, by1 = float(y.min()), float(y.max())
+                    mx = 0.05 * max(bx1 - bx0, 1e-6)
+                    my = 0.05 * max(by1 - by0, 1e-6)
+                    box = (bx0 - mx, by0 - my,
+                           max(bx1 - bx0 + 2 * mx, 1e-6),
+                           max(by1 - by0 + 2 * my, 1e-6))
+                else:
+                    # Referenz-Box = 2x Viewport um die Kamera
+                    box = (cx - 2 * hw, cy - 2 * hh,
+                           max(4 * hw, 1e-6), max(4 * hh, 1e-6))
+            x0, y0, spanx, spany = box
+            sel = np.flatnonzero(
+                self._vis & (x >= x0) & (x <= x0 + spanx)
+                & (y >= y0) & (y <= y0 + spany))
+            qx = np.clip((x[sel] - x0) / spanx * 65535.0,
+                         0, 65535).astype("<u2")
+            qy = np.clip((y[sel] - y0) / spany * 65535.0,
+                         0, 65535).astype("<u2")
+            block = struct.pack("<I", len(sel)) + \
+                sel.astype("<u4").tobytes() + qx.tobytes() + qy.tobytes()
+            block += b"\x00" * ((-len(block)) % 4)
+            blocks.append(block)
+
+        head = struct.pack("<IIII", 4, self.n, len(idxs), ev_n)
+        meta = struct.pack("<dddddd", self.tail, self.head,
+                           box[0], box[1], box[2], box[3])
         return head + meta + times.tobytes() + \
-            b"".join(parts) + b"".join(ev_parts)
+            b"".join(blocks) + b"".join(ev_parts)
 
     async def stream(self, ws) -> None:
         """Kontinuierlicher Sample-Push: haelt den Client-Puffer ~5 s
@@ -229,17 +285,27 @@ class FilmSession:
         except Exception:
             pass
 
-    def resubscribe(self, t_days: float, rate: float) -> None:
+    def resubscribe(self, t_days: float, rate: float,
+                    jump: bool = False) -> None:
         self.playhead_val.value = t_days
         self.sub_rate = max(0.1, rate)
-        # Stream-Position NUR bei echten Spruengen (Scrub) neu setzen —
-        # der 1-Hz-Heartbeat darf den laufenden Stream nicht anfassen
-        # (sonst jede Sekunde Neustart-Schluckauf -> leerer Client-Puffer).
-        if self.sent_abs is not None:
-            sent_t = self.t0 + self.sent_abs * self.raster_days
-            fenster = max(8 * self.raster_days, self.sub_rate * 6.0)
-            if abs(sent_t - t_days) > fenster:
-                self.sent_abs = None
+        # Sprung wird vom CLIENT deklariert (Scrub/LIVE/Start) — eine
+        # Heuristik ueber Zeitfenster erkannte kleine Ruck-Scrubs nicht
+        # und streamte von der alten Position weiter (Wiedergabe hing).
+        # Heartbeats (jump=False) fassen den laufenden Stream nie an.
+        if jump:
+            self.sent_abs = None
+
+    async def dump_state(self) -> bytes | None:
+        """Exakten f64-Zustand vom Producer anfordern (Engine-Uebergabe)."""
+        self.dump_req_val.value = 1
+        for _ in range(150):
+            if self.dump_req_val.value == 2:
+                t_head = self.head
+                return struct.pack("<IId", 5, self.n, t_head) + \
+                    bytes(self.dump_shm.buf[0:4 * 8 * self.n])
+            await asyncio.sleep(0.01)
+        return None
 
     def stop(self) -> None:
         if self.stream_task:
@@ -256,6 +322,8 @@ class FilmSession:
             self.shm.unlink()
             self.ev_shm.close()
             self.ev_shm.unlink()
+            self.dump_shm.close()
+            self.dump_shm.unlink()
         except Exception:
             pass
 
@@ -333,14 +401,21 @@ async def handle(ws, sim: NBodyCuda):
                     continue
                 if typ == MSG_FILM_STOP:
                     if film:
+                        # Exakten Endzustand an den Client — sonst startet
+                        # die naechste Engine mit eingefrorenen Impulsen
+                        state_msg = await film.dump_state()
+                        if state_msg:
+                            await ws.send(state_msg)
                         film.stop()
                         film = None
                     continue
                 if typ == MSG_FILM_SUB:
                     if film is None:
                         raise ValueError("kein Film aktiv")
-                    (rate,) = struct.unpack_from("<d", message, HEADER.size)
-                    film.resubscribe(dt_years, rate)
+                    rate, vcx, vcy, vhw, vhh = struct.unpack_from(
+                        "<ddddd", message, HEADER.size)
+                    film.view = (vcx, vcy, vhw, vhh)
+                    film.resubscribe(dt_years, rate, jump=bool(_n))
                     if film.stream_task is None:
                         film.stream_task = asyncio.create_task(
                             film.stream(ws))
