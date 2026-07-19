@@ -276,8 +276,15 @@ class FilmSession:
                 if avail < step:
                     await asyncio.sleep(0.03)
                     continue
-                max_count = max(1, min(
-                    24, (512 * 1024) // self.sample_bytes))
+                # Frame-Budget = ~50 ms Leitungszeit (gemessene _bw),
+                # geklemmt auf 512 KB..8 MB: lokal passen so auch bei
+                # 230k Koerpern mehrere Samples in einen Frame (sonst
+                # wird der Stream-Loop selbst zum Engpass und der
+                # Vergangenheits-Playhead reitet auf der Download-Kante),
+                # remote bleibt es bei kleinen Frames.
+                budget = min(8 * 1024 * 1024,
+                             max(512 * 1024, int(self._bw * 0.05)))
+                max_count = max(1, min(24, budget // self.sample_bytes))
                 idxs = list(range(sent_abs, head_abs, step))[:max_count]
                 if not idxs:
                     await asyncio.sleep(0.03)
