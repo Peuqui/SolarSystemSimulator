@@ -5009,6 +5009,43 @@ function _filmVPos(sample, n) {
   return sample._vpos;
 }
 
+// Bahn eines schnellen Koerpers ueber die Zeit dt (Jahre) integrieren —
+// Velocity-Verlet mit der Gravitation der Massiven. dt<0 = rueckwaerts.
+// Loest das "vorne herum"-Artefakt am Perihel: Interpolation raet eine
+// Kurve durch zwei Punkte und schneidet bei >180 Grad/Sample die falsche
+// Seite ab; die Integration FOLGT der echten Bahn (dieselbe Physik wie
+// der Producer), also hintenrum. mass = flaches [G*M, x, y, ...] der
+// Quellen (fest auf ihrer Sample-Position — sie wandern in einem Raster
+// vernachlaessigbar). Schreibt das Ergebnis nach out[0], out[1].
+function _filmIntegrate(px, py, vx, vy, dt, n, mass, out) {
+  const h = dt / n;
+  const accel = (x, y, o) => {
+    let ax = 0, ay = 0;
+    for (let mi = 0; mi < mass.length; mi += 3) {
+      const gm = mass[mi], dx = mass[mi + 1] - x, dy = mass[mi + 2] - y;
+      const r2 = dx * dx + dy * dy + 1e-6;
+      const inv = gm / (r2 * Math.sqrt(r2));
+      ax += inv * dx; ay += inv * dy;
+    }
+    o[0] = ax; o[1] = ay;
+  };
+  const a = _filmIntA, a2 = _filmIntA2;
+  accel(px, py, a);
+  for (let s = 0; s < n; s++) {
+    const nx = px + vx * h + 0.5 * a[0] * h * h;
+    const ny = py + vy * h + 0.5 * a[1] * h * h;
+    accel(nx, ny, a2);
+    vx += 0.5 * (a[0] + a2[0]) * h;
+    vy += 0.5 * (a[1] + a2[1]) * h;
+    px = nx; py = ny;
+    a[0] = a2[0]; a[1] = a2[1];
+  }
+  out[0] = px; out[1] = py;
+}
+const _filmIntA = [0, 0], _filmIntA2 = [0, 0];
+const _filmFwd = [0, 0], _filmBwd = [0, 0];
+const FILM_INT_SUB = 24;   // Substeps ueber ein volles Sample-Intervall
+
 // Indizes der massiven Koerper (nicht-Asteroiden mit Masse) — die
 // Gravitationsquellen fuer die Beschleunigung der schnellen Koerper.
 // Lazy pro Film-Session gebaut; sie werden nie ausgeduennt.
@@ -5076,26 +5113,14 @@ function filmApply(t) {
   const hermite = filmInterp && span > 0;
   const v0pos = (hermite && s0.vidx) ? _filmVPos(s0, nRef) : null;
   const v1pos = (hermite && s1.vidx) ? _filmVPos(s1, nRef) : null;
-  // Quintische Hermite (P, v, a) fuer die schnellen Koerper: am Perihel
-  // (grosse Winkel/Sample) reicht die echte Geschwindigkeit allein nicht,
-  // die Beschleunigung glaettet den Bogen fast vollstaendig (bei 90 Grad
-  // 34 statt 1521 e-6 AU). Die Beschleunigung rechnet der Client aus der
-  // Gravitation der Massiven — kostet keine Bandbreite. Basis 5. Grades,
-  // pro Frame konstant.
-  const doQuint = hermite && s0.vidx && s0.vidx.length &&
-                  s1.vidx && s1.vidx.length;
-  const f4 = f3 * f, f5 = f4 * f;
-  const Q0 = 1 - 10 * f3 + 15 * f4 - 6 * f5;
-  const Q1 = f - 6 * f3 + 8 * f4 - 3 * f5;
-  const Q2 = 0.5 * f2 - 1.5 * f3 + 1.5 * f4 - 0.5 * f5;
-  const Q3 = 10 * f3 - 15 * f4 + 6 * f5;
-  const Q4 = -4 * f3 + 7 * f4 - 3 * f5;
-  const Q5 = 0.5 * f3 - f4 + 0.5 * f5;
-  const spanY2 = spanY * spanY;
-  // Massive Koerper (Gravitationsquellen) mit Position in s0 und s1 —
-  // je [G*Masse, x, y]. Nur gesammelt, wenn es schnelle Koerper gibt.
+  // Fuer die schnellen Koerper (mit v-Block) wird die echte Bahn
+  // integriert (siehe _filmIntegrate). Dafuer die Gravitationsquellen
+  // sammeln — massive Koerper mit Position in s0 und s1, je [G*Masse,x,y].
+  // Nur wenn es ueberhaupt schnelle Koerper in beiden Samples gibt.
+  const hatSchnelle = hermite && s0.vidx && s0.vidx.length &&
+                      s1.vidx && s1.vidx.length;
   let mass0 = null, mass1 = null;
-  if (doQuint) {
+  if (hatSchnelle) {
     const p0map = _filmPos(s0, nRef), p1map = _filmPos(s1, nRef);
     mass0 = []; mass1 = [];
     for (const mk of _filmMassiveIdx()) {
@@ -5189,27 +5214,18 @@ function filmApply(t) {
     const mp = hatPrev ? sPrev._pos[ki] : -1;
     const mn = hatNext ? sNext._pos[ki] : -1;
     if (vp0 >= 0 && vp1 >= 0) {
-      const m0x = s0.vx[vp0] * spanY, m0y = s0.vy[vp0] * spanY;
-      const m1x = s1.vx[vp1] * spanY, m1y = s1.vy[vp1] * spanY;
-      // Beschleunigung an s0 (x0,y0) und s1 (p2x,p2y) aus der Gravitation
-      // der Massiven — a = sum G*M_j/r_j^3 * (pos_j - pos).
-      let a0x = 0, a0y = 0, a1x = 0, a1y = 0;
-      for (let mi = 0; mi < mass0.length; mi += 3) {
-        const gm = mass0[mi];
-        let dx = mass0[mi + 1] - x0, dy = mass0[mi + 2] - y0;
-        let r2 = dx * dx + dy * dy + 1e-6;
-        let inv = gm / (r2 * Math.sqrt(r2));
-        a0x += inv * dx; a0y += inv * dy;
-        dx = mass1[mi + 1] - p2x; dy = mass1[mi + 2] - p2y;
-        r2 = dx * dx + dy * dy + 1e-6;
-        inv = gm / (r2 * Math.sqrt(r2));
-        a1x += inv * dx; a1y += inv * dy;
-      }
-      // Quintische Hermite: die a-Terme tragen spanY^2 (a ist AU/Jahr^2).
-      bx = Q0 * x0 + Q1 * m0x + Q2 * a0x * spanY2 +
-           Q3 * p2x + Q4 * m1x + Q5 * a1x * spanY2;
-      by = Q0 * y0 + Q1 * m0y + Q2 * a0y * spanY2 +
-           Q3 * p2y + Q4 * m1y + Q5 * a1y * spanY2;
+      // Echte Bahn integrieren statt interpolieren: vorwaerts von s0 bis
+      // zum Playhead, rueckwaerts von s1, dann blenden. Beide folgen der
+      // Physik (gehen hintenrum am Perihel); der Blend trifft s0 (f=0) und
+      // s1 (f=1) exakt und glaettet den Integrationsfehler dazwischen.
+      const nf = Math.max(1, Math.round(f * FILM_INT_SUB));
+      const nb = Math.max(1, Math.round((1 - f) * FILM_INT_SUB));
+      _filmIntegrate(x0, y0, s0.vx[vp0], s0.vy[vp0],
+                     f * spanY, nf, mass0, _filmFwd);
+      _filmIntegrate(p2x, p2y, s1.vx[vp1], s1.vy[vp1],
+                     -(1 - f) * spanY, nb, mass1, _filmBwd);
+      bx = (1 - f) * _filmFwd[0] + f * _filmBwd[0];
+      by = (1 - f) * _filmFwd[1] + f * _filmBwd[1];
     } else if (mp >= 0) {
       const p0x = bp.x0 + sPrev.qx[mp] * fxp;
       const p0y = bp.y0 + sPrev.qy[mp] * fyp;
