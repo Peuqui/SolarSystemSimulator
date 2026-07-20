@@ -1133,7 +1133,18 @@ const I18N = {
         '<tr><td>WebWorker</td><td>Physik auf separatem Thread, f64. Flüssiger bei vielen Körpern, die Oberfläche bleibt reaktiv.</td></tr>' +
         '<tr><td>WebGPU</td><td>Physik als Compute-Shader auf der GPU, f32. Sehr schnell bei vielen Asteroiden, aber geringere Genauigkeit.</td></tr>' +
         '<tr><td>Hybrid</td><td>Massive Körper f64 im Worker (stabil für fragile Systeme), Asteroiden f32 als Testteilchen auf der GPU (schnell). Braucht WebGPU.</td></tr>' +
+        '<tr><td>CUDA-Backend</td><td>Native f64-Physik auf NVIDIA-GPU(s), Multi-GPU-Sharding. Für Hunderttausende Körper und den Film-Modus. Braucht das optionale Backend (Server); ohne bleibt alles andere unverändert nutzbar.</td></tr>' +
       '</table>' +
+      '<h3>Film-Modus (nur CUDA)</h3>' +
+      'Kein Aufzeichnen einer laufenden Simulation, sondern <b>Vorausberechnung</b>: ' +
+      'Die GPU rechnet die Timeline mit vollem Durchsatz voraus in einen Ringpuffer, ' +
+      'der Browser spielt sie wie ein Video ab — scrubben, zurückspulen, live an der ' +
+      'Rechenkante folgen. So bleiben Hunderttausende Körper flüssig, während die GPU ' +
+      'im Hintergrund weiterrechnet. Kollisionen (verschmelzen, abprallen, zerbersten) ' +
+      'erkennt der Server und spielt sie zeitrichtig als Explosionen ab. Die Regler ' +
+      'darunter — Sample-Raster, Abspieltempo, Punkte im Bild, Zwischenbilder — ' +
+      'steuern Aufzeichnungsdichte und Wiedergabe und sind nur mit aktivem ' +
+      'CUDA-Backend bedienbar.<br>' +
       '<h3>Enge Begegnungen präzise</h3>' +
       'Nur im Hybrid. Asteroiden, die einem schweren Körper zu nahe oder zu schnell ' +
       'begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen ' +
@@ -1383,7 +1394,17 @@ const I18N = {
         '<tr><td>WebWorker</td><td>Physics on a separate thread, f64. Smoother with many bodies, the UI stays responsive.</td></tr>' +
         '<tr><td>WebGPU</td><td>Physics as a compute shader on the GPU, f32. Very fast with many asteroids, but lower precision.</td></tr>' +
         '<tr><td>Hybrid</td><td>Massive bodies f64 on the worker (stable for fragile systems), asteroids f32 as test particles on the GPU (fast). Needs WebGPU.</td></tr>' +
+        '<tr><td>CUDA backend</td><td>Native f64 physics on NVIDIA GPU(s), multi-GPU sharding. For hundreds of thousands of bodies and film mode. Needs the optional backend (server); everything else stays usable without it.</td></tr>' +
       '</table>' +
+      '<h3>Film mode (CUDA only)</h3>' +
+      'Not a recording of a running simulation but <b>precomputation</b>: the GPU ' +
+      'races the timeline ahead into a ring buffer at full throughput, and the browser ' +
+      'plays it back like a video — scrub, rewind, follow live at the compute edge. ' +
+      'Hundreds of thousands of bodies stay smooth while the GPU keeps working in the ' +
+      'background. Collisions (merge, bounce, shatter) are detected server-side and ' +
+      'replayed as explosions at the right time. The sliders below — sample interval, ' +
+      'playback speed, points on screen, interpolation — control recording density and ' +
+      'playback and are only active with the CUDA backend running.<br>' +
       '<h3>Precise close encounters</h3>' +
       'Hybrid only. Asteroids whose encounter with a massive body is too close or too ' +
       'fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the ' +
@@ -4124,6 +4145,28 @@ function _cudaSetVisible(visible) {
     if (el) el.style.display = visible ? '' : 'none';
   }
   if (!visible && typeof filmActive !== 'undefined' && filmActive) filmStop();
+  _filmControlsAktiv();
+}
+
+// Film-Bedienelemente (Checkbox + die vier Regler) nur aktiv, wenn das
+// CUDA-Backend als Engine gewaehlt UND verbunden ist. Sonst sichtbar,
+// aber ausgegraut und gesperrt — sie gehoeren zum CUDA-Pfad, ohne den
+// stellen sie nichts ein. (Sichtbarkeit steuert _cudaSetVisible ueber die
+// Backend-Verfuegbarkeit; hier geht es um die Bedienbarkeit je nach
+// gewaehlter Engine.) Die Elemente sitzen in <label>-Wrappern — der
+// ganze Wrapper wird gedimmt, das enthaltene Control gesperrt.
+function _filmControlsAktiv() {
+  const aktiv = typeof useCuda !== 'undefined' && useCuda && cudaReady;
+  for (const id of ['chk-film', 'mob-chk-film',
+                    'film-raster', 'film-speed', 'mob-film-speed',
+                    'film-lod', 'mob-film-lod',
+                    'chk-film-interp', 'mob-chk-film-interp']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.disabled = !aktiv;
+    const lab = el.closest('label');
+    if (lab) lab.style.opacity = aktiv ? '' : '0.4';
+  }
 }
 
 // Netz-Worker: besitzt den WebSocket und zerlegt die Film-Frames.
@@ -4428,8 +4471,17 @@ function initCudaBackend(urlIndex = 0) {
       lastT = msg.times[i];
     }
     for (const ev of msg.evs) filmEvents.push(ev);
-    while (filmQueue.times.length > 2 &&
-           filmQueue.times[1] < filmPlayheadDays - 2 * filmRasterDays()) {
+    // Abgespielte Samples verwerfen, aber GENUG Vergangenheit fuer die
+    // glatte Interpolation behalten: Catmull-Rom braucht das Sample VOR
+    // dem aktuellen Intervall (i-1). Sample-basiert (mind. 3 Vergangenheit
+    // vor dem Playhead) statt zeitbasiert — bei ausgeduennter Zeitachse
+    // (grosse Abstaende) blieb mit der alten 2-Raster-Grenze zu wenig, der
+    // Playhead landete im ersten Puffer-Intervall und fiel auf die Sehne
+    // zurueck (Rest-Pumpen). times[3] >= Playhead sichert times[0..2] als
+    // Vergangenheit. Weiter zurueck liegende Historie holt der Scrub bei
+    // Bedarf ohnehin frisch vom Server (voller Ringpuffer).
+    while (filmQueue.times.length > 4 &&
+           filmQueue.times[3] < filmPlayheadDays) {
       filmQueue.times.shift();
       filmQueue.samples.shift();
     }
@@ -4951,42 +5003,54 @@ function filmApply(t) {
   const b0 = s0.box, b1 = s1.box;
   const fx0 = b0.sx / 65535, fy0 = b0.sy / 65535;
   const fx1 = b1.sx / 65535, fy1 = b1.sy / 65535;
-  // Catmull-Rom statt Sehne: eine glatte Kurve DURCH vier aufeinander-
-  // folgende Sample-Punkte (voriger, s0, s1, naechster) trifft eine
-  // gekruemmte Bahn viel besser als die gerade Verbindung. Das behebt das
-  // Pumpen in Sonnennaehe, wo ein Koerper zwischen zwei Samples einen
-  // grossen Bogen fliegt und die Sehne ihn abschneidet.
+  // Glatte Interpolation statt Sehne: eine Kurve DURCH die Sample-Punkte
+  // trifft eine gekruemmte Bahn viel besser als die gerade Verbindung.
+  // Das behebt das Pumpen in Sonnennaehe, wo ein Koerper zwischen zwei
+  // Samples einen grossen Bogen fliegt und die Sehne ihn abschneidet.
   //
-  // Zeitparametrisiert (Hermite mit zentralen Differenzen als Tangenten),
-  // damit ungleiche Sample-Abstaende — der Server duennt die Zeitachse bei
-  // knapper Bandbreite aus — korrekt behandelt werden. Die vier Gewichte
-  // c0..c3 haengen NUR von f und den Zeitabstaenden ab, sind also pro Frame
-  // konstant; der Loop bleibt fast so billig wie linear (4 statt 2
-  // Multiplikationen je Koordinate).
-  let c0 = 0, c1 = 1 - f, c2 = f, c3 = 0;      // Default: linear
+  // Drei Stufen, je nach verfuegbaren Nachbar-Samples — beim Live-Folgen
+  // haelt der Playhead bewusst ein Sample Reserve (siehe filmTick,
+  // `spitze`), damit die erste Stufe fast immer greift:
+  //   1. Catmull-Rom (i-1..i+2): C1-glatt, hoechste Genauigkeit. Braucht
+  //      ein Sample VORAUS — durch die Reserve fast immer vorhanden.
+  //   2. Kausale Parabel (i-1..i+1): nur Vergangenheit, faengt den Fall
+  //      ab, dass der Puffer doch bis zur Spitze leerlief.
+  //   3. Sehne (i..i+1): letzter Rueckfall, wenn kein Vergangenheits-
+  //      Sample da ist (direkt nach dem Filmstart).
+  // Alle drei biegen zur Bahn, der Uebergang bleibt weich (kein Zuckeln
+  // wie beim harten Wechsel glatt/Sehne). Die Gewichte haengen nur von f
+  // und den Zeitabstaenden ab (zeitparametrisiert gegen ungleiche
+  // Sample-Abstaende), sind also pro Frame konstant.
   const iPrev = i - 1, iNext = j + 1;
-  const glatt = filmInterp && span > 0 &&
-                iPrev >= 0 && iNext < q.times.length;
-  let sPrev = null, sNext = null, bp, bn, fxp, fyp, fxn, fyn;
-  if (glatt) {
+  const hatPrev = filmInterp && span > 0 && iPrev >= 0;
+  const hatNext = hatPrev && iNext < q.times.length;
+  // Sehne (Stufe 3)
+  const cL1 = 1 - f, cL2 = f;
+  // Parabel (Stufe 2): Lagrange durch (t0,P0),(t1,P1),(t2,P2)
+  let cP0 = 0, cP1 = cL1, cP2 = cL2;
+  // Catmull-Rom (Stufe 1): Hermite, zentrale Differenzen als Tangenten
+  let cC0 = 0, cC1 = cL1, cC2 = cL2, cC3 = 0;
+  let sPrev = null, sNext = null, bp, fxp, fyp, bn, fxn, fyn;
+  if (hatPrev) {
     sPrev = q.samples[iPrev];
-    sNext = q.samples[iNext];
     _filmPos(sPrev, nRef);
+    bp = sPrev.box; fxp = bp.sx / 65535; fyp = bp.sy / 65535;
+    const h1 = q.times[i] - q.times[iPrev];
+    const h2 = span;
+    cP0 = f * (f - 1) * h2 * h2 / (h1 * (h1 + h2));
+    cP2 = f * (f * h2 + h1) / (h1 + h2);
+    cP1 = 1 - cP0 - cP2;
+  }
+  if (hatNext) {
+    sNext = q.samples[iNext];
     _filmPos(sNext, nRef);
-    bp = sPrev.box; bn = sNext.box;
-    fxp = bp.sx / 65535; fyp = bp.sy / 65535;
-    fxn = bn.sx / 65535; fyn = bn.sy / 65535;
+    bn = sNext.box; fxn = bn.sx / 65535; fyn = bn.sy / 65535;
     const u = f, u2 = u * u, u3 = u2 * u;
     const h00 = 2 * u3 - 3 * u2 + 1, h01 = -2 * u3 + 3 * u2;
     const h10 = u3 - 2 * u2 + u,     h11 = u3 - u2;
-    // Tangenten-Faktoren: h * m1 mit m1 = (P2-P0)/(t2-t0) usw. Nach
-    // Koerper-unabhaengiger Umgruppierung ergeben sich vier Gewichte.
-    const a = h10 * span / (q.times[j] - q.times[iPrev]);   // an P0/P2
-    const bb = h11 * span / (q.times[iNext] - q.times[i]);  // an P1/P3
-    c0 = -a;
-    c1 = h00 - bb;
-    c2 = h01 + a;
-    c3 = bb;
+    const a = h10 * span / (q.times[j] - q.times[iPrev]);
+    const bb = h11 * span / (q.times[iNext] - q.times[i]);
+    cC0 = -a; cC1 = h00 - bb; cC2 = h01 + a; cC3 = bb;
   }
   _filmInView.fill(0);
   // GL-Direktpfad: das Vertex-Array [x,y,r,g,b] wird HIER im Dekodier-
@@ -5033,21 +5097,26 @@ function filmApply(t) {
     const p2x = b1.x0 + s1.qx[m1] * fx1;
     const p2y = b1.y0 + s1.qy[m1] * fy1;
     let bx, by;
-    // Catmull-Rom nur, wenn der Koerper in ALLEN vier Samples steckt —
-    // bei LOD-Wechsel/Kamerawanderung fehlt er in Nachbar-Samples, dann
-    // pro Koerper auf die Sehne zurueckfallen (kein Sprung, nur weniger
-    // glatt fuer genau diesen Punkt).
-    const mp = glatt ? sPrev._pos[ki] : -1;
-    const mn = glatt ? sNext._pos[ki] : -1;
-    if (mp >= 0 && mn >= 0) {
+    // Stufe je Koerper nach verfuegbaren Nachbar-Samples (der Koerper
+    // kann bei LOD-Wechsel/Kamerawanderung in einem Nachbar-Sample fehlen,
+    // obwohl es global vorhanden ist): Catmull-Rom, sonst Parabel, sonst
+    // Sehne. Der Downgrade ist sanft — alle biegen zur Bahn.
+    const mp = hatPrev ? sPrev._pos[ki] : -1;
+    const mn = hatNext ? sNext._pos[ki] : -1;
+    if (mp >= 0) {
       const p0x = bp.x0 + sPrev.qx[mp] * fxp;
       const p0y = bp.y0 + sPrev.qy[mp] * fyp;
-      const p3x = bn.x0 + sNext.qx[mn] * fxn;
-      const p3y = bn.y0 + sNext.qy[mn] * fyn;
-      bx = c0 * p0x + c1 * x0 + c2 * p2x + c3 * p3x;
-      by = c0 * p0y + c1 * y0 + c2 * p2y + c3 * p3y;
+      if (mn >= 0) {
+        const p3x = bn.x0 + sNext.qx[mn] * fxn;
+        const p3y = bn.y0 + sNext.qy[mn] * fyn;
+        bx = cC0 * p0x + cC1 * x0 + cC2 * p2x + cC3 * p3x;   // Catmull-Rom
+        by = cC0 * p0y + cC1 * y0 + cC2 * p2y + cC3 * p3y;
+      } else {
+        bx = cP0 * p0x + cP1 * x0 + cP2 * p2x;               // Parabel
+        by = cP0 * p0y + cP1 * y0 + cP2 * p2y;
+      }
     } else {
-      bx = x0 + (p2x - x0) * f;
+      bx = x0 + (p2x - x0) * f;                              // Sehne
       by = y0 + (p2y - y0) * f;
     }
     b.x = bx;
@@ -5237,8 +5306,17 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // um Netz-Jitter zu schlucken — ein festes 2-Raster-Polster war
     // remote nur ~0,3 s und lief bei jedem Schluckauf leer
     // (Sekundentakt-Ruckeln). Angezeigt wird weiterhin nur Berechnetes.
-    kante = Math.max(filmQueue.tail,
-                     filmQueue.times[filmQueue.times.length - 1]);
+    // Ein Sample Reserve VOR der Spitze: die glatte Interpolation
+    // (Catmull-Rom) braucht ein Sample VORAUS. Ohne diese Reserve reitet
+    // der Playhead auf dem neuesten Sample, dort fehlt das Voraus-Sample
+    // und die Interpolation faellt auf die Sehne zurueck — genau das
+    // Pumpen in Sonnennaehe. Die Reserve verzoegert die Anzeige um ~1
+    // Sample (~50 ms, kaum merklich) und passt sich der Produktionsrate
+    // von selbst an: produziert die GPU langsam, waechst der Abstand nicht.
+    const L = filmQueue.times.length;
+    const spitze = L >= 2 ? filmQueue.times[L - 2]
+                          : filmQueue.times[L - 1];
+    kante = Math.max(filmQueue.tail, spitze);
   }
   if (filmLive && filmQueue) {
     // Der Kante mit Producer-Rate folgen — STRIKT MONOTON: laeuft die
@@ -7199,6 +7277,7 @@ function applyEngine(mode, persist) {
   useGPU    = (mode === 'gpu');
   useHybrid = (mode === 'hybrid');
   useCuda   = (mode === 'cuda');
+  _filmControlsAktiv();   // Film-Regler nur mit aktivem CUDA bedienbar
   // Explosionen gehoeren zur bisherigen Engine-Session — beim Wechsel
   // verwerfen, damit keine verwaisten Flashes stehenbleiben.
   collisionFlashes.length = 0;
