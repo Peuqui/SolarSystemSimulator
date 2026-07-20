@@ -5044,7 +5044,6 @@ function _filmIntegrate(px, py, vx, vy, dt, n, mass, out) {
 }
 const _filmIntA = [0, 0], _filmIntA2 = [0, 0];
 const _filmFwd = [0, 0], _filmBwd = [0, 0];
-const FILM_INT_SUB = 24;   // Substeps ueber ein volles Sample-Intervall
 
 // Indizes der massiven Koerper (nicht-Asteroiden mit Masse) — die
 // Gravitationsquellen fuer die Beschleunigung der schnellen Koerper.
@@ -5218,8 +5217,24 @@ function filmApply(t) {
       // zum Playhead, rueckwaerts von s1, dann blenden. Beide folgen der
       // Physik (gehen hintenrum am Perihel); der Blend trifft s0 (f=0) und
       // s1 (f=1) exakt und glaettet den Integrationsfehler dazwischen.
-      const nf = Math.max(1, Math.round(f * FILM_INT_SUB));
-      const nb = Math.max(1, Math.round((1 - f) * FILM_INT_SUB));
+      //
+      // Substep-Zahl ADAPTIV nach dem Bahnwinkel pro Sample (~ |v|*dt/r,
+      // r = Abstand zur naechsten Masse): der Blend-Fehler in der
+      // Intervall-Mitte skaliert mit 1/N^2 und wird bei grossen Winkeln
+      // (Perihel) als Kerbe sichtbar. Konstante Winkelaufloesung von
+      // ~3,75 Grad/Substep haelt die Kerbe klein, ohne ueberall teuer zu
+      // rechnen — nur die wenigen extremen Durchgaenge bekommen hohes N.
+      let r2min = Infinity;
+      for (let mi = 0; mi < mass0.length; mi += 3) {
+        const dx = mass0[mi + 1] - x0, dy = mass0[mi + 2] - y0;
+        const d = dx * dx + dy * dy;
+        if (d < r2min) r2min = d;
+      }
+      const vabs = Math.hypot(s0.vx[vp0], s0.vy[vp0]);
+      const winkel = vabs * spanY / Math.max(Math.sqrt(r2min), 1e-4);
+      const N = Math.max(16, Math.min(96, Math.round(winkel / 0.0654)));
+      const nf = Math.max(1, Math.round(f * N));
+      const nb = Math.max(1, Math.round((1 - f) * N));
       _filmIntegrate(x0, y0, s0.vx[vp0], s0.vy[vp0],
                      f * spanY, nf, mass0, _filmFwd);
       _filmIntegrate(p2x, p2y, s1.vx[vp1], s1.vy[vp1],
