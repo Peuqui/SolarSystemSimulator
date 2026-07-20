@@ -63,7 +63,18 @@ BW_FENSTER_S = 0.2
 
 # Film-Protokollversion (Bits 4-7 des Flag-Bytes in MSG_FILM_START).
 # 2 = viertes u8-Array `injiziert` fuer den LOD-Vorrang.
-FILM_PROTO_VERSION = 2
+# 3 = Sample = 16 B/Koerper (x|y|vx|vy) + selektiver v-Block je Frame
+#     (Hermite-Interpolation schneller sonnennaher Koerper).
+FILM_PROTO_VERSION = 3
+
+# Geschwindigkeitsschwelle (AU/Jahr, quadriert), ab der ein dargestellter
+# Koerper seine Geschwindigkeit fuer die Hermite-Interpolation mitbekommt.
+# Schnelle Koerper sind fast immer sonnennah (Kepler v ~ 1/sqrt(r)) und
+# haben stark gekruemmte Bahnen — genau dort schneidet die
+# Sehne/Catmull-Rom den Bogen ab. Der Wert ist bewusst moderat: an der
+# Grenze ist Catmull-Rom noch gut, der Client faellt dort sanft zurueck.
+# Kalibriert an einer Sonnentaucher-Szene (siehe bench, Schritt 4).
+FILM_V_SCHNELL2 = 100.0
 
 HEADER = struct.Struct("<IId")   # typ, N/pad, dtYears
 MSG_FULL = 0
@@ -139,9 +150,13 @@ class FilmSession:
         self.raster_days = max(0.1, raster_days)
         self.t0 = t0_days
         self.n = len(x)
-        # Reines Punkte-Streaming: Sample = nur x|y f32 (8 Bytes/Koerper);
-        # Masse/Sichtbarkeit laufen als Ereignisse im Event-Ring.
-        self.sample_bytes = 8 * self.n
+        # Sample = x|y|vx|vy f32 (16 Bytes/Koerper). Die Geschwindigkeit
+        # dient der glatten Anzeige (Hermite-Interpolation schneller
+        # sonnennaher Koerper gegen das Perihel-Pumpen); Masse/Sichtbarkeit
+        # laufen als Ereignisse im Event-Ring. Der Ring haelt dadurch halb
+        # so viel Rueckspul-Historie wie beim reinen x|y-Streaming — bei
+        # Bedarf --ring-gib erhoehen.
+        self.sample_bytes = 16 * self.n
         self.capacity = max(2000, int(self.MAX_BYTES // self.sample_bytes))
         self.shm = shared_memory.SharedMemory(
             create=True, size=self.capacity * self.sample_bytes)
@@ -312,12 +327,14 @@ class FilmSession:
         blocks = []
         box = None
         for i in idxs:
-            raw = np.frombuffer(buf, "<f4", 2 * self.n,
+            raw = np.frombuffer(buf, "<f4", 4 * self.n,
                                 (i % self.capacity) * s)
             t_i = self.t0 + (i + 1) * self.raster_days
             alive_i = self._kill_t > t_i
             x = raw[0:self.n]
             y = raw[self.n:2 * self.n]
+            vx = raw[2 * self.n:3 * self.n]
+            vy = raw[3 * self.n:4 * self.n]
             if box is None:
                 if hw <= 0 or hh <= 0:
                     # Auto-Box: gesamte Koerperverteilung (+5% Rand)
@@ -348,8 +365,25 @@ class FilmSession:
                          0, 65535).astype("<u2")
             qy = np.clip((y[sel] - y0) / spany * 65535.0,
                          0, 65535).astype("<u2")
+            # Selektives Geschwindigkeits-Streaming: NUR schnelle
+            # dargestellte Koerper bekommen vx,vy fuer die
+            # Hermite-Interpolation. Schnelle Koerper sind fast immer
+            # sonnennah (Kepler: v ~ 1/sqrt(r)) und haben stark gekruemmte
+            # Bahnen — genau da schneidet die Sehne/Catmull-Rom den Bogen
+            # ab (Pumpen). Der Rest bleibt bei Position + Catmull-Rom.
+            # Absoluter Schwellwert (kein Zustand): deterministisch, also
+            # beim Rueckspulen identisch. Die Grenze liegt bei moderater
+            # Geschwindigkeit, wo Catmull-Rom ohnehin schon gut ist —
+            # Koerper, die um die Grenze wackeln, faellt der Client sanft
+            # auf Catmull-Rom zurueck (v fehlt an einem Intervall-Ende).
+            vsel = sel[vx[sel] ** 2 + vy[sel] ** 2 > FILM_V_SCHNELL2]
+            vblock = struct.pack("<I", len(vsel)) + \
+                vsel.astype("<u4").tobytes() + \
+                vx[vsel].astype("<f4").tobytes() + \
+                vy[vsel].astype("<f4").tobytes()
             block = struct.pack("<I", len(sel)) + \
-                sel.astype("<u4").tobytes() + qx.tobytes() + qy.tobytes()
+                sel.astype("<u4").tobytes() + qx.tobytes() + qy.tobytes() + \
+                vblock
             block += b"\x00" * ((-len(block)) % 4)
             blocks.append(block)
 

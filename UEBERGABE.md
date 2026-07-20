@@ -251,6 +251,18 @@ sauber (Dump + Rekonstruktion über `filmStop`). Fix wäre einzeilig
 (Rekonstruktion im `onclose` vor dem Nullen), auf Nutzerwunsch vorerst
 nicht gebaut — im Normalbetrieb tritt der Fall nicht auf.
 
+### 3.1d Rückspul-Ring in den VRAM (Idee, nicht umgesetzt)
+Der Sample-Ring liegt in Shared Memory (`/dev/shm`, tmpfs = RAM). Die
+freien Erkennungskarten (RTX 8000, je 48 GB) haben reichlich ungenutztes
+VRAM — dort ließe sich eine VIEL längere Rückspul-Historie halten,
+besonders seit das v-Streaming den Ring auf 16 B/Körper verdoppelt.
+
+**Haken:** Der Ring entkoppelt heute zwei getrennte Prozesse — Producer
+(GPU) schreibt, Server liest ihn in µs direkt aus dem RAM. Im VRAM müsste
+der Server per CUDA-IPC zugreifen und pro `build_frame` D2H zurücklesen.
+Das verlagert Transferlast in einen heute blitzschnellen Pfad. Vor dem
+Bau messen: build_frame-Latenz shm gegen VRAM+D2H.
+
 ### 3.2 nginx (braucht sudo)
 - `sites-available/narnia` ist seit Mai **nicht synchron** mit
   `sites-enabled/narnia`. Aktiv ist `sites-enabled` (kein Symlink!).

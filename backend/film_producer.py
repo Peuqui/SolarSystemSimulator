@@ -926,13 +926,17 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             # Erkennung laeuft UEBERLAPPT auf der Erkennungs-GPU, waehrend
             # die Physik-GPUs schon den naechsten Batch rechnen.
             future = executor.submit(analyze_batch_timed, outs, k)
-            # Reines Punkte-Streaming: nur x|y (8 Bytes/Koerper) — alles
-            # andere (Masse/Sichtbarkeit) laeuft als Ereignis.
+            # x|y|vx|vy je Koerper (16 Bytes). Die Geschwindigkeit dient
+            # der glatten Anzeige-Interpolation: der Client rechnet fuer
+            # schnelle sonnennahe Koerper Hermite (exakte Tangente) statt
+            # Catmull-Rom (aus Nachbarn geschaetzte Tangente), was das
+            # Pumpen am Perihel behebt. Masse/Sichtbarkeit laufen weiter
+            # als Ereignis. outs[i] ist bereits [x|y|vx|vy] (4n).
             _t = time.monotonic()
             for i in range(K):
                 slot = (k + i) % capacity
                 buf[slot * sample_bytes:(slot + 1) * sample_bytes] = \
-                    outs[i][0:2 * n].tobytes()
+                    outs[i][0:4 * n].tobytes()
             diag_t_ring += time.monotonic() - _t
             k += K
             if ast_bounce and k % 500 == 0 and bounce_count:

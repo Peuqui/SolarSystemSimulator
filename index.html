@@ -4184,10 +4184,14 @@ function _filmControlsAktiv() {
 const NET_WORKER_SRC = `
 let ws = null;
 
-// v4-Frame zerlegen: u32 status | u32 N | u32 count | u32 evCount |
+// v3-Frame zerlegen: u32 status | u32 N | u32 count | u32 evCount |
 // f64 tail, head, boxX0, boxY0, boxSpanX, boxSpanY |
-// count x f64 zeiten | count x (u32 visCount | u32 idx[] | u16 qx[] |
-// u16 qy[] | pad4) | evCount x Ereignis(32 B)
+// count x f64 zeiten |
+// count x ( u32 visCount | u32 idx[] | u16 qx[] | u16 qy[] |
+//           u32 vCount | u32 vidx[] | f32 vx[] | f32 vy[] | pad4 ) |
+// evCount x Ereignis(32 B).
+// Der v-Block traegt die Geschwindigkeit NUR der schnellen sonnennahen
+// Koerper (Hermite-Interpolation gegen das Perihel-Pumpen).
 function zerlegeFilm(buf) {
   const hdr = new Uint32Array(buf, 0, 4);
   const count = hdr[2], evCount = hdr[3];
@@ -4201,13 +4205,16 @@ function zerlegeFilm(buf) {
   let off = 64 + 8 * count;
   for (let i = 0; i < count; i++) {
     const visCount = dv.getUint32(off, true);
-    samples.push({
-      idx: new Uint32Array(buf, off + 4, visCount),
-      qx: new Uint16Array(buf, off + 4 + 4 * visCount, visCount),
-      qy: new Uint16Array(buf, off + 4 + 6 * visCount, visCount),
-      box,
-    });
-    const blockLen = 4 + 8 * visCount;
+    const idx = new Uint32Array(buf, off + 4, visCount);
+    const qx = new Uint16Array(buf, off + 4 + 4 * visCount, visCount);
+    const qy = new Uint16Array(buf, off + 4 + 6 * visCount, visCount);
+    let voff = off + 4 + 8 * visCount;
+    const vCount = dv.getUint32(voff, true);
+    const vidx = new Uint32Array(buf, voff + 4, vCount);
+    const vx = new Float32Array(buf, voff + 4 + 4 * vCount, vCount);
+    const vy = new Float32Array(buf, voff + 4 + 8 * vCount, vCount);
+    samples.push({ idx, qx, qy, vidx, vx, vy, box });
+    const blockLen = 4 + 8 * visCount + 4 + 12 * vCount;
     off += blockLen + ((4 - (blockLen % 4)) % 4);
   }
   const evs = [];
@@ -4755,11 +4762,12 @@ function filmStart() {
   // N (isAst) + N (isStarBH) + N (injiziert). (Ein frueherer
   // 49N-Tippfehler ueberschrieb isAst[0] — die SONNE wurde zum
   // Asteroiden erklaert und der Waechter killte alle Astis sofort.)
-  // Bits 4-7: Film-Protokollversion (2 — viertes u8-Array `injiziert`).
+  // Bits 4-7: Film-Protokollversion (3 — Sample 16 B/Koerper x|y|vx|vy
+  // plus selektiver v-Block je Frame fuer die Hermite-Interpolation).
   // Ein Server mit anderem Format lehnt ab, statt dass ein alter Tab
   // Muell dekodiert. Bit 0: Asteroid-x-Asteroid-Bounce (UI-Toggle).
   new Uint8Array(buf, 24 + 52 * N, 1)[0] =
-    (2 << 4) | (astAstCollisions ? 1 : 0);
+    (3 << 4) | (astAstCollisions ? 1 : 0);
   cudaSocket.send(buf);
   filmRefs = src.slice();
   filmEvents = [];
@@ -4983,6 +4991,18 @@ function _filmPos(sample, n) {
   return sample._pos;
 }
 
+// Wie _filmPos, aber fuer den v-Block: Original-Index -> Stelle in
+// vx/vy (oder -1). Nur die schnellen sonnennahen Koerper haben v.
+function _filmVPos(sample, n) {
+  if (!sample._vpos) {
+    sample._vpos = new Int32Array(n).fill(-1);
+    for (let m = 0; m < sample.vidx.length; m++) {
+      sample._vpos[sample.vidx[m]] = m;
+    }
+  }
+  return sample._vpos;
+}
+
 function filmApply(t) {
   const q = filmQueue;
   if (!q || !filmRefs || q.times.length === 0) return;
@@ -5021,6 +5041,20 @@ function filmApply(t) {
   // wie beim harten Wechsel glatt/Sehne). Die Gewichte haengen nur von f
   // und den Zeitabstaenden ab (zeitparametrisiert gegen ungleiche
   // Sample-Abstaende), sind also pro Frame konstant.
+  const f2 = f * f, f3 = f2 * f;
+  // Hermite-Basis (Tangenten-Interpolation) — von Stufe 0 (echte v) UND
+  // Stufe 1 (Catmull-Rom, geschaetzte v) genutzt.
+  const H00 = 2 * f3 - 3 * f2 + 1, H01 = -2 * f3 + 3 * f2;
+  const H10 = f3 - 2 * f2 + f,     H11 = f3 - f2;
+  // Stufe 0: Hermite mit ECHTER Geschwindigkeit (v-Block des Streams).
+  // Hoechste Genauigkeit — behebt das Perihel-Pumpen, das auch
+  // Catmull-Rom (aus Nachbarn geschaetzte Tangente) nicht ganz faengt.
+  // Nur die schnellen sonnennahen Koerper tragen v; der Rest laeuft ueber
+  // die Stufen darunter.
+  const spanY = span / 365.25;   // Sim-Tage -> Jahre (v ist AU/Jahr)
+  const hermite = filmInterp && span > 0;
+  const v0pos = (hermite && s0.vidx) ? _filmVPos(s0, nRef) : null;
+  const v1pos = (hermite && s1.vidx) ? _filmVPos(s1, nRef) : null;
   const iPrev = i - 1, iNext = j + 1;
   const hatPrev = filmInterp && span > 0 && iPrev >= 0;
   const hatNext = hatPrev && iNext < q.times.length;
@@ -5028,7 +5062,7 @@ function filmApply(t) {
   const cL1 = 1 - f, cL2 = f;
   // Parabel (Stufe 2): Lagrange durch (t0,P0),(t1,P1),(t2,P2)
   let cP0 = 0, cP1 = cL1, cP2 = cL2;
-  // Catmull-Rom (Stufe 1): Hermite, zentrale Differenzen als Tangenten
+  // Catmull-Rom (Stufe 1): Hermite mit zentralen Differenzen als Tangenten
   let cC0 = 0, cC1 = cL1, cC2 = cL2, cC3 = 0;
   let sPrev = null, sNext = null, bp, fxp, fyp, bn, fxn, fyn;
   if (hatPrev) {
@@ -5045,12 +5079,9 @@ function filmApply(t) {
     sNext = q.samples[iNext];
     _filmPos(sNext, nRef);
     bn = sNext.box; fxn = bn.sx / 65535; fyn = bn.sy / 65535;
-    const u = f, u2 = u * u, u3 = u2 * u;
-    const h00 = 2 * u3 - 3 * u2 + 1, h01 = -2 * u3 + 3 * u2;
-    const h10 = u3 - 2 * u2 + u,     h11 = u3 - u2;
-    const a = h10 * span / (q.times[j] - q.times[iPrev]);
-    const bb = h11 * span / (q.times[iNext] - q.times[i]);
-    cC0 = -a; cC1 = h00 - bb; cC2 = h01 + a; cC3 = bb;
+    const a = H10 * span / (q.times[j] - q.times[iPrev]);
+    const bb = H11 * span / (q.times[iNext] - q.times[i]);
+    cC0 = -a; cC1 = H00 - bb; cC2 = H01 + a; cC3 = bb;
   }
   _filmInView.fill(0);
   // GL-Direktpfad: das Vertex-Array [x,y,r,g,b] wird HIER im Dekodier-
@@ -5097,13 +5128,21 @@ function filmApply(t) {
     const p2x = b1.x0 + s1.qx[m1] * fx1;
     const p2y = b1.y0 + s1.qy[m1] * fy1;
     let bx, by;
-    // Stufe je Koerper nach verfuegbaren Nachbar-Samples (der Koerper
-    // kann bei LOD-Wechsel/Kamerawanderung in einem Nachbar-Sample fehlen,
-    // obwohl es global vorhanden ist): Catmull-Rom, sonst Parabel, sonst
-    // Sehne. Der Downgrade ist sanft — alle biegen zur Bahn.
+    // Stufe je Koerper. Stufe 0: Hermite mit echter Geschwindigkeit, wenn
+    // der Koerper in BEIDEN Bracketing-Samples ein v traegt (schnell +
+    // durchgehend dargestellt). Sonst die positions-basierten Stufen:
+    // Catmull-Rom, Parabel, Sehne. Alle biegen zur Bahn — der Downgrade
+    // ist sanft, auch wenn ein Koerper das v-Kriterium wechselt.
+    const vp0 = v0pos ? v0pos[ki] : -1;
+    const vp1 = v1pos ? v1pos[ki] : -1;
     const mp = hatPrev ? sPrev._pos[ki] : -1;
     const mn = hatNext ? sNext._pos[ki] : -1;
-    if (mp >= 0) {
+    if (vp0 >= 0 && vp1 >= 0) {
+      const m0x = s0.vx[vp0] * spanY, m0y = s0.vy[vp0] * spanY;
+      const m1x = s1.vx[vp1] * spanY, m1y = s1.vy[vp1] * spanY;
+      bx = H00 * x0 + H10 * m0x + H01 * p2x + H11 * m1x;     // Hermite (echt)
+      by = H00 * y0 + H10 * m0y + H01 * p2y + H11 * m1y;
+    } else if (mp >= 0) {
       const p0x = bp.x0 + sPrev.qx[mp] * fxp;
       const p0y = bp.y0 + sPrev.qy[mp] * fyp;
       if (mn >= 0) {
