@@ -24,6 +24,12 @@ import time
 import numpy as np
 
 
+# Diagnose: Produktions-/Verbrauchsbilanz. Beantwortet, ob der Player an
+# der Kante klebt, weil die GPU nicht nachkommt (Produktionsrate <
+# Abspielrate), oder weil der Ueberschreib-Schutz den Producer anhaelt
+# (Drossel-Anteil > 0). Sekunden zwischen zwei Log-Zeilen.
+DIAG_INTERVAL_S = 2.0
+
 EV_BYTES = 32    # Ereignis: f64 tTage | u32 a (Ueberlebender/0xFFFFFFFF) |
 #                  u32 b (Verlierer) | f32 neueMasse | u32 kind |
 #                  f32 x | f32 y (exakter Ereignis-Ort — der Client kann
@@ -55,9 +61,19 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     # Multi-GPU lohnt erst, wenn die Rechenlast den Barrier-Overhead
     # (~PCIe-Roundtrips pro Substep) klar uebersteigt — gemessen ab
     # ~30k Asteroiden. Darunter ist die beste Einzelkarte schneller.
+    #
+    # ACHTUNG, im Betrieb gegengemessen (n=317k, Film-Modus):
+    #     3 GPUs Physik + RTX-Erkennung: 11,0-11,3 Tage/s
+    #     1 GPU  Physik + V100-Erkennung: 1,7-2,2 Tage/s
+    # Die Einzelkarte ist also 5-6x LANGSAMER, obwohl der isolierte
+    # Kernel-Benchmark in test_kernel.py das Gegenteil nahelegt (dort
+    # 1 GPU bis 200k vorn). Der Benchmark misst den Kernel ohne die
+    # Erkennungs-Pipeline; sobald diese mitlaeuft, kehrt sich das Bild um.
+    # Die Schwelle daher NICHT nach dem Benchmark anpassen.
+    MULTI_GPU_AB = 30_000
     n_ast_total = int(np.count_nonzero(
         np.asarray(state["isAst"], dtype=np.uint8)))
-    phys_devs = pick_devices() if n_ast_total >= 30000 \
+    phys_devs = pick_devices() if n_ast_total >= MULTI_GPU_AB \
         else pick_devices()[:1]
     sim = NBodyCuda(phys_devs)
     # Kollisions-/Bounce-Erkennung auf die zweitbeste f64-GPU auslagern:
@@ -95,6 +111,28 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     # vis/real_r aendern sich nur bei Merges/Kills — nur dann neu auf die
     # Erkennungs-GPU laden statt bei jedem Sample (spart 2 H2D/Sample).
     det_dirty = [False]
+    # Zeitanteile INNERHALB der Erkennung. Sie laeuft im Pipeline-Thread,
+    # deshalb Listen statt nonlocal. Trennt GPU-Anteile (merge-det,
+    # bounce-det) vom reinen Host-Anteil (bounce-host: bounce_deltas
+    # rechnet komplett auf der CPU) — nur so ist entscheidbar, welcher
+    # Teil sich ueberhaupt auf die GPU verlagern laesst.
+    diag_t_merge_det = [0.0]
+    diag_t_bounce_det = [0.0]
+    diag_t_bounce_host = [0.0]
+    # Kandidatenpaare im Gitter-Vorfilter: der eigentliche Kostentreiber
+    # der Bounce-Erkennung. Die Zellgroesse h richtet sich nach der
+    # GESCHWINDIGKEIT der schnellsten 5% und gilt global — in dichten
+    # Clustern landen dadurch sehr viele Koerper in derselben Zelle und
+    # die Paarzahl waechst quadratisch. Hier wird gezaehlt, wie viele
+    # Paare tatsaechlich durch den f32-Vorfilter muessen.
+    diag_kandidaten = [0]
+    diag_zellgroesse = [0.0]
+    diag_v95 = [0.0]           # 95-Perzentil der ABSOLUTEN Geschwindigkeit
+    diag_disp95 = [0.0]        # 95-Perzentil der LOKALEN Dispersion
+    diag_zellbelegung = [0.0]  # groesste Zellbelegung (Paare wachsen quadratisch)
+    diag_nachbardiff = [0.0]   # Geschwindigkeitsdifferenz benachbarter Zellmittel
+    diag_dispmax = [0.0]       # Maximum statt Perzentil (Korrektheitsgrenze)
+    diag_nbmax = [0.0]
 
     shm = shared_memory.SharedMemory(name=shm_name)
     buf = shm.buf
@@ -279,7 +317,9 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             axp = gx[ai].astype(cp.float64)
             ayp = gy[ai].astype(cp.float64)
             sp = cp.hypot(gvx[ai], gvy[ai]).astype(cp.float64)
-            h = max(1e-4, 2.0 * float(cp.percentile(sp, 95)) * dt_y)
+            v95 = float(cp.percentile(sp, 95))
+            h = max(1e-4, 2.0 * v95 * dt_y)
+            diag_zellgroesse[0] = h
             ix = cp.floor(axp / h).astype(cp.int64)
             iy = cp.floor(ayp / h).astype(cp.int64)
 
@@ -289,6 +329,52 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             key = cell_key(ix, iy)
             order = cp.argsort(key)
             ks = key[order]
+
+            # DIAGNOSE (misst nur, aendert nichts): Die Suchreichweite h
+            # leitet sich aus der ABSOLUTEN Bahngeschwindigkeit ab (~6
+            # AE/Jahr). Fuer Kollisionen zaehlt aber nur die RELATIVE
+            # Geschwindigkeit — in einer gemeinsam fliegenden Wolke ist die
+            # um Groessenordnungen kleiner. Hier wird die lokale Dispersion
+            # (Abweichung vom Zellmittel) gemessen, um zu beziffern, wie
+            # weit die heutige Reichweite ueber dem Noetigen liegt.
+            uniq, inv, counts = cp.unique(key, return_inverse=True,
+                                          return_counts=True)
+            mvx = cp.bincount(inv, weights=gvx[ai].astype(cp.float64),
+                              minlength=int(uniq.size)) / counts
+            mvy = cp.bincount(inv, weights=gvy[ai].astype(cp.float64),
+                              minlength=int(uniq.size)) / counts
+            disp = cp.hypot(gvx[ai].astype(cp.float64) - mvx[inv],
+                            gvy[ai].astype(cp.float64) - mvy[inv])
+            diag_v95[0] = v95
+            diag_disp95[0] = float(cp.percentile(disp, 95))
+            # MAXIMUM zusaetzlich: fuer die Korrektheit zaehlt nicht das
+            # Perzentil, sondern der schnellste Ausreisser — sonst gehen
+            # genau dessen Treffer verloren. Liegt das Maximum nahe am
+            # Perzentil, genuegt eine einfache globale Reichweite; klafft
+            # es weit auseinander, braucht es einen Sonderdurchgang fuer
+            # die Ausreisser (deutlich mehr Code an kritischer Stelle).
+            diag_dispmax[0] = float(disp.max())
+            diag_zellbelegung[0] = float(counts.max())
+            # Differenz der ZELLMITTEL zwischen benachbarten Zellen. Die
+            # Dispersion allein genuegt als Reichweiten-Mass NICHT: zwei
+            # benachbarte Zellen koennen je fuer sich kohaerent sein und
+            # trotzdem mit voller Relativgeschwindigkeit aufeinander
+            # zulaufen (kreuzende Stroeme). Genau diese Paare duerfen nicht
+            # verlorengehen. Gemessen wird ueber den (1,0)-Nachbarn als
+            # Stichprobe — reicht, um die Groessenordnung zu beziffern.
+            nb_key = cell_key(ix + 1, iy)
+            nb_pos = cp.searchsorted(uniq, nb_key)
+            nb_ok = (nb_pos < uniq.size)
+            nb_pos = cp.where(nb_ok, nb_pos, 0)
+            nb_treffer = nb_ok & (uniq[nb_pos] == nb_key)
+            if bool(nb_treffer.any()):
+                d_nb = cp.hypot(mvx[nb_pos] - mvx[inv],
+                                mvy[nb_pos] - mvy[inv])[nb_treffer]
+                diag_nachbardiff[0] = float(cp.percentile(d_nb, 95))
+                diag_nbmax[0] = float(d_nb.max())
+            else:
+                diag_nachbardiff[0] = 0.0
+                diag_nbmax[0] = 0.0
 
             def sweep_hits(pi, pj):
                 # f32-Vorfilter eines Kandidaten-Chunks: Beruehrung mit
@@ -326,6 +412,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 hi_r = cp.searchsorted(ks, k2, side="right")
                 lens = hi_r - lo
                 tot = int(lens.sum())
+                diag_kandidaten[0] += tot
                 if tot == 0:
                     continue
                 cum = cp.cumsum(lens)
@@ -376,10 +463,16 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         weil die Anwendung pipelined ein Sample spaeter erfolgt."""
         dt_y = raster_days / 365.25
         hi, hj = hits_host
-        x = sample[0:n].astype(np.float64)
-        y = sample[n:2 * n].astype(np.float64)
-        vxa = sample[2 * n:3 * n].astype(np.float64)
-        vya = sample[3 * n:4 * n].astype(np.float64)
+        # NUR Views auf die f32-Daten — die vier Arrays werden
+        # ausschliesslich ueber [hi]/[hj] indiziert, also ein paar Dutzend
+        # Kollisionspartner. Ein volles .astype(float64) ueber alle n
+        # Koerper kostete 4 x 2 MB Allokation PRO Sample und hielt dabei
+        # den GIL; die Erkennung konnte deshalb nicht mit der Physik
+        # ueberlappen (gemessen: wait ~= erkennung, also null Parallelitaet).
+        x = sample[0:n]
+        y = sample[n:2 * n]
+        vxa = sample[2 * n:3 * n]
+        vya = sample[3 * n:4 * n]
         used = np.zeros(n, dtype=bool)
         keep_idx = []
         for t_i in range(len(hi)):
@@ -395,10 +488,13 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         keep_idx = np.asarray(keep_idx)
         hi = hi[keep_idx].astype(np.int64)
         hj = hj[keep_idx].astype(np.int64)
-        dpx = x[hj] - x[hi]
-        dpy = y[hj] - y[hi]
-        dvx_ = vxa[hj] - vxa[hi]
-        dvy_ = vya[hj] - vya[hi]
+        # Erst indizieren, DANN nach f64 wandeln: identisches Ergebnis wie
+        # die frueheren Voll-Konversionen (die Quelldaten sind f32), aber
+        # ueber die Trefferliste statt ueber alle n Koerper.
+        dpx = x[hj].astype(np.float64) - x[hi].astype(np.float64)
+        dpy = y[hj].astype(np.float64) - y[hi].astype(np.float64)
+        dvx_ = vxa[hj].astype(np.float64) - vxa[hi].astype(np.float64)
+        dvy_ = vya[hj].astype(np.float64) - vya[hi].astype(np.float64)
         dv2 = dvx_ * dvx_ + dvy_ * dvy_
         # Kontaktzeitpunkt wie im JS-_tryCollide: statischer Hit ->
         # tContact = 0; sonst Bahnschnitt-Quadratik, Kontakt am
@@ -442,8 +538,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         ddvy[hi] -= imp * ny_ / mi_
         ddvx[hj] += imp * nx_ / mj_
         ddvy[hj] += imp * ny_ / mj_
-        pdx = x[hj] - x[hi]
-        pdy = y[hj] - y[hi]
+        pdx = x[hj].astype(np.float64) - x[hi].astype(np.float64)
+        pdy = y[hj].astype(np.float64) - y[hi].astype(np.float64)
         pdist = np.hypot(pdx, pdy)
         touch = real_r[hi] + real_r[hj]     # nach act-Filter neu gefiltert
         overlap = touch - pdist
@@ -487,42 +583,75 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         coll_val.value = collisions
         bounce_count += len(hi)
 
-    def analyze_batch(outs: np.ndarray, k0: int) -> list:
-        # Alle K Samples des Batches sequenziell analysieren (der
-        # Pipeline-Thread hat sie als Host-Kopien) — Ergebnisse werden
-        # gesammelt im Hauptloop angewandt.
-        return [analyze_sample(outs[i], k0 + i) for i in range(len(outs))]
+    def analyze_batch_timed(outs: np.ndarray, k0: int) -> tuple:
+        """Wie analyze_batch, misst aber die REINE Rechenzeit im
+        Pipeline-Thread. Vergleich mit der Wartezeit des Hauptloops zeigt,
+        ob die Erkennung tatsaechlich mit der Physik ueberlappt: wartet der
+        Loop etwa so lange, wie die Analyse rechnet, laeuft nichts parallel
+        (GIL-Konkurrenz oder Transfer-Serialisierung)."""
+        _t = time.monotonic()
+        res = analyze_batch(outs, k0)
+        return res, time.monotonic() - _t
 
-    def analyze_sample(out_np: np.ndarray, k_ev: int) -> dict:
+    def analyze_batch(outs: np.ndarray, k0: int) -> list:
+        # EIN Host->GPU-Transfer fuer den GESAMTEN Batch statt vier pro
+        # Sample. Vorher waren das bei K=8 und n=267k 32 Einzeltransfers
+        # mit je eigenem Launch- und Sync-Overhead — die Erkennungs-GPU
+        # bekam ihre Arbeit in Haeppchen und lief bei ~38% Auslastung,
+        # waehrend der Hauptloop auf sie wartete (gemessen: wait ~=
+        # erkennung, also keinerlei Ueberlappung mit der Physik).
+        # outs ist (K, 4n) f32 und zusammenhaengend, die Zeilen-Views
+        # brauchen daher keine weitere Kopie.
+        with cp.cuda.Device(ana_dev):
+            g_all = cp.asarray(outs)
+        return [analyze_sample(outs[i], k0 + i, g_all[i])
+                for i in range(len(outs))]
+
+    def analyze_sample(out_np: np.ndarray, k_ev: int, g_row) -> dict:
         """Komplette Erkennung eines Samples auf der Erkennungs-GPU —
         laeuft im Pipeline-Thread, mutiert nichts. vis/mass/real_r werden
         hier nur GELESEN; der Hauptloop mutiert sie erst nach dem
-        Einsammeln des Ergebnisses (keine Gleichzeitigkeit)."""
+        Einsammeln des Ergebnisses (keine Gleichzeitigkeit).
+
+        g_row ist die bereits auf der Erkennungs-GPU liegende Zeile des
+        Batches (siehe analyze_batch) — hier wird nur noch geschnitten,
+        nicht mehr transferiert."""
         nonlocal g_vis_det, g_rr_det
         with cp.cuda.Device(ana_dev):
-            gx = cp.asarray(out_np[0:n])
-            gy = cp.asarray(out_np[n:2 * n])
-            gvx = cp.asarray(out_np[2 * n:3 * n])
-            gvy = cp.asarray(out_np[3 * n:4 * n])
+            gx = g_row[0:n]
+            gy = g_row[n:2 * n]
+            gvx = g_row[2 * n:3 * n]
+            gvy = g_row[3 * n:4 * n]
             if det_dirty[0]:
                 g_vis_det = cp.asarray(vis)
                 g_rr_det = cp.asarray(real_r.astype(np.float32))
                 det_dirty[0] = False
             g_vis_a = g_vis_det
             g_rr_a = g_rr_det
+            _t = time.monotonic()
             pairs, runaway_np = analyze_merge(
                 out_np[0:n], out_np[n:2 * n],
                 gx, gy, gvx, gvy, g_vis_a, g_rr_a)
+            diag_t_merge_det[0] += time.monotonic() - _t
+            _t = time.monotonic()
             hits = analyze_bounce(gx, gy, gvx, gvy, g_vis_a, g_rr_a) \
                 if ast_bounce else None
+            diag_t_bounce_det[0] += time.monotonic() - _t
+        _t = time.monotonic()
         bounce = bounce_deltas(out_np, hits) if hits is not None else None
+        diag_t_bounce_host[0] += time.monotonic() - _t
         return {"k": k_ev, "sample": out_np, "pairs": pairs,
                 "runaways": runaway_np, "bounce": bounce}
 
     def apply_analysis(res: dict) -> None:
+        nonlocal diag_t_merges, diag_t_bounce
+        _t = time.monotonic()
         apply_merges(res["sample"], res["pairs"], res["runaways"], res["k"])
+        diag_t_merges += time.monotonic() - _t
         if res["bounce"] is not None:
+            _t = time.monotonic()
             apply_bounce(res["bounce"], res["k"], res["sample"])
+            diag_t_bounce += time.monotonic() - _t
 
     executor = ThreadPoolExecutor(max_workers=1)
     future = None
@@ -531,6 +660,20 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     # Versatz in der Groessenordnung grosser Live-Frames, halbiert aber
     # den Launch-/Pipeline-Overhead nochmals.
     K = 8
+    diag_prev_s = time.monotonic()
+    diag_prev_k = k
+    diag_prev_ph = playhead_val.value
+    diag_throttled_s = 0.0
+    # Zeitanteile im Loop: trennt GPU-Warten von echter CPU-Arbeit. Nur so
+    # ist entscheidbar, ob Auslagern etwas bringt — 100% CPU-Last kann bei
+    # CUDA auch reines Spin-Wait auf die GPU sein.
+    diag_t_step = 0.0        # sim.step_batch (Kernel + Sync)
+    diag_t_analyse = 0.0     # Summe: Einsammeln + Anwenden der Analyse
+    diag_t_wait = 0.0        # davon: Blockieren in future.result()
+    diag_t_erkennung = 0.0   # reine Rechenzeit im Erkennungs-Thread
+    diag_t_merges = 0.0      # davon apply_merges (GPU-Roundtrips pro Paar)
+    diag_t_bounce = 0.0      # davon apply_bounce (Deltas + emit_event)
+    diag_t_ring = 0.0        # tobytes + Kopie in den Shared-Memory-Ring
     try:
         while running_val.value:
             if shatter_flag is not None and shatter_flag.value:
@@ -538,8 +681,13 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             # Pipeline: Erkennungs-Ergebnisse des VORIGEN Batches
             # einsammeln und anwenden, bevor der naechste Launch startet.
             if future is not None:
-                for res in future.result():
+                _t = time.monotonic()
+                ergebnisse, dauer_erkennung = future.result()
+                diag_t_wait += time.monotonic() - _t
+                diag_t_erkennung += dauer_erkennung
+                for res in ergebnisse:
                     apply_analysis(res)
+                diag_t_analyse += time.monotonic() - _t
                 future = None
                 # ERST JETZT sind die Ereignisse des vorigen Batches im
                 # Ring — vorher gemeldete Samples haetten der Player
@@ -553,23 +701,84 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 dump_req_val.value = 2
             # Ueberschreib-Schutz: Slot (k - capacity) wird gleich
             # ueberschrieben — er muss hinter dem Player-Playhead liegen.
-            ph_abs = int((playhead_val.value - t0_days) / raster_days)
+            ph_val = playhead_val.value
+            ph_abs = int((ph_val - t0_days) / raster_days)
+            diag_now_s = time.monotonic()
+            diag_span = diag_now_s - diag_prev_s
+            if diag_span >= DIAG_INTERVAL_S:
+                # Beide Raten in Sim-Tagen/s — direkt vergleichbar: liegt
+                # prod unter play, laeuft der Puffer zwangslaeufig leer.
+                prod_rate = (k - diag_prev_k) * raster_days / diag_span
+                play_rate = (ph_val - diag_prev_ph) / diag_span
+                vorlauf_abs = k - ph_abs
+                print(f"[film-diag] n={n} raster={raster_days:g}d "
+                      f"prod={prod_rate:.1f}d/s play={play_rate:.1f}d/s "
+                      f"vorlauf={vorlauf_abs * raster_days:.0f}d "
+                      f"({100.0 * vorlauf_abs / capacity:.0f}% ring) "
+                      f"drossel={100.0 * diag_throttled_s / diag_span:.0f}% "
+                      f"| step={100.0 * diag_t_step / diag_span:.0f}% "
+                      f"apply={100.0 * diag_t_analyse / diag_span:.0f}% "
+                      f"(wait={100.0 * diag_t_wait / diag_span:.0f}% "
+                      f"erkennung={100.0 * diag_t_erkennung / diag_span:.0f}% "
+                      f"merge={100.0 * diag_t_merges / diag_span:.0f}% "
+                      f"bounce={100.0 * diag_t_bounce / diag_span:.0f}%) "
+                      f"ring={100.0 * diag_t_ring / diag_span:.0f}% "
+                      f"| det: mergeGPU="
+                      f"{100.0 * diag_t_merge_det[0] / diag_span:.0f}% "
+                      f"bounceGPU="
+                      f"{100.0 * diag_t_bounce_det[0] / diag_span:.0f}% "
+                      f"bounceCPU="
+                      f"{100.0 * diag_t_bounce_host[0] / diag_span:.0f}% "
+                      f"kandidaten/sample="
+                      f"{diag_kandidaten[0] / max(1, k - diag_prev_k):,.0f} "
+                      f"zelle={diag_zellgroesse[0]:.4f}AE "
+                      f"v95={diag_v95[0]:.3f} disp95={diag_disp95[0]:.5f} "
+                      f"nachbardiff={diag_nachbardiff[0]:.3f} "
+                      f"(noetig {2.0 * (diag_disp95[0] + diag_nachbardiff[0]):.3f} "
+                      f"statt {2.0 * diag_v95[0]:.3f} -> faktor "
+                      f"{diag_v95[0] / max(1e-9, diag_disp95[0] + diag_nachbardiff[0]):.1f}x) "
+                      f"| MAX: disp={diag_dispmax[0]:.3f} nb={diag_nbmax[0]:.3f} "
+                      f"-> sicher {2.0 * (diag_dispmax[0] + diag_nbmax[0]):.3f} "
+                      f"(faktor "
+                      f"{diag_v95[0] / max(1e-9, diag_dispmax[0] + diag_nbmax[0]):.1f}x) "
+                      f"maxzelle={diag_zellbelegung[0]:.0f}",
+                      flush=True)
+                diag_t_merge_det[0] = 0.0
+                diag_t_bounce_det[0] = 0.0
+                diag_t_bounce_host[0] = 0.0
+                diag_kandidaten[0] = 0
+                diag_prev_s = diag_now_s
+                diag_prev_k = k
+                diag_prev_ph = ph_val
+                diag_throttled_s = 0.0
+                diag_t_step = 0.0
+                diag_t_analyse = 0.0
+                diag_t_wait = 0.0
+                diag_t_erkennung = 0.0
+                diag_t_merges = 0.0
+                diag_t_bounce = 0.0
+                diag_t_ring = 0.0
             # 70% des Rings als Vorlauf, 30% bleiben Rueckspul-Historie —
             # sonst frisst die Eviction sich bis an den Playhead heran
             # und der Player reitet stotternd auf der Abbruchkante.
             if k + K - ph_abs >= int(capacity * 0.7):
                 time.sleep(0.01)
+                diag_throttled_s += 0.01
                 continue
+            _t = time.monotonic()
             outs = sim.step_batch(st, dt_years, K)
+            diag_t_step += time.monotonic() - _t
             # Erkennung laeuft UEBERLAPPT auf der Erkennungs-GPU, waehrend
             # die Physik-GPUs schon den naechsten Batch rechnen.
-            future = executor.submit(analyze_batch, outs, k)
+            future = executor.submit(analyze_batch_timed, outs, k)
             # Reines Punkte-Streaming: nur x|y (8 Bytes/Koerper) — alles
             # andere (Masse/Sichtbarkeit) laeuft als Ereignis.
+            _t = time.monotonic()
             for i in range(K):
                 slot = (k + i) % capacity
                 buf[slot * sample_bytes:(slot + 1) * sample_bytes] = \
                     outs[i][0:2 * n].tobytes()
+            diag_t_ring += time.monotonic() - _t
             k += K
             if ast_bounce and k % 500 == 0 and bounce_count:
                 print(f"[film] {bounce_count} asti-bounces nach "
@@ -586,7 +795,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 dump_req_val.value = 2
             else:
                 if future is not None:
-                    for res in future.result():
+                    for res in future.result()[0]:
                         apply_analysis(res)
                 dump_state()
                 dump_req_val.value = 2

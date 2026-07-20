@@ -43,6 +43,24 @@ from nbody_kernel import NBodyCuda, pick_device
 
 log = logging.getLogger("solarsim-cuda")
 
+# Wartezeit auf den f64-Dump des Producers in 10-ms-Schritten (5 s).
+# Obergrenze ist die Trennfrist des Clients (CUDA_DISCONNECT_MS, 8 s):
+# wird die Verbindung vorher gekappt, kommt der Dump nie an und der
+# Client rechnet mit geschaetzten Impulsen weiter.
+DUMP_WAIT_STEPS = 500
+
+# Sekunden zwischen zwei Stream-Diagnosezeilen (Bandbreite, Ist-Kosten je
+# Sample, Dichte). Zeigt, ob die Drosselung mit realistischen Groessen
+# rechnet — bei stride > 1 lag die alte Schaetzung um genau diesen Faktor
+# daneben.
+STREAM_DIAG_INTERVAL_S = 2.0
+
+# Mindest-Sendezeit, die in ein Bandbreiten-Messfenster einfliesst, bevor
+# daraus ein Schaetzwert gebildet wird. Zu kurz gewaehlt misst man nur
+# Puffer-Schreibvorgaenge (dur -> 0, Schaetzung explodiert), zu lang
+# reagiert die Regelung traege auf Lastwechsel.
+BW_FENSTER_S = 0.2
+
 HEADER = struct.Struct("<IId")   # typ, N/pad, dtYears
 MSG_FULL = 0
 MSG_STEP = 1
@@ -74,7 +92,14 @@ class FilmSession:
     pausiert, wenn der Ring voll ist (Ueberschreib-Schutz vor dem
     Player-Playhead)."""
 
-    MAX_BYTES = 4 << 30          # Ringpuffer-Obergrenze (~4 GB)
+    # Ringpuffer-Obergrenze. Bestimmt, wie viel VERGANGENHEIT navigierbar
+    # ist: capacity = MAX_BYTES / (8 * n) Slots, mal raster_days ergibt die
+    # Historie in Sim-Tagen. Bei grossem n wird das schnell knapp — 267k
+    # Koerper ergeben mit 4 GiB nur ~1000 Sim-Tage, die zudem staendig
+    # wegwandern (der Tail folgt dem Producer). Ueber --ring-gib
+    # einstellbar; Obergrenze ist der freie Platz in /dev/shm, NICHT der
+    # freie RAM (shared_memory liegt im tmpfs).
+    MAX_BYTES = 8 << 30
 
     def __init__(self, t0_days: float, raster_days: float,
                  x, y, vx, vy, mass, real_r, visible, is_ast,
@@ -192,6 +217,26 @@ class FilmSession:
     stream_task = None
     sent_abs = None          # aktuelle Stream-Position (absoluter Sample-Index)
     _bw = 4e6                # gemessene Leitungs-Bandbreite (Bytes/s, EWMA)
+    # GEMESSENE Bytes pro gestreamtem Sample (EWMA). Die Drosselung darf
+    # NICHT mit sample_bytes (= 8 * n, die volle Ringgroesse) rechnen: ein
+    # Frame enthaelt nur die gecullten und per LOD-Stride ausgeduennten
+    # Koerper. Bei grossem N liegt sample_bytes um den Stride-Faktor
+    # daneben (bei stride=9 also 9x zu hoch) — der Server haelt seine
+    # Frames dann fuer viel teurer als sie sind, liefert entsprechend
+    # weniger Samples und der Client stockt, obwohl die Leitung leer ist.
+    # None = noch nichts gemessen, dann konservativ sample_bytes.
+    _sample_cost = None
+    _diag_s = 0.0            # monotonic() der letzten Stream-Diagnosezeile
+    _bw_bytes = 0.0          # Bytes im laufenden Bandbreiten-Messfenster
+    _bw_dur = 0.0            # aufsummierte reine Sendezeit im Fenster
+    ph_ms = 0.0              # monotonic() des letzten Playhead-Heartbeats
+    # Der Client meldet den Playhead nur im 1-Hz-Heartbeat. Ohne
+    # Extrapolation rechnet der Stream bis zu eine Sekunde lang mit einem
+    # veralteten Playhead, haelt den Client-Puffer faelschlich fuer voll
+    # und liefert dadurch stossweise statt gleichmaessig. Deckel, damit
+    # ein pausierter Client den geschaetzten Playhead nicht davonlaufen
+    # laesst (dann lieber zu wenig als zu viel senden).
+    PH_EXTRAPOLATE_MAX_S = 2.0
 
     sent_ev = 0              # bereits gestreamte Ereignisse
 
@@ -307,6 +352,10 @@ class FilmSession:
                         bytes(self.dump_shm.buf[0:4 * 8 * self.n])
                     await ws.send(pkt)
                 ph = self.playhead_val.value
+                if self.ph_ms:
+                    alter_s = min(time.monotonic() - self.ph_ms,
+                                  self.PH_EXTRAPOLATE_MAX_S)
+                    ph += self.sub_rate * max(0.0, alter_s)
                 if self.sent_abs is None:
                     self.sent_abs = max(self.tail_abs,
                                         int((ph - self.t0) /
@@ -316,6 +365,35 @@ class FilmSession:
                 # Puffer-Ziel: 5 s Playback voraus (mind. 8 Raster)
                 target = max(8 * self.raster_days, self.sub_rate * 5.0)
                 sent_t = self.t0 + sent_abs * self.raster_days
+                # Diagnose VOR den continue-Zweigen: nur so ist sichtbar,
+                # warum im Stillstand nichts fliesst. "puffer" = Client hat
+                # laut (extrapoliertem) Playhead genug Vorrat, "head" =
+                # Producer noch nicht so weit, "-" = es wird gesendet.
+                now_s = time.monotonic()
+                if now_s - self._diag_s >= STREAM_DIAG_INTERVAL_S:
+                    self._diag_s = now_s
+                    if sent_t - ph > target:
+                        grund = "puffer"
+                    elif sent_abs >= head_abs:
+                        grund = "head"
+                    else:
+                        grund = "-"
+                    # step/sps zeigen, wie fein gestreamt wird: bei kleiner
+                    # sub_rate wird spacing klein und step faellt auf 1 —
+                    # dann baut build_frame pro Sim-Tag ein Vielfaches an
+                    # Frames (CPU!), obwohl weniger abgespielt wird.
+                    kosten_d = self._sample_cost or self.sample_bytes
+                    sps_d = min(20.0, max(0.5, self._bw * 0.7 / kosten_d))
+                    step_d = max(1, int(round(
+                        max(self.raster_days, self.sub_rate / sps_d) /
+                        self.raster_days)))
+                    log.info(
+                        "[stream] block=%s ph=%.1f vorrat=%.1f (ziel %.1f) "
+                        "tail=%.1f head=%.1f rate=%.1f sps=%.1f step=%d "
+                        "kosten=%.0fKB",
+                        grund, ph, sent_t - ph, target,
+                        self.tail, self.head, self.sub_rate, sps_d, step_d,
+                        kosten_d / 1024)
                 if sent_t - ph > target or sent_abs >= head_abs:
                     await asyncio.sleep(0.03)
                     continue
@@ -326,8 +404,8 @@ class FilmSession:
                 # Sim-Abstand; der Client interpoliert dazwischen.
                 # (Raster-dicht ohne Ruecksicht = 1 Bild pro Transferzeit
                 # = Diashow.)
-                sps = min(20.0, max(0.5,
-                    self._bw * 0.7 / self.sample_bytes))
+                kosten = self._sample_cost or self.sample_bytes
+                sps = min(20.0, max(0.5, self._bw * 0.7 / kosten))
                 spacing = max(self.raster_days, self.sub_rate / sps)
                 step = max(1, int(round(spacing / self.raster_days)))
                 avail = head_abs - sent_abs
@@ -342,7 +420,7 @@ class FilmSession:
                 # remote bleibt es bei kleinen Frames.
                 budget = min(8 * 1024 * 1024,
                              max(512 * 1024, int(self._bw * 0.05)))
-                max_count = max(1, min(24, budget // self.sample_bytes))
+                max_count = max(1, min(24, int(budget // kosten)))
                 idxs = list(range(sent_abs, head_abs, step))[:max_count]
                 if not idxs:
                     await asyncio.sleep(0.03)
@@ -356,22 +434,47 @@ class FilmSession:
                 # verwerfen — sonst klemmt _bw ewig auf dem Startwert und
                 # die Stream-Dichte bleibt bei grossen N grundlos duenn
                 # (Playhead reitet auf der Download-Kante: Ruckeln).
-                if len(frame) > 65536:
-                    # Warmup: die ersten Messungen staerker gewichten,
-                    # damit die Dichte nicht sekundenlang auf dem
-                    # konservativen Startwert verharrt (LOD "springt").
+                # Ist-Kosten pro Sample fortschreiben — die Grundlage der
+                # Dichte-/Budget-Rechnung im naechsten Durchlauf.
+                ist_kosten = len(frame) / len(idxs)
+                self._sample_cost = ist_kosten \
+                    if self._sample_cost is None \
+                    else 0.7 * self._sample_cost + 0.3 * ist_kosten
+                # Bandbreite ueber ein FENSTER aus mehreren Sends mitteln,
+                # nicht pro Frame. Ein einzelnes `await ws.send` kehrt
+                # zurueck, sobald der Frame im Socket-Puffer liegt — bei
+                # freiem Puffer geht dur gegen 0 und die Schaetzung
+                # explodierte (gemessen 724 MB/s bei real ~4 MB/s). Erst
+                # wenn der Puffer voll ist, blockiert send wirklich; ueber
+                # mehrere Frames gemittelt enthaelt die Summe daher beides
+                # und ergibt die tatsaechliche Abnahmerate des Clients.
+                self._bw_bytes += len(frame)
+                self._bw_dur += dur
+                if self._bw_dur >= BW_FENSTER_S:
+                    ist = self._bw_bytes / self._bw_dur
                     self._bw_n = getattr(self, "_bw_n", 0) + 1
-                    w = 0.5 if self._bw_n <= 8 else 0.3
-                    self._bw = (1 - w) * self._bw + \
-                        w * (len(frame) / max(dur, 0.002))
+                    w = 0.5 if self._bw_n <= 4 else 0.3
+                    self._bw = (1 - w) * self._bw + w * ist
+                    self._bw_bytes = 0.0
+                    self._bw_dur = 0.0
                 self.sent_abs = idxs[-1] + step
         except Exception:
             pass
 
     def resubscribe(self, t_days: float, rate: float,
                     jump: bool = False) -> None:
-        self.playhead_val.value = t_days
+        # Auf den tatsaechlich vorhandenen Ringbereich klemmen. Ungeklemmt
+        # fuehrte ein Sprung unter den Tail in einen stillen Deadlock: Der
+        # Stream klemmt zwar seine Leseposition auf tail_abs, vergleicht
+        # aber gegen den UNgeklemmten Playhead — `sent_t - ph > target`
+        # ist dann dauerhaft wahr und es wird kein einziges Byte gesendet.
+        # Gleichzeitig steht der Producer, weil er sich weit vor dem
+        # (vermeintlichen) Playhead waehnt. Beide warten dann auf einen
+        # Playhead, den nur der Client bewegen koennte — der aber auf
+        # Daten wartet, die nie kommen. Ohne Log, ohne Fehler.
+        self.playhead_val.value = min(max(t_days, self.tail), self.head)
         self.sub_rate = max(0.1, rate)
+        self.ph_ms = time.monotonic()
         # Sprung wird vom CLIENT deklariert (Scrub/LIVE/Start) — eine
         # Heuristik ueber Zeitfenster erkannte kleine Ruck-Scrubs nicht
         # und streamte von der alten Position weiter (Wiedergabe hing).
@@ -387,7 +490,12 @@ class FilmSession:
             return struct.pack("<IId", 5, self.n, self.head) + \
                 bytes(self.dump_shm.buf[0:4 * 8 * self.n])
         self.dump_req_val.value = 1
-        for _ in range(150):
+        # Der Producer bedient den Dump erst zwischen zwei Kernel-Batches;
+        # bei grossen N dauert ein Batch entsprechend lange. Kommt der Dump
+        # nicht rechtzeitig, faellt der Client auf die u16-Schaetzung
+        # zurueck und die Szene zerfliegt — deshalb grosszuegig warten.
+        # Muss unter der Trennfrist des Clients bleiben (CUDA_DISCONNECT_MS).
+        for _ in range(DUMP_WAIT_STEPS):
             if self.dump_req_val.value == 2:
                 t_head = self.head
                 return struct.pack("<IId", 5, self.n, t_head) + \
@@ -591,6 +699,10 @@ async def handle(ws):
 async def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--ring-gib", type=float, default=8.0, metavar="GIB",
+                    help="Groesse des Film-Ringpuffers in GiB. Begrenzt "
+                         "durch den freien Platz in /dev/shm (df /dev/shm), "
+                         "nicht durch den freien RAM.")
     ap.add_argument("--device", type=int, default=None,
                     help="CUDA-Device-Index (Default: beste f64-GPU)")
     ap.add_argument("--idle-exit", type=int, default=0, metavar="SEK",
@@ -602,6 +714,8 @@ async def main() -> None:
                         format="%(asctime)s %(levelname)s %(message)s")
     global _device
     _device = args.device if args.device is not None else pick_device()
+    FilmSession.MAX_BYTES = int(args.ring_gib * (1 << 30))
+    log.info("Film-Ringpuffer: %.1f GiB", args.ring_gib)
 
     # systemd socket activation: LISTEN_FDS=1 -> der lauschende Socket
     # kommt als fd 3 herein; ohne systemd binden wir selbst.

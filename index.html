@@ -81,6 +81,15 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   flex-wrap: wrap; justify-content: flex-end;
   pointer-events: none;
 }
+#film-stoerung {
+  background: rgba(170,20,20,0.95); color: #ffe0e0;
+  border: 1px solid #ff6666;
+  padding: 4px 10px; border-radius: 4px;
+  font-size: 12px; font-weight: bold;
+  font-family: 'Segoe UI', monospace;
+  cursor: pointer;
+  -webkit-user-select: none; user-select: none;
+}
 #collision-badge {
   background: rgba(120,30,30,0.85); color: #ffbb88;
   border: 1px solid #aa4444;
@@ -584,6 +593,9 @@ input[type=range] {
     <span data-i18n="lbl.film-raster">Sample-Raster (Tage)</span> <span class="val" id="film-raster-val">0,5</span>
     <input type="range" autocomplete="off" id="film-raster" min="-1" max="1" step="0.05" value="-0.3">
   </label>
+  <label data-i18n-title="tt.film-interp" id="lbl-film-interp" style="display:none; margin-left:20px;">
+    <input type="checkbox" id="chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span>
+  </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
@@ -641,6 +653,10 @@ input[type=range] {
   <div id="perf-badge" data-i18n-title="tt.perfbadge"></div>
   <div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><!-- &nbsp;|&nbsp; Bounces: <span id="bounce-count">0</span> --></div>
   <div id="body-count-badge" data-i18n-title="tt.bodycount"></div>
+  <!-- Sichtbare Stoerungsmeldung: eine Konsolenwarnung sieht im Alltag
+       niemand, und eine stille Pause ist von einem Aufhaenger nicht zu
+       unterscheiden. Wird von filmStoerung() gesetzt. -->
+  <div id="film-stoerung" style="display:none;"></div>
 </div>
 
 <div id="film-bar">
@@ -758,6 +774,7 @@ input[type=range] {
   <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;"><input type="checkbox" id="mob-chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span></label>
   <label data-i18n-title="tt.cuda" id="mob-lbl-engine-cuda" style="display:none;"><input type="radio" name="engine-mob" id="mob-rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span></label>
   <label data-i18n-title="tt.film" id="mob-lbl-film-mode" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film"> <span data-i18n="lbl.film">Film-Modus</span></label>
+  <label data-i18n-title="tt.film-interp" id="mob-lbl-film-interp" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
   <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">Flüchtende markieren</span></label>
@@ -985,6 +1002,10 @@ const I18N = {
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
     'tt.cuda': 'Natives CUDA-Backend auf Mini (Tesla V100, f64): volle Präzision UND Geschwindigkeit. Erscheint nur, wenn der lokale Backend-Server läuft (backend/server.py).',
     'lbl.film': 'Film-Modus',
+    'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
+    'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
+    'lbl.film-interp': 'Zwischenbilder interpolieren',
+    'tt.film-interp': 'Zwischen zwei gestreamten Samples linear interpolieren — sorgt fuer fluessige Darstellung (sonst laeuft das Bild nur mit der Sample-Rate, je nach Tempo unter 10 Bilder/s). Preis: Bei stark gekruemmten Bahnen (naher Vorbeiflug an einem schweren Koerper) laeuft der Punkt auf der Sehne statt auf dem Bogen und springt beim naechsten Sample zurueck. Aus = nur berechnete Positionen, exakt aber ruckelig.',
     'tt.film': 'Compute und Darstellung entkoppelt: die GPU rechnet mit maximalem Durchsatz voraus (Ringpuffer), der Browser spielt die Timeline wie ein Video ab — scrubben, zurückspulen, live folgen. Kollisionen verschmelzen serverseitig (immer Merge, kein Zerbersten/Abprallen).',
     'lbl.film-raster': 'Sample-Raster (Tage)',
     'tt.film-raster': 'Sim-Zeit-Abstand der aufgezeichneten Samples. Fein = weiche Zeitlupe, mehr Speicher; grob = längerer Rückspulpuffer.',
@@ -1229,6 +1250,10 @@ const I18N = {
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
     'tt.cuda': 'Native CUDA backend (Tesla V100, f64): full precision AND speed. Only appears when the local backend server is running (backend/server.py).',
     'lbl.film': 'Film mode',
+    'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
+    'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
+    'lbl.film-interp': 'Interpolate between samples',
+    'tt.film-interp': 'Linearly interpolate between two streamed samples — keeps playback smooth (otherwise the picture only advances at the sample rate, below 10 fps depending on speed). Cost: on sharply curved paths (close flyby of a massive body) the point travels along the chord instead of the arc and snaps back at the next sample. Off = computed positions only, exact but choppy.',
     'tt.film': 'Compute and display decoupled: the GPU simulates ahead at full throughput (ring buffer), the browser plays the timeline like a video — scrub, rewind, follow live. Collisions merge server-side (always merge, no shattering/bouncing).',
     'lbl.film-raster': 'Sample interval (days)',
     'tt.film-raster': 'Sim-time spacing of recorded samples. Fine = smooth slow-motion, more memory; coarse = longer rewind buffer.',
@@ -2975,7 +3000,15 @@ function renderAsteroidsGL() {
     // Film-Modus: server-gecullte Koerper (nicht im aktuellen Sample)
     // haben eingefrorene Alt-Positionen — nicht zeichnen, sonst
     // erscheint beim Rauszoomen Datenmuell alter Box-Epochen.
-    if (filmActive && _filmInView && !_filmInView[i]) continue;
+    // Gilt AUCH waehrend der Uebergabe (_filmHandover/_filmRestartPending):
+    // dort ist filmActive bereits false, der Zustand aber noch
+    // unvollstaendig — bis der f64-Dump alle Koerper gesetzt hat, blitzten
+    // die Alt-Koordinaten sonst als "Geisterwolke" am Injektionsort auf
+    // (typisch nach einem Rogue-Inject, verschwindet nach ein paar Frames
+    // von selbst). Nach dem Dump sind alle Positionen exakt und der
+    // Filter faellt weg.
+    if ((filmActive || _filmHandover || _filmRestartPending) &&
+        _filmInView && !_filmInView[i]) continue;
     if (b.x < wxMin || b.x > wxMax || b.y < wyMin || b.y > wyMax) continue;
     let cached = b._glColor;
     if (!cached) {
@@ -4033,6 +4066,13 @@ function advanceWorker(dtYears, list) {
 // (nginx-Proxy -> Mini:8765), sonst/zusaetzlich direktes localhost.
 const CUDA_WS_URLS = (() => {
   const urls = [];
+  // Diagnose: ?cudaws=ws://host:8765 haengt den nginx-Proxy ab und
+  // verbindet direkt aufs Backend. Damit laesst sich messen, ob eine
+  // Stockung vom Proxy oder vom Client kommt — sonst ist beides im
+  // selben Pfad und nicht auseinanderzuhalten. Erfordert, dass die
+  // Socket-Unit auf 0.0.0.0 lauscht (normal: nur 127.0.0.1).
+  const direkt = new URLSearchParams(location.search).get('cudaws');
+  if (direkt) urls.push(direkt);
   const local = ['localhost', '127.0.0.1', ''].includes(location.hostname);
   if (!local) {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -4054,7 +4094,8 @@ let _cudaDisconnectTimer = null;
 
 function _cudaSetVisible(visible) {
   for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda',
-                    'lbl-film-mode', 'mob-lbl-film-mode', 'lbl-film-raster']) {
+                    'lbl-film-mode', 'mob-lbl-film-mode', 'lbl-film-raster',
+                    'lbl-film-interp', 'mob-lbl-film-interp']) {
     const el = document.getElementById(id);
     if (el) el.style.display = visible ? '' : 'none';
   }
@@ -4173,8 +4214,14 @@ function initCudaBackend(urlIndex = 0) {
       const dv = new DataView(buf);
       const n = dv.getUint32(4, true);
       const tDays = dv.getFloat64(8, true);
-      const refs = filmRefs && filmRefs.length === n ? filmRefs : bodies;
-      if (refs.length === n) {
+      // NUR filmRefs ist massgeblich: Es ist exakt die Liste, die an den
+      // Producer ging, und der Dump folgt deren Indizierung. Der frueher
+      // hier stehende Rueckfall auf `bodies` konnte nur zufaellig passen —
+      // seit tote Asteroiden beim Filmstart herausgefiltert werden, ist
+      // bodies systematisch laenger als die Producer-Liste und der
+      // Vergleich schlaegt fehl, sobald sich Leichen angesammelt haben.
+      const refs = filmRefs;
+      if (refs && refs.length === n) {
         const x  = new Float64Array(buf, 16,           n);
         const y  = new Float64Array(buf, 16 + 8 * n,   n);
         const vx = new Float64Array(buf, 16 + 16 * n,  n);
@@ -4188,11 +4235,33 @@ function initCudaBackend(urlIndex = 0) {
         simTime = tDays;
         _cudaStateStale = true;
         markBodiesMutated();
+      } else {
+        // Koerperzahl hat sich seit dem Filmstart geaendert — der Dump
+        // passt nicht auf die aktuelle Szene. Frueher wurde er hier still
+        // verworfen und die Physik lief mit den aus u16-Samples
+        // GESCHAETZTEN Impulsen weiter; deren Quantisierungsfehler
+        // erreicht die Groessenordnung echter Bahngeschwindigkeiten und
+        // sprengt die Szene zu einer expandierenden Wolke. Anhalten und
+        // melden ist ehrlicher als sichtbar falsch weiterzurechnen.
+        console.warn('[film] f64-Dump verworfen: Dump hat ' + n +
+                     ' Koerper, Producer-Liste hat ' +
+                     (refs ? refs.length : 'keine') + ' — exakte ' +
+                     'Uebergabe unmoeglich, Physik pausiert. ' +
+                     '[bodies=' + bodies.length +
+                     ' filmActive=' + filmActive +
+                     ' restartPending=' + _filmRestartPending + ']');
+        filmStoerung(t('film.stoerung-mismatch'));
+        setPaused(true);
       }
       _filmHandover = false;   // Uebergabe abgeschlossen — Physik frei
       if (_filmRestartPending) {
         _filmRestartPending = false;
         filmStart();             // Neustart mit exakten f64-Impulsen
+      } else if (_filmStartWartet && useFilm) {
+        // Der Nutzer hat den Film waehrend der Uebergabe wieder
+        // eingeschaltet — der Start wurde aufgeschoben und laeuft jetzt
+        // auf dem exakten f64-Zustand statt auf einem halben.
+        filmStart();
       }
       return;
     }
@@ -4402,6 +4471,30 @@ let _filmSentRev = -1;
 let _filmSentN = -1;
 let _filmPrevMs = 0;
 let _filmLastTrailT = -1;    // Sim-Zeit des letzten Bahnspur-Samples
+// Puffer-Regelung des Playheads (Videoplayer-Prinzip). Gilt fuer BEIDE
+// Zweige — live an der Kante und in der Vergangenheit: der Playhead haelt
+// FILM_PUFFER_S Echtzeit-Sekunden Abstand zum letzten empfangenen Sample
+// und folgt unterhalb davon gebremst, damit der Puffer wieder waechst.
+// Ohne das reitet der Playhead auf der Download-Kante und jede
+// Lieferluecke schlaegt als Stocken durch.
+const FILM_PUFFER_S = 1.5;
+const FILM_BREMSE = 0.85;
+// Engine-Uebergabe (Film -> Worker/CPU). Die drei Fristen haengen
+// voneinander ab und muessen in dieser Reihenfolge wachsen, sonst wird
+// die Verbindung gekappt, bevor der f64-Dump durch ist:
+//   Server-Dumpwartezeit (server.py) < Trennfrist < Handover-Frist.
+// Bei grossen N (>150k) braucht der Producer laenger, bis er zwischen
+// zwei Kernel-Batches zum Dump kommt — daher grosszuegige Margen.
+const CUDA_DISCONNECT_MS = 8000;
+const FILM_HANDOVER_MS = 12000;
+// Sample-Abstand fuer die Impuls-Rekonstruktion (Sicherheitsnetz ohne
+// f64-Dump). Die Stream-Positionen sind u16-quantisiert; der
+// Differenzenquotient teilt den Quantisierungsfehler durch dt. Ueber
+// benachbarte Samples (1 Raster) erreicht der Fehler die Groessenordnung
+// echter Bahngeschwindigkeiten — die Szene zerfliegt. Ein groesserer
+// Abstand senkt ihn proportional, mittelt aber ueber die Bahnkruemmung;
+// 8 Raster sind der Kompromiss.
+const FILM_REKO_SPAN = 8;
 
 function filmClearTrails() {
   for (const k in trails) {
@@ -4455,9 +4548,31 @@ function filmRasterDays() {
   return Math.pow(10, parseFloat(document.getElementById('film-raster').value));
 }
 
+let _filmStartWartet = false;
+
 function filmStart() {
   if (!cudaReady) return;
-  const src = bodies;
+  // Laeuft noch eine Uebergabe, wird der Start VERSCHOBEN statt
+  // parallel begonnen. Sonst legt filmStart neue filmRefs an, waehrend
+  // der f64-Dump der alten Session noch unterwegs ist — der trifft dann
+  // auf eine Szene, zu der er nicht mehr passt, wird verworfen, und
+  // zurueck bleibt ein halb aktualisierter Zustand (ein Teil der Koerper
+  // auf Filmstart-Position). Genau das passiert beim schnellen
+  // Aus-/Einschalten. Der Dump gibt _filmHandover frei und loest den
+  // aufgeschobenen Start aus (siehe status=5).
+  if (_filmHandover) {
+    _filmStartWartet = true;
+    return;
+  }
+  _filmStartWartet = false;
+  // Tote Asteroiden aussortieren: gemergte/gekillte Koerper bleiben mit
+  // visible=false in `bodies` stehen und wurden bisher mituebertragen —
+  // sie belegten GPU-Speicher, liefen durch jeden Kernel, blaehten jedes
+  // Sample auf (sample_bytes = 8*N) und verkleinerten damit den Ring.
+  // Nach laengeren Sessions war das ein Viertel der Last fuer Leichen.
+  // NICHT auf b.visible allein filtern: bei benannten Koerpern ist das
+  // ein UI-Toggle (Planeten aus-/einblenden), kein Todesmerkmal.
+  const src = bodies.filter(b => b.visible || !b.isAsteroid);
   const N = src.length;
   const buf = new ArrayBuffer(24 + N * (6 * 8 + 3) + 1);
   const dv = new DataView(buf);
@@ -4520,7 +4635,14 @@ function filmStart() {
   filmPlayheadDays = simTime;
   _filmLastTrailT = simTime;
   _filmSentRev = _physRev;
-  _filmSentN = N;
+  // BEWUSST bodies.length, nicht N: dieser Wert dient allein der
+  // Mutationserkennung in filmTick ("hat sich die Szene geaendert ->
+  // Film neu starten"). N ist die GEFILTERTE Laenge (ohne tote
+  // Asteroiden) — mit ihr verglichen waere die Bedingung dauerhaft
+  // wahr und der Film startete in jedem Frame neu (Endlosschleife,
+  // 0 Tage/s). Sterbende Asteroiden aendern bodies.length nicht; sie
+  // laufen ueber Ereignisse und loesen korrekterweise keinen Neustart aus.
+  _filmSentN = bodies.length;
   _pendingDeltaBodies.clear();
   document.getElementById('film-bar').classList.add('show');
 }
@@ -4533,9 +4655,14 @@ function filmStart() {
 function filmReconstructVelocities() {
   if (filmQueue && filmQueue.times.length >= 2 && filmRefs) {
     const L = filmQueue.times.length;
-    const sA = filmQueue.samples[L - 2];
-    const sB = filmQueue.samples[L - 1];
-    const dtY = (filmQueue.times[L - 1] - filmQueue.times[L - 2]) / 365.25;
+    // Basis moeglichst weit zurueck (FILM_REKO_SPAN): der Quantisierungs-
+    // fehler der u16-Positionen wird durch dt geteilt, ein groesserer
+    // Zeitabstand macht die Schaetzung entsprechend ruhiger.
+    const iB = L - 1;
+    const iA = Math.max(0, L - 1 - FILM_REKO_SPAN);
+    const sA = filmQueue.samples[iA];
+    const sB = filmQueue.samples[iB];
+    const dtY = (filmQueue.times[iB] - filmQueue.times[iA]) / 365.25;
     if (dtY > 0 && sA.idx && sB.idx) {
       if (!sA._pos) {
         sA._pos = new Int32Array(filmRefs.length).fill(-1);
@@ -4561,6 +4688,47 @@ function filmReconstructVelocities() {
       }
     }
   }
+}
+
+// Engine-Uebergabe (Film -> Worker/CPU/Neustart): Physik anhalten, bis der
+// EXAKTE f64-Dump des Producers eintrifft — status=5 gibt sie wieder frei.
+//
+// Bleibt der Dump aus, wird das GEMELDET und angehalten, statt still
+// weiterzurechnen. Frueher lief die Physik nach Fristablauf einfach mit der
+// Schaetzung aus filmReconstructVelocities() weiter; die kennt aber nur die
+// Koerper des zuletzt gestreamten Samples (bei LOD-Stride 3 rund ein
+// Drittel). Alle uebrigen behielten ihre Werte vom FILMSTART und sprangen
+// unbemerkt dorthin zurueck — sichtbar als "teleportierte" Asteroidenwolken.
+// Ein sichtbarer Fehlschlag ist besser als eine halb falsch gerechnete Szene.
+// Sichtbare Stoerungsmeldung in der Badge-Zeile. Eine Konsolenwarnung
+// allein reicht nicht: Im Alltag sind die Entwicklertools zu, und eine
+// stille Pause ist von einem Aufhaenger nicht zu unterscheiden — genau
+// das kostete beim Testen mehrfach Minuten Ratlosigkeit. Klick blendet
+// die Meldung wieder aus.
+function filmStoerung(text) {
+  const el = document.getElementById('film-stoerung');
+  if (!el) return;
+  el.textContent = '⚠ ' + text;
+  el.style.display = 'inline-block';
+  el.onclick = () => { el.style.display = 'none'; };
+}
+
+function filmHandoverStart(zweck) {
+  _filmHandover = true;
+  setTimeout(() => {
+    if (!_filmHandover) return;          // Dump ist eingetroffen — alles gut
+    _filmHandover = false;               // sonst bliebe die Physik fuer immer blockiert
+    _filmRestartPending = false;
+    // Aufgeschobenen Start NICHT nachholen: ohne den Dump waere der
+    // Ausgangszustand unvollstaendig, und der neue Film wuerde ihn
+    // uebernehmen. Lieber gar nicht starten und melden.
+    _filmStartWartet = false;
+    console.warn('[film] f64-Dump nach ' + (FILM_HANDOVER_MS / 1000) +
+                 ' s nicht eingetroffen (' + zweck + ') — Zustand ist ' +
+                 'unvollstaendig, Physik angehalten. Film neu starten.');
+    filmStoerung(t('film.stoerung-timeout'));
+    setPaused(true);
+  }, FILM_HANDOVER_MS);
 }
 
 function filmStop() {
@@ -4609,6 +4777,10 @@ function filmSub(tDays, jump) {
   cudaSocket.send(buf);
 }
 let _filmSubCam = null;
+// Zwischen zwei Samples linear interpolieren. Aus = nur die tatsaechlich
+// gestreamten Positionen zeigen: exakt, aber die Anzeige laeuft dann nur
+// mit der Sample-Rate (je nach Tempo unter 10 Bilder/s).
+let filmInterp = true;
 let _filmHandover = false;   // Engine-Uebergabe: warten bis f64-Dump da ist
 let _filmRestartPending = false;   // Film-Neustart wartet auf f64-Dump
 let _filmShatterPending = null;    // { a, b, t, x, y, vx, vy } (status=7)
@@ -4637,7 +4809,10 @@ function filmApply(t) {
   const j = Math.min(i + 1, q.times.length - 1);
   const s0 = q.samples[i], s1 = q.samples[j];
   const span = q.times[j] - q.times[i];
-  const f = span > 0 ? Math.min(Math.max((t - q.times[i]) / span, 0), 1) : 0;
+  // f = 0 haelt jedes Sample bis zum naechsten stehen (Stop-Motion mit der
+  // Sample-Rate) statt dazwischen zu schaetzen — exakt, aber ruckelig.
+  const f = !filmInterp ? 0
+    : (span > 0 ? Math.min(Math.max((t - q.times[i]) / span, 0), 1) : 0);
   if (!s1._pos) {
     s1._pos = new Int32Array(filmRefs.length).fill(-1);
     for (let m = 0; m < s1.idx.length; m++) s1._pos[s1.idx[m]] = m;
@@ -4676,15 +4851,19 @@ function filmApply(t) {
     if (!b) continue;
     const x0 = b0.x0 + s0.qx[m] * fx0;
     const y0 = b0.y0 + s0.qy[m] * fy0;
-    let bx, by;
     const m1 = s1._pos[ki];
-    if (m1 >= 0) {
-      bx = x0 + (b1.x0 + s1.qx[m1] * fx1 - x0) * f;
-      by = y0 + (b1.y0 + s1.qy[m1] * fy1 - y0) * f;
-    } else {
-      bx = x0;
-      by = y0;
+    if (m1 < 0) {
+      // Im NEUEREN Sample nicht enthalten — die gestreamte Teilmenge hat
+      // sich geaendert (Kamera-Box gewandert oder LOD-Stride gewechselt).
+      // Frueher wurde hier die alte s0-Position uebernommen UND der
+      // Koerper als aktuell markiert: Er blieb dann exakt stehen, bis er
+      // wieder in beide Samples fiel — sichtbar als statischer Fleck
+      // mitten in der bewegten Szene. Ohne aktuelle Daten lieber gar
+      // nicht zeichnen (_filmInView bleibt 0, siehe Render-Filter).
+      continue;
     }
+    const bx = x0 + (b1.x0 + s1.qx[m1] * fx1 - x0) * f;
+    const by = y0 + (b1.y0 + s1.qy[m1] * fy1 - y0) * f;
     b.x = bx;
     b.y = by;
     _filmInView[ki] = 1;
@@ -4823,14 +5002,7 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // Neustart ueber den bewaehrten Dump-Mechanismus (der Server
     // antwortet auf FILM_STOP mit dem Shatter-Dump als status=5).
     _filmRestartPending = true;
-    _filmHandover = true;
-    setTimeout(() => {
-      if (_filmRestartPending) {
-        _filmRestartPending = false;
-        _filmHandover = false;
-        filmStart();
-      }
-    }, 8000);
+    filmHandoverStart('Neustart nach Zerbersten');
     filmStop();
     return;
   }
@@ -4843,15 +5015,7 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // (~10-20% in v) und verformte die Bahnen bei jedem Inject.
     // filmStop loest den Dump aus; status=5 startet den Film neu.
     _filmRestartPending = true;
-    _filmHandover = true;
-    setTimeout(() => {
-      if (_filmRestartPending) {         // Fallback: Dump kam nicht
-        _filmRestartPending = false;
-        _filmHandover = false;
-        filmReconstructVelocities();
-        filmStart();
-      }
-    }, 8000);
+    filmHandoverStart('Neustart nach Mutation');
     filmStop();
     return;
   }
@@ -4881,11 +5045,20 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // Puffer-Aufbau ueber die Folge-Rate: unter 1,5 s Vorlauf minimal
     // langsamer folgen (85%), damit der Client-Puffer waechst und
     // Netz-Jitter schlucken kann (Videoplayer-Rebuffering-Prinzip).
-    let follow = _filmHeadRate > 0 ? _filmHeadRate : 0;
+    // Fallback auf die eingestellte Rate statt 0: _filmHeadRate wird aus
+    // der KANTENBEWEGUNG geschaetzt. Hat der Server seinen Puffer-Vorlauf
+    // erreicht, sendet er nichts mehr -> die Kante steht -> die Schaetzung
+    // faellt auf 0 -> der Playhead bleibt stehen -> der unveraenderte
+    // Playhead bestaetigt dem Server "Puffer voll". Beide warten dann
+    // gegenseitig, obwohl Hunderte Sim-Tage im Client-Puffer liegen
+    // (gemessen: ph konstant, vorrat=200d, Producer laeuft weiter).
+    // Die Klemme auf `kante` weiter unten verhindert, dass der Playhead
+    // ueber tatsaechlich vorhandene Daten hinauslaeuft.
+    let follow = _filmHeadRate > 0 ? _filmHeadRate : rate;
     if (follow > 0 && filmQueue.times.length) {
       const aheadS = (filmQueue.times[filmQueue.times.length - 1] -
                       filmPlayheadDays) / follow;
-      if (aheadS < 1.5) follow *= 0.85;
+      if (aheadS < FILM_PUFFER_S) follow *= FILM_BREMSE;
     }
     let next = filmPlayheadDays + follow * delta / 1000;
     next = Math.min(next, kante);
@@ -4901,7 +5074,16 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // Playhead laeuft NUR, wenn Daten da sind — nach einem Sprung wartet
     // die Zeit mit der Anzeige zusammen auf den neuen Stream (Seek-
     // Verhalten wie beim Videoplayer), statt blind weiterzulaufen.
-    filmPlayheadDays += rate * delta / 1000;
+    // Dieselbe Puffer-Bremse wie im LIVE-Zweig: ohne sie reitet der
+    // Playhead in der Vergangenheit auf der Download-Kante (er wird
+    // gleich hart auf `kante` geklemmt) und jede Lieferluecke des
+    // Streams schlaegt 1:1 als Stocken durch.
+    let vergangenheitsRate = rate;
+    if (kante < Infinity && rate > 0 &&
+        (kante - filmPlayheadDays) / rate < FILM_PUFFER_S) {
+      vergangenheitsRate *= FILM_BREMSE;
+    }
+    filmPlayheadDays += vergangenheitsRate * delta / 1000;
     // Kante eingeholt -> automatisch LIVE, aber NUR wenn das Queue-Ende
     // auch die echte Server-Kante ist (sonst stand der Playhead nur am
     // Download-Ende, obwohl der Puffer weiterreicht — falsches "LIVE").
@@ -4954,8 +5136,20 @@ function filmTick(dtDays, slowFactor, nowMs) {
       const o = document.getElementById(other);
       if (o) o.checked = useFilm;
     }
-    if (useFilm && useCuda && cudaReady) filmStart();
-    else filmStop();
+    if (useFilm && useCuda && cudaReady) {
+      filmStart();
+    } else {
+      // Wie beim Engine-Wechsel: Physik anhalten, bis der EXAKTE f64-Dump
+      // des Producers da ist (status=5 setzt _filmHandover zurueck).
+      // Ohne das gilt sofort die Schaetzung aus
+      // filmReconstructVelocities() — und die aktualisiert NUR die Koerper
+      // aus dem letzten gestreamten Sample. Bei LOD-Stride 3 behalten zwei
+      // Drittel aller Asteroiden ihre Werte vom FILMSTART und springen
+      // beim Aus-/Einschalten sichtbar an den Ausgangspunkt zurueck,
+      // waehrend der Rest normal weiterlaeuft.
+      filmHandoverStart('Film-Modus ausgeschaltet');
+      filmStop();
+    }
   });
 });
 document.getElementById('film-live').addEventListener('click', () => {
@@ -4963,6 +5157,16 @@ document.getElementById('film-live').addEventListener('click', () => {
   filmPlayheadDays = _filmMetaHead > 0 ? _filmMetaHead : filmPlayheadDays;
   filmQueue = null;
   filmSub(filmPlayheadDays, true);
+});
+['chk-film-interp', 'mob-chk-film-interp'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', function() {
+    filmInterp = this.checked;
+    for (const other of ['chk-film-interp', 'mob-chk-film-interp']) {
+      const o = document.getElementById(other);
+      if (o) o.checked = filmInterp;
+    }
+  });
 });
 {
   const scrub = document.getElementById('film-scrub');
@@ -6686,7 +6890,7 @@ function applyEngine(mode, persist) {
         _cudaIntentionalClose = true;
         cudaSocket.close();
       }
-    }, 3000);
+    }, CUDA_DISCONNECT_MS);
   }
   // Engine-Wechsel weg von CUDA bei laufendem Film: Film sauber beenden —
   // filmStop fordert den exakten f64-Endzustand (inkl. Impulse!) vom
@@ -6696,8 +6900,7 @@ function applyEngine(mode, persist) {
     // Physik anhalten, bis der exakte f64-Endzustand angekommen ist —
     // sonst rechnet die neue Engine mit alten Impulsen los und ihr
     // (korruptes) erstes Ergebnis ueberschreibt den guten Dump (Race).
-    _filmHandover = true;
-    setTimeout(() => { _filmHandover = false; }, 8000);
+    filmHandoverStart('Engine-Wechsel weg von CUDA');
     filmStop();
     useFilm = false;
     for (const id of ['chk-film', 'mob-chk-film']) {
