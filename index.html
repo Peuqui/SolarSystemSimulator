@@ -2439,43 +2439,29 @@ let _starPattern = null;
 let _baryDirty = true;
 let _baryCacheX = 0, _baryCacheY = 0;
 
-let _barySlice = null;   // haeppchenweise Film-Summe (kein Frame-Spike)
 function barycenter() {
   if (!_baryDirty) return [_baryCacheX, _baryCacheY];
-  // Film-Modus: die volle O(N)-Summe kostete bei 270k Koerpern ~40 ms —
-  // als 150-ms-Cache war das ein periodischer RUCKLER. Stattdessen wird
-  // die Summe in 32k-Happen ueber die Frames verteilt und das Ergebnis
-  // nach jeder Vollrunde uebernommen (escapeScore-Filter/Rogues sind im
-  // Film ungepflegt/leer — die einfache Masse-Summe ist dort identisch).
-  if (typeof filmActive !== 'undefined' && filmActive) {
-    if (!_barySlice || _barySlice.n !== bodies.length) {
-      _barySlice = { n: bodies.length, i: 0, mx: 0, my: 0, mt: 0 };
-    }
-    const sl = _barySlice;
-    const ende = Math.min(sl.n, sl.i + 32768);
-    for (let i = sl.i; i < ende; i++) {
-      const b = bodies[i];
-      if (!b.visible) continue;
-      sl.mx += b.mass * b.x; sl.my += b.mass * b.y; sl.mt += b.mass;
-    }
-    sl.i = ende;
-    if (sl.i >= sl.n) {
-      if (sl.mt > 0) {
-        _baryCacheX = sl.mx / sl.mt;
-        _baryCacheY = sl.my / sl.mt;
-      }
-      sl.i = 0; sl.mx = 0; sl.my = 0; sl.mt = 0;
-    }
-    return [_baryCacheX, _baryCacheY];
-  }
+  // Nur MASSIVE Koerper (Sonne, Planeten, Rogues) bestimmen den
+  // Schwerpunkt — Asteroiden tragen zusammen Bruchteile einer Erdmasse
+  // gegen 332.000 (Sonne) bei und werden, genau wie in
+  // updateBoundState, uebersprungen. Das hat zwei Gruende:
+  //   1) Korrektheit: der Rogue-/Flucht-Filter unten MUSS strikt
+  //      greifen. Ein frueherer Film-Schnellpfad summierte aus
+  //      Performance-Gruenden alle Massen ungefiltert — dadurch zog eine
+  //      schwere Rogue den Schwerpunkt an sich, er sprang bei jeder
+  //      Aenderung, und weil updateBoundState relativ zum Schwerpunkt
+  //      misst, wurden gebundene Koerper faelschlich als fliehend
+  //      markiert (und von "Fliehende entfernen" geloescht).
+  //   2) Tempo: der Filter laeuft so ueber ~10-20 statt 270.000 Koerper
+  //      und kostet pro Frame nichts — kein Haeppchen-Hack noetig.
   let mx = 0, my = 0, mt = 0;            // Hauptsystem mit escapeScore-Filter
   let mxR = 0, myR = 0, mtR = 0;         // Hauptsystem OHNE Filter (Fallback)
-  let mxA = 0, myA = 0, mtA = 0;         // alle Bodies inkl. Rogues, voll
+  let mxA = 0, myA = 0, mtA = 0;         // alle massiven inkl. Rogues, voll
   // perturbers in Set fuer O(1) Lookup statt O(M) pro Body.
   const pertSet = perturbers.length > 0 ? new Set(perturbers) : null;
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
-    if (!b.visible) continue;
+    if (!b.visible || b.isAsteroid) continue;
     const isRogue = pertSet ? pertSet.has(b) : false;
     const sc = b.escapeScore || 0;
     let w;
@@ -2491,6 +2477,17 @@ function barycenter() {
         const mw = m * w;
         mx += mw * b.x; my += mw * b.y; mt += mw;
       }
+    }
+  }
+  // Reines Asteroiden-Szenario (kein einziger massiver Koerper sichtbar):
+  // dann zaehlen doch die Asteroiden, sonst gaebe es keinen Bezugspunkt.
+  // Der teure Voll-Durchlauf laeuft nur in diesem Sonderfall.
+  if (mtA === 0) {
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i];
+      if (!b.visible) continue;
+      const m = b.mass;
+      mxA += m * b.x; myA += m * b.y; mtA += m;
     }
   }
   // Drei-stufiger Fallback bei "Rogues ignorieren":

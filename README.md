@@ -2,12 +2,15 @@
 
 Deutsch | [English](README.en.md)
 
-Browser-basierter N-Körper-Gravitationssimulator. Eine einzige HTML-Datei,
-kein Build, kein Backend — einfach im Browser öffnen oder über jeden
-statischen Webserver ausliefern.
+Browser-basierter N-Körper-Gravitationssimulator. Der **Standard-Modus**
+ist eine einzige HTML-Datei — kein Build, kein Backend, einfach im Browser
+öffnen. Für massive Szenarien (Hunderttausende Körper) gibt es ein
+**optionales CUDA-Backend** mit Multi-GPU-Physik und einem entkoppelten
+Film-Modus.
 
-![Sonnensystem-Szenario](https://img.shields.io/badge/render-Canvas%202D-blueviolet)
-![Standalone](https://img.shields.io/badge/single--file-100kB-success)
+![Render](https://img.shields.io/badge/render-Canvas%202D%20%2B%20WebGL-blueviolet)
+![Standalone](https://img.shields.io/badge/frontend-single--file-success)
+![CUDA](https://img.shields.io/badge/optional-CUDA%20multi--GPU-76b900)
 ![Mobile](https://img.shields.io/badge/mobile-ready-orange)
 
 ## Features
@@ -21,17 +24,22 @@ statischen Webserver ausliefern.
 - **Störmassen interaktiv injizieren** — Position, Masse (10⁻³ bis 10⁶
   Erdmassen, inkl. Sternen ab ~80 M⊕), Geschwindigkeit und Richtung
 - **Asteroiden-Wolken injizieren** — ganze Schwärme aus Kleinkörpern mit
-  Anzahl, Gesamtmasse, Dichte und Streuung per Slider; Shift+Klick auf den
-  Inject-Button (bzw. langer Druck auf Mobile) spawnt statt einer Rogue
-  eine Wolke
-- **Elastische Asteroiden-Kollisionen** (optional per Toggle) — Asteroiden
-  prallen wie Kugeln unterschiedlicher Masse voneinander ab, mit massen-
-  abhängigem Slingshot (der leichtere wird vom schwereren weggeschleudert).
-  Sie verschmelzen **nicht**, zerbersten **nicht** und ziehen sich
-  untereinander **nicht** gravitativ an — beim Stoß wird der schwerere blau,
-  der leichtere rot markiert und fliegt sichtbar weg. Erst beim Treffer auf
-  einen Planeten oder Stern wird ein Asteroid absorbiert bzw. löst
-  Verschmelzung/Zerbersten aus
+  Anzahl (logarithmisch **bis 50 000 pro Injektion**), Gesamtmasse, Dichte
+  und Streuung per Slider; Shift+Klick auf den Inject-Button (bzw. langer
+  Druck auf Mobile) spawnt statt einer Rogue eine Wolke
+- **Fünf Physik-Engines** per Toggle — Hauptthread, WebWorker, WebGPU,
+  Hybrid und ein natives **CUDA-Backend (f64, Multi-GPU)**, siehe
+  [Physik-Engines](#physik-engines)
+- **Film-Modus** — Compute und Darstellung vollständig entkoppelt: die
+  GPU rechnet mit maximalem Durchsatz voraus, der Browser spielt die
+  Timeline wie ein Video (scrubben, zurückspulen, live folgen), siehe
+  [Film-Modus](#film-modus)
+- **Asteroiden-Kollisionen** (optional per Toggle) — Asteroiden prallen
+  wie Kugeln unterschiedlicher Masse voneinander ab (massenabhängiger
+  Slingshot: der schwerere wird blau, der leichtere rot markiert und
+  fliegt weg). Beim Treffer auf einen Planeten/Stern wird ein Asteroid
+  absorbiert; Körper × Körper mit hoher Relativgeschwindigkeit **zerbirst**
+  in Fragmente. Alle drei Pfade greifen live wie im Film
 - **Echtzeit-N-Body-Integration** mit konfigurierbarem Zeitschritt und
   Verlangsamungsfaktor; Pause, Reset und Einzelschritt
 - **Log-Zoom-Modus** für gleichzeitige Sicht auf Sonne und äußere Planeten
@@ -39,13 +47,100 @@ statischen Webserver ausliefern.
   Zentrierung** und **Gitternetz** ein-/ausblendbar
 - **Konfigurationen** lokal speichern, exportieren und importieren
 - **Live-Statistik**: kinetische / potenzielle / Gesamtenergie, Drehimpuls,
-  Schwerpunkt-Drift, Fluchtkurs-Erkennung
+  Schwerpunkt-Drift, Fluchtkurs-Erkennung; Live-Benchmark-Badge (FPS,
+  Tage/s, aktive Engine)
 - **Mobile vollständig unterstützt** — Long-Press, Pinch-Zoom,
   2-Finger-Pan, dedizierte mobile Toolbar und Bottom-Sheet
 - **Mehrsprachig Deutsch / Englisch** — Toggle oben links im Seitenmenü,
   Sprachwahl bleibt im `localStorage` erhalten
-- **Optionale GPU-Beschleunigung** — Physik kann wahlweise im WebWorker
-  oder via WebGPU Compute Shader laufen, jeweils per Toggle umschaltbar
+
+## Physik-Engines
+
+Die Engine ist im Seitenmenü umschaltbar; die Wahl bleibt im
+`localStorage` erhalten.
+
+| Engine | Läuft auf | Eignung |
+|---|---|---|
+| **Hauptthread (CPU)** | Browser, ein Thread | Debug/Referenz |
+| **WebWorker** | Browser, eigener Thread (f64) | Standard — auf den meisten Geräten der schnellste browserinterne Pfad |
+| **WebGPU** | integrierte/dedizierte GPU (f32) | starke GPUs; auf schwacher iGPU langsamer als der Worker |
+| **Hybrid** | Worker + gezielt genauere Asteroiden-Substeps | nahe Begegnungen präziser |
+| **CUDA-Backend** | NVIDIA-GPUs, nativ f64, Multi-GPU | Hunderttausende Körper, Film-Modus |
+
+Interessanterweise ist der **WebWorker** auf vielen (auch schwächeren)
+Rechnern der schnellste browserinterne Pfad: native f64-Arithmetik auf der
+CPU schlägt bei ~7 000 Körpern mit nur ~10 massiven Quellen eine schwache
+iGPU, deren Dispatch-/Sync-Latenzen pro Substep die eigentliche Rechenzeit
+übersteigen. Erst eine starke GPU (WebGPU) oder das CUDA-Backend drehen das
+Verhältnis.
+
+## Film-Modus
+
+Nur mit aktivem CUDA-Backend. Compute und Darstellung sind vollständig
+entkoppelt:
+
+- Ein eigener **GPU-Producer-Prozess** rechnet mit vollem Durchsatz in
+  einen Ringpuffer voraus und stoppt nur, wenn er zu weit vorläuft.
+- Der Browser liest den Puffer als **push-gestreamten Punktfilm** und
+  spielt die Timeline wie ein Videoplayer: **scrubben, zurückspulen, live
+  folgen** an der Produktionskante.
+- Übertragen werden nur Positionen als **Integer-Bildschirmkoordinaten**
+  (server-seitiges View-Culling, u16-Quantisierung); Masse/Sichtbarkeit
+  laufen als kompakte Ereignisse. Bei knapper Bandbreite dünnt der Server
+  die Punktdichte adaptiv aus (**LOD**) — die Physik bleibt exakt, nur die
+  Darstellung wird ausgedünnt.
+- Kollisions-Ereignisse (Merge, Kill, Bounce, Zerbersten) tragen ihren
+  **exakten Ort** und werden zeitrichtig als Explosionen abgespielt.
+- Beim Verlassen des Films oder Engine-Wechsel wird der exakte
+  f64-Zustand an die neue Engine übergeben — kein Impulsverlust.
+
+So bleibt eine Wolke aus **> 250 000 Körpern** flüssig abspielbar, während
+die GPU im Hintergrund weiterrechnet.
+
+## CUDA-Backend
+
+Optional, für die letzten beiden Engines und den Film-Modus. Benötigt
+NVIDIA-GPU(s) mit CUDA-12-Treiber. Das Frontend funktioniert ohne Backend
+vollständig (WebWorker/WebGPU) — das Backend schaltet nur die CUDA-Engine
+und den Film-Modus frei.
+
+### Kernpunkte
+
+- **Native f64-Physik** in einem CuPy/NVRTC-Kernel (Yoshida-4.-Ordnung,
+  identisch zur Worker-Referenz), der ganze Frame läuft als ein
+  cooperative Launch (Grid-Sync).
+- **Multi-GPU-Sharding, hardwareagnostisch**: die Asteroiden werden
+  gewichtet nach f64-Score auf alle tauglichen Karten verteilt, die
+  massiven Körper sind repliziert und bleiben bit-identisch. Die
+  Substep-Synchronisation läuft atomics-frei über PCIe-gemappten
+  Host-Speicher — kein NVLink nötig. Mit einer Karte degeneriert dieselbe
+  Codebahn ohne Overhead.
+- **Hierarchische Zeitschritte**: nur sonnennahe Körper („Taucher")
+  laufen in privaten Feinschleifen, der Rest im groben Raster — statt dass
+  ein einziger Sonnenstürzer die Rate aller Körper drückt.
+- **Kollisions-/Bounce-Erkennung pipelined** auf einer eigenen GPU
+  (f32-Vorfilter + exakte f64-Nachprüfung), überlappt mit der Physik.
+- **Server-Lebenszyklus vom Browser gesteuert**: Auswahl der CUDA-Engine
+  startet den Server on-demand (optional per systemd socket activation),
+  Abwahl beendet ihn nach kurzer Leerlauffrist — GPUs sind im Ruhezustand
+  frei.
+
+### Setup & Start
+
+```bash
+cd backend
+# venv im Projekt-Root, mit CuPy für CUDA 12 (Toolkit im Wheel enthalten):
+python3 -m venv ../venv
+../venv/bin/pip install "cupy-cuda12x[ctk]" websockets numpy
+# Server starten (Default-Port 8765, wählt automatisch die beste f64-GPU):
+../venv/bin/python server.py
+```
+
+Danach im Browser die Engine **„CUDA-Backend (nativ, f64)"** wählen; das
+Frontend verbindet sich per WebSocket (lokal `127.0.0.1:8765`, remote über
+einen Reverse-Proxy). Tests: `python test_kernel.py` (Physik gegen
+NumPy-Referenz + Benchmarks) und `python test_film_golden.py`
+(Kollisionskette Ende-zu-Ende).
 
 ## Bedienung
 
@@ -68,7 +163,10 @@ statischen Webserver ausliefern.
 | Lang halten + ziehen        | Geschwindigkeit setzen                |
 | 2 Finger pinch              | Zoom                                  |
 | 2 Finger ziehen             | Ansicht verschieben                   |
-| Toolbar-Knöpfe              | Pause, Zoom ±, Injizieren, Reset      |
+| Untere Toolbar              | Pause, Zoom ±, Reset, Zentrieren      |
+| Rechte Aktions-Buttons      | Fliehende / Störmassen / Wolken entfernen |
+| Roter FAB unten rechts      | Injizieren (langer Druck: Wolke)      |
+| Hamburger oben links        | Einstellungen-Sheet                   |
 
 Die Sonnensystem-Koordinate einer geplanten Injektion bleibt während
 Zoom, Pan und Pinch stabil — der Marker zeigt sie vor jedem „Injizieren"-
@@ -77,7 +175,7 @@ derselben Stelle.
 
 ## Lokal starten
 
-Es reicht jeder statische Webserver, z. B.:
+Für den Standard-Modus reicht jeder statische Webserver, z. B.:
 
 ```bash
 python3 -m http.server 8080
@@ -87,46 +185,62 @@ python3 -m http.server 8080
 Alternativ einfach `index.html` direkt im Browser öffnen (`file://` —
 die Simulation selbst läuft komplett offline; nur die optionalen
 Footer-Elemente (GoatCounter-Pageview-Zähler, GitHub-Stars-Badge)
-sind dann inaktiv).
+sind dann inaktiv). Für die CUDA-Engine + Film-Modus siehe
+[CUDA-Backend](#cuda-backend).
 
 ## Browser-Performance
 
-Mit großen Asteroidengürteln (~1400 Körper) gibt es deutliche
-Unterschiede zwischen den Browsern:
+Mit großen Asteroidengürteln (~1400 Körper) gibt es Unterschiede zwischen
+den Browsern. Für den browserinternen Betrieb (ohne CUDA-Backend):
 
-**Desktop (Reihenfolge schnell → langsam):**
-
-| Browser | Empfehlung | Bemerkung |
-|---|---|---|
-| **Edge** | WebGPU **an** | Aktuelles Dawn-Backend + DirectX-12-Pfad — flüssigste Performance unter Windows |
-| **Chrome** | WebGPU **an** | Ähnlich zu Edge, je nach Treiber etwas langsamer; Worker als Fallback |
-| **Firefox** | WebGPU **aus** (Worker an) | `wgpu`-Backend noch unreif; Canvas-2D-Path-Operationen sind in Firefox 2–5× teurer pro Call — der WebGPU-Roundtrip kommt erschwerend dazu |
-
-**Android (Reihenfolge schnell → langsam):**
+**Desktop:**
 
 | Browser | Empfehlung | Bemerkung |
 |---|---|---|
-| **Chrome** | WebGPU **an** | Deutlich performanter als Firefox auf Android |
-| **Firefox** | WebGPU **aus** (Worker an) | Auch mobil das schwächere `wgpu`-Backend |
+| **Edge / Chrome** | WebGPU **an** (starke GPU) oder WebWorker | Dawn-Backend + DirectX-12-Pfad; auf schwacher iGPU ist der Worker oft schneller |
+| **Firefox** | WebWorker | `wgpu`-Backend noch unreif; Canvas-Operationen in Firefox teurer pro Call |
+
+**Android:**
+
+| Browser | Empfehlung | Bemerkung |
+|---|---|---|
+| **Chrome** | WebWorker oder WebGPU | Auf den meisten Geräten liefert der Worker die stabilsten 60 fps |
+| **Firefox** | WebWorker | Schwächeres `wgpu`-Backend |
 
 Bei wenigen Bodies (Standard-Szenarien ohne Gürtel) macht der Unterschied
-keine Rolle; alle Browser laufen flüssig auf 60 fps.
+keine Rolle; alle Browser laufen flüssig auf 60 fps. Für Hunderttausende
+Körper führt kein Weg am CUDA-Backend vorbei.
 
 ## Technik
 
-- **Reines HTML / CSS / Canvas-2D / Vanilla-JS** in einer einzigen Datei
-- **N-Body-Integration** mit symplektischem Verlet-Schritt (Yoshida-4.
-  Ordnung); asteroidenreiche Szenarien überspringen die Asteroid-Asteroid-
-  Gravitation für O(N)-Aufwand statt O(N²)
+### Frontend (single-file)
+
+- **Reines HTML / CSS / Vanilla-JS** in einer Datei; Asteroiden werden per
+  **WebGL-Punkt-Batch** in einem Draw-Call gerendert (statt zehntausender
+  Canvas-Calls), Rest über Canvas-2D.
+- **N-Body-Integration** mit symplektischem Verlet (Yoshida-4. Ordnung);
+  asteroidenreiche Szenarien überspringen die Asteroid-Asteroid-Gravitation
+  für O(N)- statt O(N²)-Aufwand.
 - **Kontinuierliche Kollisionserkennung (CCD)** über parametrischen
   Bahnschnitt — schnelle Begegnungen (Wolke gegen Gürtel im Gegenlauf)
-  werden erkannt und korrekt zum Kontaktzeitpunkt aufgelöst, ohne dass
-  Körper durcheinander hindurchtunneln
+  werden zum Kontaktzeitpunkt aufgelöst, ohne dass Körper hindurchtunneln.
 - **Keine Build-Pipeline, kein npm, keine Bibliotheken** — die Sim-Engine
-  selbst lädt nichts nach. Nur der Footer holt optional GoatCounter
-  (privacy-friendly Pageview-Zähler) und den aktuellen GitHub-Stars-Wert
-  vom GitHub-API; ohne Netz fehlt nur das Stars-Badge
-- **`localStorage`** für gespeicherte Konfigurationen und UI-Settings
+  lädt nichts nach. Nur der Footer holt optional GoatCounter (privacy-
+  friendly Pageview-Zähler) und den GitHub-Stars-Wert.
+- **`localStorage`** für gespeicherte Konfigurationen und UI-Settings.
+
+### Backend (optional, `backend/`)
+
+- **Python + CuPy/NVRTC** — `server.py` (WebSocket-Server, Session-
+  Verwaltung, v4-Integer-Streaming mit Culling und LOD),
+  `nbody_kernel.py` (Multi-GPU-f64-Kernel mit hierarchischen
+  Zeitschritten), `film_producer.py` (Producer-Prozess: Ringpuffer,
+  Kollisions-/Bounce-/Zerberst-Erkennung).
+- **Prozess-Split**: der Producer besitzt die GPU exklusiv, der Server
+  beantwortet Puffer-Anfragen aus dem Shared Memory in Mikrosekunden — die
+  Physik-GPU verhungert nie am GIL.
+- Tests: `test_kernel.py` (Kernel gegen NumPy-Referenz, 1/2/3-GPU +
+  Benchmarks), `test_film_golden.py` (Kollisionskette Ende-zu-Ende).
 
 ## Stargazers über die Zeit
 
