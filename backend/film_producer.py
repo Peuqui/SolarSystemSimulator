@@ -541,6 +541,13 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 for res in future.result():
                     apply_analysis(res)
                 future = None
+                # ERST JETZT sind die Ereignisse des vorigen Batches im
+                # Ring — vorher gemeldete Samples haetten der Player
+                # abgespielt, bevor ihre Kollisionen ueberhaupt
+                # existieren (die Explosionen kamen 1-4 Tage zu spaet).
+                # head laeuft daher bewusst K Raster hinter der
+                # Rohproduktion her: was gemeldet wird, ist vollstaendig.
+                head_val.value = k
             if dump_req_val.value == 1:
                 dump_state()
                 dump_req_val.value = 2
@@ -564,7 +571,6 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 buf[slot * sample_bytes:(slot + 1) * sample_bytes] = \
                     outs[i][0:2 * n].tobytes()
             k += K
-            head_val.value = k
             if ast_bounce and k % 500 == 0 and bounce_count:
                 print(f"[film] {bounce_count} asti-bounces nach "
                       f"{k} samples", flush=True)

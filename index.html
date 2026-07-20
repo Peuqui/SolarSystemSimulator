@@ -2231,6 +2231,7 @@ function verletStep(dt) {
   const N = bodies.length;
   for (let i = 0; i < N; i++) {
     if (!bodies[i].visible) continue;   // ausgeschaltete Koerper: eingefroren
+    if (bodies[i]._hot) continue;       // laeuft in der Feinschleife
     bodies[i].x += bodies[i].vx * dt + 0.5 * bodies[i].ax * dt * dt;
     bodies[i].y += bodies[i].vy * dt + 0.5 * bodies[i].ay * dt * dt;
   }
@@ -2243,6 +2244,7 @@ function verletStep(dt) {
   computeAccelerations();
   for (let i = 0; i < N; i++) {
     if (!bodies[i].visible) continue;
+    if (bodies[i]._hot) continue;       // laeuft in der Feinschleife
     bodies[i].vx += 0.5 * (oldAx[i] + bodies[i].ax) * dt;
     bodies[i].vy += 0.5 * (oldAy[i] + bodies[i].ay) * dt;
   }
@@ -2255,10 +2257,140 @@ function verletStep(dt) {
 // Summe der Gewichte = 1, der Gesamtschritt advanciert also exakt um dt.
 const YOSHIDA_W1 = 1 / (2 - Math.cbrt(2));
 const YOSHIDA_W0 = -Math.cbrt(2) / (2 - Math.cbrt(2));
+// --- Hierarchische Zeitschritte -------------------------------------
+// Asteroiden druecken den globalen Zeitschritt bewusst NICHT (sonst
+// kollabiert er bei grossen Wolken dauerhaft — es ist immer irgendeiner
+// nah an einem Planeten). Fuer Koerper, die gerade eine enge Begegnung
+// haben ("heiss"), ist der grobe Schritt aber fatal: im Perihel
+// explodiert die 1/r²-Kraft und sie werden numerisch KATAPULTIERT statt
+// einzuschlagen (gemessen: 4 von 5 radial fallenden Asteroiden flogen
+// mit bis zu 5790 AU/Jahr hinaus). Deshalb wie im CUDA-Kernel: die
+// wenigen heissen Koerper laufen in einer privaten Feinschleife mit
+// eigenem adaptiven Schritt, waehrend alle anderen grob bleiben. Die
+// massiven Koerper werden dabei linear ueber das Segment interpoliert.
+const _hotList = [];
+let _hotMx0 = new Float64Array(0), _hotMy0 = new Float64Array(0);
+function markHotBodies(dtH) {
+  _hotList.length = 0;
+  collectMassiveIndices();
+  const nm = _massIdx.length;
+  if (_hotMx0.length < nm) {
+    _hotMx0 = new Float64Array(nm * 2);
+    _hotMy0 = new Float64Array(nm * 2);
+  }
+  for (let k = 0; k < nm; k++) {
+    const m = bodies[_massIdx[k]];
+    _hotMx0[k] = m.x; _hotMy0[k] = m.y;
+  }
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i];
+    b._hot = false;
+    if (!b.visible || !b.isAsteroid) continue;
+    for (let k = 0; k < nm; k++) {
+      const m = bodies[_massIdx[k]];
+      const dx = m.x - b.x, dy = m.y - b.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1e-12;
+      const dvx = m.vx - b.vx, dvy = m.vy - b.vy;
+      const vrel = Math.sqrt(dvx * dvx + dvy * dvy);
+      if (vrel > 1e-9 && dist / vrel / 20 < dtH) {
+        b._hot = true;
+        _hotList.push(b);
+        break;
+      }
+    }
+  }
+}
+// Feinintegration der heissen Koerper ueber das Segment [0, dtH].
+// Massive Positionen linear interpoliert (Anfang _hotMx0 -> jetzige).
+function integrateHotBodies(dtH) {
+  if (_hotList.length === 0) return;
+  const nm = _massIdx.length;
+  const floor = MAX_SUB_DT_YEARS / 1000;
+  for (let h = 0; h < _hotList.length; h++) {
+    const b = _hotList[h];
+    let px = b.x, py = b.y, pvx = b.vx, pvy = b.vy;
+    let tau = 0, guard = 0;
+    while (tau < dtH - 1e-15 && guard++ < 8000) {
+      // eigener adaptiver Schritt gegen die interpolierten Massiven
+      let dtF = MAX_SUB_DT_YEARS;
+      const al = tau / dtH;
+      for (let k = 0; k < nm; k++) {
+        const m = bodies[_massIdx[k]];
+        const mxi = _hotMx0[k] + (m.x - _hotMx0[k]) * al;
+        const myi = _hotMy0[k] + (m.y - _hotMy0[k]) * al;
+        const dx = mxi - px, dy = myi - py;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1e-12;
+        const dvx = m.vx - pvx, dvy = m.vy - pvy;
+        const vrel = Math.sqrt(dvx * dvx + dvy * dvy);
+        if (vrel > 1e-9) {
+          const tE = dist / vrel / 20;
+          if (tE < dtF) dtF = tE;
+        }
+      }
+      if (dtF < floor) dtF = floor;
+      if (dtF > dtH - tau) dtF = dtH - tau;
+      // Beruehrung mit einem massiven Koerper? Dann den Asteroiden GENAU
+      // hier stehen lassen und abbrechen — handleCollisions loest den
+      // Treffer danach mit der normalen Logik auf (merge/absorb/...).
+      // Ohne das rauscht ein Sonnentaucher in der Feinschleife durchs
+      // Zentrum und ist am Frame-Ende laengst wieder draussen; die
+      // Kollisionspruefung (1x pro Frame) sieht dann nur Anfang und Ende
+      // und findet nichts — im Film mit 0,5-Tage-Raster wurde derselbe
+      // Einschlag erkannt (9981 vs 237 Kollisionen).
+      let kontakt = false;
+      for (let k = 0; k < nm; k++) {
+        const m = bodies[_massIdx[k]];
+        const mxi = _hotMx0[k] + (m.x - _hotMx0[k]) * al;
+        const myi = _hotMy0[k] + (m.y - _hotMy0[k]) * al;
+        const dx = mxi - px, dy = myi - py;
+        const touch = (m.realR || 0) + (b.realR || 0);
+        if (dx * dx + dy * dy <= touch * touch) { kontakt = true; break; }
+      }
+      if (kontakt) break;
+      // Yoshida (3 Verlets) mit interpolierten Massiv-Positionen
+      let tSub = tau;
+      for (let w = 0; w < 3; w++) {
+        const df = (w === 1 ? YOSHIDA_W0 : YOSHIDA_W1) * dtF;
+        let acx = 0, acy = 0;
+        let a0 = tSub / dtH;
+        for (let k = 0; k < nm; k++) {
+          const m = bodies[_massIdx[k]];
+          const mxi = _hotMx0[k] + (m.x - _hotMx0[k]) * a0;
+          const myi = _hotMy0[k] + (m.y - _hotMy0[k]) * a0;
+          const dx = mxi - px, dy = myi - py;
+          const r2 = dx * dx + dy * dy + 1e-6;
+          const f = G_AU / (r2 * Math.sqrt(r2));
+          acx += f * m.mass * dx; acy += f * m.mass * dy;
+        }
+        px += pvx * df + 0.5 * acx * df * df;
+        py += pvy * df + 0.5 * acy * df * df;
+        tSub += df;
+        let ncx = 0, ncy = 0;
+        const a1 = tSub / dtH;
+        for (let k = 0; k < nm; k++) {
+          const m = bodies[_massIdx[k]];
+          const mxi = _hotMx0[k] + (m.x - _hotMx0[k]) * a1;
+          const myi = _hotMy0[k] + (m.y - _hotMy0[k]) * a1;
+          const dx = mxi - px, dy = myi - py;
+          const r2 = dx * dx + dy * dy + 1e-6;
+          const f = G_AU / (r2 * Math.sqrt(r2));
+          ncx += f * m.mass * dx; ncy += f * m.mass * dy;
+        }
+        pvx += 0.5 * (acx + ncx) * df;
+        pvy += 0.5 * (acy + ncy) * df;
+      }
+      tau += dtF;
+    }
+    b.x = px; b.y = py; b.vx = pvx; b.vy = pvy;
+  }
+}
 function step(dt) {
+  markHotBodies(dt);          // heisse Koerper aus dem groben Schritt nehmen
   verletStep(YOSHIDA_W1 * dt);
   verletStep(YOSHIDA_W0 * dt);
   verletStep(YOSHIDA_W1 * dt);
+  integrateHotBodies(dt);     // ... und privat fein nachintegrieren
+  for (let h = 0; h < _hotList.length; h++) _hotList[h]._hot = false;
 }
 
 // Bahnspur-Punkte aufzeichnen — pro Substep aufgerufen. Aufgezeichnet wird
@@ -3561,7 +3693,7 @@ function createPhysWorker() {
     const MAX_SUB_DT_YEARS = ${0.5 / 365.25};
     const YOSHIDA_W1 = 1 / (2 - Math.cbrt(2));
     const YOSHIDA_W0 = -Math.cbrt(2) / (2 - Math.cbrt(2));
-    let X, Y, VX, VY, AX, AY, M, V, A;
+    let X, Y, VX, VY, AX, AY, M, V, A, R;
     let N = 0;
     let ASTAD = 0;   // 1 = Asteroiden beeinflussen adaptDt (Hybrid-Modus)
     // Wiederverwendbare Buffer: Index-Liste der massiven Koerper (die
@@ -3628,22 +3760,131 @@ function createPhysWorker() {
     }
     function verlet(dt) {
       for (let i = 0; i < N; i++) {
-        if (!V[i]) continue;
+        if (!V[i] || (HOT.length && HOT[i])) continue;   // heiss: Feinschleife
         X[i] += VX[i] * dt + 0.5 * AX[i] * dt * dt;
         Y[i] += VY[i] * dt + 0.5 * AY[i] * dt * dt;
       }
       for (let i = 0; i < N; i++) { oAx[i] = AX[i]; oAy[i] = AY[i]; }
       computeAccel();
       for (let i = 0; i < N; i++) {
-        if (!V[i]) continue;
+        if (!V[i] || (HOT.length && HOT[i])) continue;
         VX[i] += 0.5 * (oAx[i] + AX[i]) * dt;
         VY[i] += 0.5 * (oAy[i] + AY[i]) * dt;
       }
     }
+    // Hierarchische Zeitschritte — SPIEGEL von markHotBodies/
+    // integrateHotBodies im Main-Thread (und der Feinschleife im
+    // CUDA-Kernel). Ohne sie werden Sonnentaucher im Perihel numerisch
+    // katapultiert statt einzuschlagen, weil Asteroiden den globalen
+    // Schritt bewusst nicht druecken.
+    let HOT = new Uint8Array(0);
+    let HOTN = 0, HOTI = new Int32Array(0);
+    let MX0 = new Float64Array(0), MY0 = new Float64Array(0);
+    function markHot(dtH) {
+      if (HOT.length < N) { HOT = new Uint8Array(N); HOTI = new Int32Array(N); }
+      collectMassive();
+      if (MX0.length < mCount) {
+        MX0 = new Float64Array(mCount * 2);
+        MY0 = new Float64Array(mCount * 2);
+      }
+      for (let k = 0; k < mCount; k++) { MX0[k] = X[MI[k]]; MY0[k] = Y[MI[k]]; }
+      HOTN = 0;
+      for (let i = 0; i < N; i++) {
+        HOT[i] = 0;
+        if (!V[i] || !A[i]) continue;
+        for (let k = 0; k < mCount; k++) {
+          const j = MI[k];
+          const dx = X[j] - X[i], dy = Y[j] - Y[i];
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
+          const dvx = VX[j] - VX[i], dvy = VY[j] - VY[i];
+          const vrel = Math.sqrt(dvx*dvx + dvy*dvy);
+          if (vrel > 1e-9 && dist / vrel / 20 < dtH) {
+            HOT[i] = 1; HOTI[HOTN++] = i; break;
+          }
+        }
+      }
+    }
+    function integrateHot(dtH) {
+      if (HOTN === 0) return;
+      const floor = MAX_SUB_DT_YEARS / 1000;
+      for (let h = 0; h < HOTN; h++) {
+        const i = HOTI[h];
+        let px = X[i], py = Y[i], pvx = VX[i], pvy = VY[i];
+        let tau = 0, guard = 0;
+        while (tau < dtH - 1e-15 && guard++ < 8000) {
+          let dtF = MAX_SUB_DT_YEARS;
+          const al = tau / dtH;
+          for (let k = 0; k < mCount; k++) {
+            const j = MI[k];
+            const mxi = MX0[k] + (X[j] - MX0[k]) * al;
+            const myi = MY0[k] + (Y[j] - MY0[k]) * al;
+            const dx = mxi - px, dy = myi - py;
+            const dist = Math.sqrt(dx*dx + dy*dy) || 1e-12;
+            const dvx = VX[j] - pvx, dvy = VY[j] - pvy;
+            const vrel = Math.sqrt(dvx*dvx + dvy*dvy);
+            if (vrel > 1e-9) {
+              const tE = dist / vrel / 20;
+              if (tE < dtF) dtF = tE;
+            }
+          }
+          if (dtF < floor) dtF = floor;
+          if (dtF > dtH - tau) dtF = dtH - tau;
+          // Kontakt mit einem massiven Koerper: hier stehenbleiben, der
+          // Main-Thread loest den Treffer nach dem Worker-Return auf.
+          let kontakt = false;
+          for (let k = 0; k < mCount; k++) {
+            const j = MI[k];
+            const mxi = MX0[k] + (X[j] - MX0[k]) * al;
+            const myi = MY0[k] + (Y[j] - MY0[k]) * al;
+            const dx = mxi - px, dy = myi - py;
+            const touch = R[j] + R[i];
+            if (dx*dx + dy*dy <= touch * touch) { kontakt = true; break; }
+          }
+          if (kontakt) break;
+          let tSub = tau;
+          for (let w = 0; w < 3; w++) {
+            const df = (w === 1 ? YOSHIDA_W0 : YOSHIDA_W1) * dtF;
+            let acx = 0, acy = 0;
+            const a0 = tSub / dtH;
+            for (let k = 0; k < mCount; k++) {
+              const j = MI[k];
+              const mxi = MX0[k] + (X[j] - MX0[k]) * a0;
+              const myi = MY0[k] + (Y[j] - MY0[k]) * a0;
+              const dx = mxi - px, dy = myi - py;
+              const r2 = dx*dx + dy*dy + 1e-6;
+              const f = G_AU / (r2 * Math.sqrt(r2));
+              acx += f * M[j] * dx; acy += f * M[j] * dy;
+            }
+            px += pvx * df + 0.5 * acx * df * df;
+            py += pvy * df + 0.5 * acy * df * df;
+            tSub += df;
+            let ncx = 0, ncy = 0;
+            const a1 = tSub / dtH;
+            for (let k = 0; k < mCount; k++) {
+              const j = MI[k];
+              const mxi = MX0[k] + (X[j] - MX0[k]) * a1;
+              const myi = MY0[k] + (Y[j] - MY0[k]) * a1;
+              const dx = mxi - px, dy = myi - py;
+              const r2 = dx*dx + dy*dy + 1e-6;
+              const f = G_AU / (r2 * Math.sqrt(r2));
+              ncx += f * M[j] * dx; ncy += f * M[j] * dy;
+            }
+            pvx += 0.5 * (acx + ncx) * df;
+            pvy += 0.5 * (acy + ncy) * df;
+          }
+          tau += dtF;
+        }
+        X[i] = px; Y[i] = py; VX[i] = pvx; VY[i] = pvy;
+      }
+      for (let h = 0; h < HOTN; h++) HOT[HOTI[h]] = 0;
+      HOTN = 0;
+    }
     function step(dt) {
+      markHot(dt);
       verlet(YOSHIDA_W1 * dt);
       verlet(YOSHIDA_W0 * dt);
       verlet(YOSHIDA_W1 * dt);
+      integrateHot(dt);
     }
     function adaptDt() {
       let dt = MAX_SUB_DT_YEARS;
@@ -3678,7 +3919,7 @@ function createPhysWorker() {
     self.onmessage = function(e) {
       const d = e.data;
       X = d.x; Y = d.y; VX = d.vx; VY = d.vy; AX = d.ax; AY = d.ay;
-      M = d.mass; V = d.visible; A = d.isAst;
+      M = d.mass; V = d.visible; A = d.isAst; R = d.realR;
       ASTAD = d.astAdaptive ? 1 : 0;
       N = X.length;
       if (MI.length < N) {
@@ -3698,9 +3939,9 @@ function createPhysWorker() {
       // Alle Buffer zuruecktransferieren — der Main-Thread recycelt sie
       // fuer den naechsten Frame (Ping-Pong statt 9 Allokationen/Frame).
       self.postMessage({ x: X, y: Y, vx: VX, vy: VY, ax: AX, ay: AY,
-                         mass: M, visible: V, isAst: A },
+                         mass: M, visible: V, isAst: A, realR: R },
         [X.buffer, Y.buffer, VX.buffer, VY.buffer, AX.buffer, AY.buffer,
-         M.buffer, V.buffer, A.buffer]);
+         M.buffer, V.buffer, A.buffer, R.buffer]);
     };
   `;
   const blob = new Blob([src], { type: 'application/javascript' });
@@ -3748,7 +3989,8 @@ function advanceWorker(dtYears, list) {
     // Optionaler Subset (Hybrid: nur massive Koerper) — sonst alle Bodies.
     const src = list || bodies;
     const N = src.length;
-    const pool = (_workerBufPool && _workerBufPool.x.length === N) ? _workerBufPool : null;
+    const pool = (_workerBufPool && _workerBufPool.x.length === N &&
+                  _workerBufPool.realR) ? _workerBufPool : null;
     _workerBufPool = null;
     const x = pool ? pool.x : new Float64Array(N), y = pool ? pool.y : new Float64Array(N);
     const vx = pool ? pool.vx : new Float64Array(N), vy = pool ? pool.vy : new Float64Array(N);
@@ -3756,6 +3998,9 @@ function advanceWorker(dtYears, list) {
     const mass = pool ? pool.mass : new Float64Array(N);
     const visible = pool ? pool.visible : new Uint8Array(N);
     const isAst = pool ? pool.isAst : new Uint8Array(N);
+    // realR: die Feinschleife im Worker braucht die Beruehrungsradien,
+    // um einen Einschlag am Kontaktpunkt anzuhalten.
+    const realR = pool ? pool.realR : new Float64Array(N);
     for (let i = 0; i < N; i++) {
       const b = src[i];
       x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
@@ -3763,15 +4008,17 @@ function advanceWorker(dtYears, list) {
       mass[i] = b.mass;
       visible[i] = b.visible ? 1 : 0;
       isAst[i] = b.isAsteroid ? 1 : 0;
+      realR[i] = b.realR || 0;
     }
     workerInflightRefs = src.slice();
     workerBusy = true;
     workerResolver = resolve;
     // astAdaptive: nur im Hybrid (explizite Worker-Liste) sollen Asteroiden
     // die Schrittweite mitbestimmen — siehe adaptDt im Worker.
-    physWorker.postMessage({ x, y, vx, vy, ax, ay, mass, visible, isAst, dt: dtYears,
-                             astAdaptive: !!list },
-      [x.buffer, y.buffer, vx.buffer, vy.buffer, ax.buffer, ay.buffer, mass.buffer, visible.buffer, isAst.buffer]);
+    physWorker.postMessage({ x, y, vx, vy, ax, ay, mass, visible, isAst, realR,
+                             dt: dtYears, astAdaptive: !!list },
+      [x.buffer, y.buffer, vx.buffer, vy.buffer, ax.buffer, ay.buffer, mass.buffer,
+       visible.buffer, isAst.buffer, realR.buffer]);
   });
 }
 
@@ -5635,11 +5882,27 @@ function _tryCollide(a, b, dtFrame) {
   return path !== 'bounce';
 }
 
+// Ein struktureller Treffer (merge/absorb/shatter) entfernt Koerper aus
+// bodies[] und verschiebt damit die Indizes im Asteroiden-Grid — die
+// laufende Suche muss deshalb abbrechen. Frueher blieb es dabei: pro
+// Frame wurde GENAU EINE Kollision aufgeloest. Bei einer einstuerzenden
+// Wolke (tausende gleichzeitige Einschlaege) sind die Asteroiden dann
+// laengst wieder aus dem Koerper heraus, bevor sie an der Reihe waeren —
+// es wurden nur ~1 Treffer pro Frame erkannt (gemessen: 110 statt ~5000).
+// Jetzt wird die Suche nach jedem Treffer neu aufgesetzt, gedeckelt auf
+// MAX_COLL_PASSES Aufloesungen pro Frame (der Grid-Neuaufbau ist O(N)).
+const MAX_COLL_PASSES = 64;
 function handleCollisions(dtFrame) {
+  let runden = 0;
+  while (runden++ < MAX_COLL_PASSES && _handleCollisionsPass(dtFrame)) { /* weiter */ }
+}
+function _handleCollisionsPass(dtFrame) {
   // dtFrame ist die Zeit seit dem letzten Snapshot in Jahren (gleiche
   // Einheit wie vx/vy). Wird an _tryCollide weitergegeben fuer den CCD-
   // Bahn-Schnitt, der Tunneling bei hoher Relativgeschwindigkeit erfasst
   // (Asteroid sausen sonst zwischen zwei Frames durch Planeten hindurch).
+  // Rueckgabe: true = ein struktureller Treffer wurde aufgeloest (das
+  // bodies-Array hat sich geaendert, ein weiterer Durchlauf lohnt sich).
   dtFrame = dtFrame || 0;
   // Drei Phasen — Asteroid-Asteroid optional ueber Toggle (Phase 4).
   const planets = [];
@@ -5650,7 +5913,7 @@ function handleCollisions(dtFrame) {
   // Phase 1: Planet x Planet — klassisches O(M^2), bei M ~ 10 trivial.
   for (let i = 0; i < planets.length; i++) {
     for (let j = i + 1; j < planets.length; j++) {
-      if (_tryCollide(planets[i], planets[j], dtFrame)) return;
+      if (_tryCollide(planets[i], planets[j], dtFrame)) return true;
     }
   }
   // Phase 2: Asteroiden ins Grid einsortieren (Counting-Sort, O(N_ast)) und
@@ -5670,7 +5933,7 @@ function handleCollisions(dtFrame) {
     const range = Math.min(8, Math.max(1, Math.ceil(sweepAU * INV_COLL_CELL) + 1));
     for (let dx = -range; dx <= range; dx++) {
       for (let dy = -range; dy <= range; dy++) {
-        if (_scanAstCell(pcx + dx, pcy + dy, p, -1, dtFrame)) return;
+        if (_scanAstCell(pcx + dx, pcy + dy, p, -1, dtFrame)) return true;
       }
     }
   }
@@ -5714,7 +5977,7 @@ function handleCollisions(dtFrame) {
               if (_agCx[idx] !== cx || _agCy[idx] !== cy) continue;
               const b = bodies[_agItems[idx]];
               if (b._astSeq <= aSeq) continue;
-              if (_tryCollide(a, b, dtFrame)) return;
+              if (_tryCollide(a, b, dtFrame)) return true;
             }
           }
         }
@@ -5728,14 +5991,15 @@ function handleCollisions(dtFrame) {
         const acx = Math.floor(a.x * INV_COLL_CELL);
         const acy = Math.floor(a.y * INV_COLL_CELL);
         const aSeq = a._astSeq;
-        if (_scanAstCell(acx,     acy,     a, aSeq, dtFrame)) return;
-        if (_scanAstCell(acx + 1, acy,     a, -1,   dtFrame)) return;
-        if (_scanAstCell(acx + 1, acy + 1, a, -1,   dtFrame)) return;
-        if (_scanAstCell(acx,     acy + 1, a, -1,   dtFrame)) return;
-        if (_scanAstCell(acx - 1, acy + 1, a, -1,   dtFrame)) return;
+        if (_scanAstCell(acx,     acy,     a, aSeq, dtFrame)) return true;
+        if (_scanAstCell(acx + 1, acy,     a, -1,   dtFrame)) return true;
+        if (_scanAstCell(acx + 1, acy + 1, a, -1,   dtFrame)) return true;
+        if (_scanAstCell(acx,     acy + 1, a, -1,   dtFrame)) return true;
+        if (_scanAstCell(acx - 1, acy + 1, a, -1,   dtFrame)) return true;
       }
     }
   }
+  return false;   // nichts Strukturelles passiert
 }
 
 let centerInTransit = false;   // Kamera faehrt gerade auf ein neues Ziel
