@@ -593,6 +593,10 @@ input[type=range] {
     <span data-i18n="lbl.film-raster">Sample-Raster (Tage)</span> <span class="val" id="film-raster-val">0,5</span>
     <input type="range" autocomplete="off" id="film-raster" min="-1" max="1" step="0.05" value="-0.3">
   </label>
+  <label data-i18n-title="tt.film-speed" id="lbl-film-speed" style="display:none; margin-left:20px;">
+    <span data-i18n="lbl.film-speed">Abspieltempo (Tage/s)</span> <span class="val" id="film-speed-val">60</span>
+    <input type="range" autocomplete="off" id="film-speed" min="-1" max="3" step="0.01" value="1.78">
+  </label>
   <label data-i18n-title="tt.film-interp" id="lbl-film-interp" style="display:none; margin-left:20px;">
     <input type="checkbox" id="chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span>
   </label>
@@ -774,6 +778,7 @@ input[type=range] {
   <label data-i18n-title="tt.hybrid-near" style="margin-left:20px;"><input type="checkbox" id="mob-chk-hybrid-near"> <span data-i18n="lbl.hybrid-near">Enge Begegnungen präzise</span></label>
   <label data-i18n-title="tt.cuda" id="mob-lbl-engine-cuda" style="display:none;"><input type="radio" name="engine-mob" id="mob-rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span></label>
   <label data-i18n-title="tt.film" id="mob-lbl-film-mode" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film"> <span data-i18n="lbl.film">Film-Modus</span></label>
+  <label data-i18n-title="tt.film-speed" id="mob-lbl-film-speed" style="display:none; margin-left:20px;"><span data-i18n="lbl.film-speed">Abspieltempo (Tage/s)</span> <span class="val" id="mob-film-speed-val">60</span><input type="range" autocomplete="off" id="mob-film-speed" min="-1" max="3" step="0.01" value="1.78"></label>
   <label data-i18n-title="tt.film-interp" id="mob-lbl-film-interp" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
@@ -1002,6 +1007,8 @@ const I18N = {
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
     'tt.cuda': 'Natives CUDA-Backend auf Mini (Tesla V100, f64): volle Präzision UND Geschwindigkeit. Erscheint nur, wenn der lokale Backend-Server läuft (backend/server.py).',
     'lbl.film': 'Film-Modus',
+    'lbl.film-speed': 'Abspieltempo (Tage/s)',
+    'tt.film-speed': 'Wie schnell die vorgerechnete Timeline abgespielt wird, direkt in Sim-Tagen pro Sekunde. Reine Wiedergabegeschwindigkeit — die Physik ist bereits gerechnet, langsameres Abspielen kostet KEINE Genauigkeit. Vorher ergab sich das Tempo aus "Tage pro Schritt" mal 60 geteilt durch die Verlangsamung; zwei gegenläufige Regler hoben sich dabei auf. Liegt das Tempo über der Produktionsrate der GPU, klebt der Playhead an der Live-Kante und es stockt.',
     'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'lbl.film-interp': 'Zwischenbilder interpolieren',
@@ -1250,6 +1257,8 @@ const I18N = {
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
     'tt.cuda': 'Native CUDA backend (Tesla V100, f64): full precision AND speed. Only appears when the local backend server is running (backend/server.py).',
     'lbl.film': 'Film mode',
+    'lbl.film-speed': 'Playback speed (days/s)',
+    'tt.film-speed': 'How fast the precomputed timeline plays back, directly in sim days per second. Pure playback speed — the physics is already computed, so playing slower costs NO accuracy. Previously the speed derived from "days per step" times 60 divided by the slowdown factor; two opposing sliders could cancel each other out. If the speed exceeds the GPU production rate, the playhead sticks to the live edge and stutters.',
     'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
     'lbl.film-interp': 'Interpolate between samples',
@@ -4095,6 +4104,7 @@ let _cudaDisconnectTimer = null;
 function _cudaSetVisible(visible) {
   for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda',
                     'lbl-film-mode', 'mob-lbl-film-mode', 'lbl-film-raster',
+                    'lbl-film-speed', 'mob-lbl-film-speed',
                     'lbl-film-interp', 'mob-lbl-film-interp']) {
     const el = document.getElementById(id);
     if (el) el.style.display = visible ? '' : 'none';
@@ -4781,6 +4791,15 @@ let _filmSubCam = null;
 // gestreamten Positionen zeigen: exakt, aber die Anzeige laeuft dann nur
 // mit der Sample-Rate (je nach Tempo unter 10 Bilder/s).
 let filmInterp = true;
+// Abspieltempo des Films in SIM-TAGEN PRO SEKUNDE — direkt eingestellt,
+// nicht mehr aus dtDays * 60 / slowFactor zusammengerechnet. Dort hoben
+// sich zwei gegenlaeufige Regler auf (dt 0,1 bei Verlangsamung 0,1 ergibt
+// dieselben 60 Tage/s wie dt 1 bei Verlangsamung 1), was beim Suchen nach
+// einem fluessigen Tempo in die Irre fuehrte. Im Film-Modus ist das reine
+// Wiedergabegeschwindigkeit: Die Physik ist bereits gerechnet, langsamer
+// abspielen kostet keine Genauigkeit (anders als das Raster, das zugleich
+// der Integrationsschritt ist).
+let filmSpeed = 60;
 let _filmHandover = false;   // Engine-Uebergabe: warten bis f64-Dump da ist
 let _filmRestartPending = false;   // Film-Neustart wartet auf f64-Dump
 let _filmShatterPending = null;    // { a, b, t, x, y, vx, vy } (status=7)
@@ -5021,7 +5040,7 @@ function filmTick(dtDays, slowFactor, nowMs) {
   }
   const delta = _filmPrevMs ? Math.min(nowMs - _filmPrevMs, 250) : 16.7;
   _filmPrevMs = nowMs;
-  const rate = dtDays * 60 / slowFactor;       // Tage pro Echtzeit-Sekunde
+  const rate = filmSpeed;                      // Tage pro Echtzeit-Sekunde
   _filmRate = rate;
   // Live-Kante EXTRAPOLIEREN: filmQueue.head ist der Stand der letzten
   // Antwort — dazwischen waechst der Puffer mit der geschaetzten
@@ -5136,6 +5155,17 @@ function filmTick(dtDays, slowFactor, nowMs) {
       const o = document.getElementById(other);
       if (o) o.checked = useFilm;
     }
+    // dt/Verlangsamung steuern im Film-Modus nichts mehr: Das Abspieltempo
+    // hat einen eigenen Regler, und der Integrationsschritt kommt aus dem
+    // Sample-Raster. Sperren statt wirkungslos bedienbar lassen.
+    for (const id of ['dt-slider', 'slow-slider',
+                      'mob-dt-slider', 'mob-slow-slider']) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.disabled = useFilm;
+        if (el.parentElement) el.parentElement.style.opacity = useFilm ? 0.4 : '';
+      }
+    }
     if (useFilm && useCuda && cudaReady) {
       filmStart();
     } else {
@@ -5157,6 +5187,20 @@ document.getElementById('film-live').addEventListener('click', () => {
   filmPlayheadDays = _filmMetaHead > 0 ? _filmMetaHead : filmPlayheadDays;
   filmQueue = null;
   filmSub(filmPlayheadDays, true);
+});
+['film-speed', 'mob-film-speed'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('input', function() {
+    filmSpeed = Math.pow(10, parseFloat(this.value));
+    const txt = fmtDE(filmSpeed, filmSpeed < 10 ? 1 : 0);
+    for (const [s, v] of [['film-speed', 'film-speed-val'],
+                          ['mob-film-speed', 'mob-film-speed-val']]) {
+      const se = document.getElementById(s);
+      const ve = document.getElementById(v);
+      if (se) se.value = this.value;
+      if (ve) ve.textContent = txt;
+    }
+  });
 });
 ['chk-film-interp', 'mob-chk-film-interp'].forEach(id => {
   const el = document.getElementById(id);
