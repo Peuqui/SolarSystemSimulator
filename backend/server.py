@@ -522,15 +522,33 @@ class FilmSession:
         # unterscheiden sich sichtbar um ein Drittel — mit harter Kante
         # entlang der Zellgrenze. Genau das erzeugte rechteckige
         # Block-Artefakte im Bild.
-        rate = np.zeros(k * k)
-        np.divide(ziel, anzahl, out=rate, where=belegt)
+        rate = np.zeros(k * k).reshape(k, k)   # [cy, cx]
+        np.divide(ziel, anzahl, out=rate.reshape(-1), where=belegt)
+        # Behalte-Rate BILINEAR zwischen den Zellzentren interpolieren
+        # statt pro Zelle konstant: sonst springt die Rate an jeder
+        # Zellgrenze hart, und bei nahem Zoom (wenige grosse Zellen im
+        # Bild) sieht man das als Schachbrettraster. Der Punkt liegt bei
+        # kontinuierlichen Zellkoordinaten; seine Rate ist der bilineare
+        # Mix der vier umgebenden Zellzentren (Zentrum bei i+0.5).
+        fx = np.clip((x[idx] - x0) / spanx * k - 0.5, 0, k - 1)
+        fy = np.clip((y[idx] - y0) / spany * k - 0.5, 0, k - 1)
+        ix = np.floor(fx).astype(np.int32)
+        iy = np.floor(fy).astype(np.int32)
+        ix1 = np.minimum(ix + 1, k - 1)
+        iy1 = np.minimum(iy + 1, k - 1)
+        tx = fx - ix
+        ty = fy - iy
+        r_p = (rate[iy, ix] * (1 - tx) * (1 - ty) +
+               rate[iy, ix1] * tx * (1 - ty) +
+               rate[iy1, ix] * (1 - tx) * ty +
+               rate[iy1, ix1] * tx * ty)
         # Auswahl ueber einen HASH des Original-Index statt ueber den
         # Index selbst: liefert eine stufenlose Rate und bricht zugleich
         # die Regelmaessigkeit auf (jeder n-te Index legte in gleichmaessig
         # erzeugten Wolken sichtbare Raster an). Deterministisch, also
         # ueber Samples hinweg stabil — dieselben Koerper bleiben
         # gestreamt und die Client-Interpolation reisst nicht.
-        return idx[_index_hash(idx) < rate[zelle]]
+        return idx[_index_hash(idx) < r_p]
 
     async def stream(self, ws) -> None:
         """Kontinuierlicher Sample-Push: haelt den Client-Puffer ~5 s
