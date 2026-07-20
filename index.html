@@ -4920,6 +4920,17 @@ let _filmBaseMass = null;
 let _filmEvVis = null;       // Ereignis-Sichtbarkeit (Kills angewendet)
 let _filmInView = null;      // im aktuellen Sample enthalten (Culling)
 
+// Lazy gebaute Index->Position-Abbildung eines Samples (Original-Index
+// des Koerpers -> Stelle in idx/qx/qy, oder -1). Einmal pro Sample gebaut
+// und danach ueber Frames wiederverwendet.
+function _filmPos(sample, n) {
+  if (!sample._pos) {
+    sample._pos = new Int32Array(n).fill(-1);
+    for (let m = 0; m < sample.idx.length; m++) sample._pos[sample.idx[m]] = m;
+  }
+  return sample._pos;
+}
+
 function filmApply(t) {
   const q = filmQueue;
   if (!q || !filmRefs || q.times.length === 0) return;
@@ -4935,13 +4946,48 @@ function filmApply(t) {
   // Sample-Rate) statt dazwischen zu schaetzen — exakt, aber ruckelig.
   const f = !filmInterp ? 0
     : (span > 0 ? Math.min(Math.max((t - q.times[i]) / span, 0), 1) : 0);
-  if (!s1._pos) {
-    s1._pos = new Int32Array(filmRefs.length).fill(-1);
-    for (let m = 0; m < s1.idx.length; m++) s1._pos[s1.idx[m]] = m;
-  }
+  const nRef = filmRefs.length;
+  _filmPos(s1, nRef);
   const b0 = s0.box, b1 = s1.box;
   const fx0 = b0.sx / 65535, fy0 = b0.sy / 65535;
   const fx1 = b1.sx / 65535, fy1 = b1.sy / 65535;
+  // Catmull-Rom statt Sehne: eine glatte Kurve DURCH vier aufeinander-
+  // folgende Sample-Punkte (voriger, s0, s1, naechster) trifft eine
+  // gekruemmte Bahn viel besser als die gerade Verbindung. Das behebt das
+  // Pumpen in Sonnennaehe, wo ein Koerper zwischen zwei Samples einen
+  // grossen Bogen fliegt und die Sehne ihn abschneidet.
+  //
+  // Zeitparametrisiert (Hermite mit zentralen Differenzen als Tangenten),
+  // damit ungleiche Sample-Abstaende — der Server duennt die Zeitachse bei
+  // knapper Bandbreite aus — korrekt behandelt werden. Die vier Gewichte
+  // c0..c3 haengen NUR von f und den Zeitabstaenden ab, sind also pro Frame
+  // konstant; der Loop bleibt fast so billig wie linear (4 statt 2
+  // Multiplikationen je Koordinate).
+  let c0 = 0, c1 = 1 - f, c2 = f, c3 = 0;      // Default: linear
+  const iPrev = i - 1, iNext = j + 1;
+  const glatt = filmInterp && span > 0 &&
+                iPrev >= 0 && iNext < q.times.length;
+  let sPrev = null, sNext = null, bp, bn, fxp, fyp, fxn, fyn;
+  if (glatt) {
+    sPrev = q.samples[iPrev];
+    sNext = q.samples[iNext];
+    _filmPos(sPrev, nRef);
+    _filmPos(sNext, nRef);
+    bp = sPrev.box; bn = sNext.box;
+    fxp = bp.sx / 65535; fyp = bp.sy / 65535;
+    fxn = bn.sx / 65535; fyn = bn.sy / 65535;
+    const u = f, u2 = u * u, u3 = u2 * u;
+    const h00 = 2 * u3 - 3 * u2 + 1, h01 = -2 * u3 + 3 * u2;
+    const h10 = u3 - 2 * u2 + u,     h11 = u3 - u2;
+    // Tangenten-Faktoren: h * m1 mit m1 = (P2-P0)/(t2-t0) usw. Nach
+    // Koerper-unabhaengiger Umgruppierung ergeben sich vier Gewichte.
+    const a = h10 * span / (q.times[j] - q.times[iPrev]);   // an P0/P2
+    const bb = h11 * span / (q.times[iNext] - q.times[i]);  // an P1/P3
+    c0 = -a;
+    c1 = h00 - bb;
+    c2 = h01 + a;
+    c3 = bb;
+  }
   _filmInView.fill(0);
   // GL-Direktpfad: das Vertex-Array [x,y,r,g,b] wird HIER im Dekodier-
   // Loop gepackt — renderAsteroidsGL laedt es nur noch hoch, statt pro
@@ -4984,8 +5030,26 @@ function filmApply(t) {
       // nicht zeichnen (_filmInView bleibt 0, siehe Render-Filter).
       continue;
     }
-    const bx = x0 + (b1.x0 + s1.qx[m1] * fx1 - x0) * f;
-    const by = y0 + (b1.y0 + s1.qy[m1] * fy1 - y0) * f;
+    const p2x = b1.x0 + s1.qx[m1] * fx1;
+    const p2y = b1.y0 + s1.qy[m1] * fy1;
+    let bx, by;
+    // Catmull-Rom nur, wenn der Koerper in ALLEN vier Samples steckt —
+    // bei LOD-Wechsel/Kamerawanderung fehlt er in Nachbar-Samples, dann
+    // pro Koerper auf die Sehne zurueckfallen (kein Sprung, nur weniger
+    // glatt fuer genau diesen Punkt).
+    const mp = glatt ? sPrev._pos[ki] : -1;
+    const mn = glatt ? sNext._pos[ki] : -1;
+    if (mp >= 0 && mn >= 0) {
+      const p0x = bp.x0 + sPrev.qx[mp] * fxp;
+      const p0y = bp.y0 + sPrev.qy[mp] * fyp;
+      const p3x = bn.x0 + sNext.qx[mn] * fxn;
+      const p3y = bn.y0 + sNext.qy[mn] * fyn;
+      bx = c0 * p0x + c1 * x0 + c2 * p2x + c3 * p3x;
+      by = c0 * p0y + c1 * y0 + c2 * p2y + c3 * p3y;
+    } else {
+      bx = x0 + (p2x - x0) * f;
+      by = y0 + (p2y - y0) * f;
+    }
     b.x = bx;
     b.y = by;
     _filmInView[ki] = 1;

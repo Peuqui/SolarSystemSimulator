@@ -227,6 +227,30 @@ Richtungen ohne Architekturänderung. Vorher messen — mit zwei aktiven
 Erkennungskarten wird pro Batch doppelt hochgeladen, der Anteil ist
 also gestiegen.
 
+### 3.1b Interpolation weiter verbessern (Ideen, nicht umgesetzt)
+Der Client interpoliert die Film-Positionen jetzt mit **Catmull-Rom**
+(glatte Kurve durch vier Sample-Punkte) statt linearer Sehne — behebt das
+Pumpen in Sonnennähe, gemessen 29× genauer auf einer Kreisbahn. Zwei
+Hebel bleiben für den Extremfall (Perihel, wo ein Körper fast eine halbe
+Umrundung pro Raster macht — dort sind die Samples selbst zu grob):
+
+- **Geschwindigkeit mitstreamen** (Hermite mit echten Tangenten statt aus
+  Nachbar-Samples geschätzten). Verdoppelt die Bandbreite pro Punkt
+  (16 statt 8 Byte); nur nötig, wenn Catmull-Rom sichtbar nicht reicht.
+- **Adaptiv feineres Raster für sonnennahe/schnelle Körper** — analog zur
+  „enge Begegnungen präzise"-Mechanik des Hybrid-Backends (astAdaptive im
+  Worker). Dort wird der Substep an nahen schweren Körpern gedrückt; das
+  Muster ließe sich für das Film-Sample-Raster übernehmen.
+
+### 3.1c Bekannte Grenze: abrupter Verbindungsverlust im Film
+Bricht die CUDA-Verbindung WÄHREND des Films unerwartet ab (Server-Crash,
+Netzwerk, `systemctl stop`), nullt der `onclose`-Pfad `filmQueue`, **ohne**
+vorher `filmReconstructVelocities()` aufzurufen — die Körper landen im
+Worker mit v≈0 und stürzen in die Sonne. Der GEPLANTE Engine-Wechsel ist
+sauber (Dump + Rekonstruktion über `filmStop`). Fix wäre einzeilig
+(Rekonstruktion im `onclose` vor dem Nullen), auf Nutzerwunsch vorerst
+nicht gebaut — im Normalbetrieb tritt der Fall nicht auf.
+
 ### 3.2 nginx (braucht sudo)
 - `sites-available/narnia` ist seit Mai **nicht synchron** mit
   `sites-enabled/narnia`. Aktiv ist `sites-enabled` (kein Symlink!).
