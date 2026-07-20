@@ -4770,6 +4770,10 @@ function filmStart() {
     (3 << 4) | (astAstCollisions ? 1 : 0);
   cudaSocket.send(buf);
   filmRefs = src.slice();
+  // Massive Koerper (Sonne, Planeten, Sterne, SL) fuer die
+  // Beschleunigungs-Berechnung der quintischen Hermite: einmal pro
+  // Session sammeln, sie werden nie ausgeduennt und sind in jedem Sample.
+  _filmMassive = null;
   filmEvents = [];
   _filmEventsApplied = 0;
   collisionFlashes.length = 0;       // Flashes der alten Session verwerfen
@@ -5003,6 +5007,21 @@ function _filmVPos(sample, n) {
   return sample._vpos;
 }
 
+// Indizes der massiven Koerper (nicht-Asteroiden mit Masse) — die
+// Gravitationsquellen fuer die Beschleunigung der schnellen Koerper.
+// Lazy pro Film-Session gebaut; sie werden nie ausgeduennt.
+let _filmMassive = null;
+function _filmMassiveIdx() {
+  if (!_filmMassive) {
+    _filmMassive = [];
+    for (let k = 0; k < filmRefs.length; k++) {
+      const b = filmRefs[k];
+      if (b && !b.isAsteroid && b.mass > 0) _filmMassive.push(k);
+    }
+  }
+  return _filmMassive;
+}
+
 function filmApply(t) {
   const q = filmQueue;
   if (!q || !filmRefs || q.times.length === 0) return;
@@ -5055,6 +5074,36 @@ function filmApply(t) {
   const hermite = filmInterp && span > 0;
   const v0pos = (hermite && s0.vidx) ? _filmVPos(s0, nRef) : null;
   const v1pos = (hermite && s1.vidx) ? _filmVPos(s1, nRef) : null;
+  // Quintische Hermite (P, v, a) fuer die schnellen Koerper: am Perihel
+  // (grosse Winkel/Sample) reicht die echte Geschwindigkeit allein nicht,
+  // die Beschleunigung glaettet den Bogen fast vollstaendig (bei 90 Grad
+  // 34 statt 1521 e-6 AU). Die Beschleunigung rechnet der Client aus der
+  // Gravitation der Massiven — kostet keine Bandbreite. Basis 5. Grades,
+  // pro Frame konstant.
+  const doQuint = hermite && s0.vidx && s0.vidx.length &&
+                  s1.vidx && s1.vidx.length;
+  const f4 = f3 * f, f5 = f4 * f;
+  const Q0 = 1 - 10 * f3 + 15 * f4 - 6 * f5;
+  const Q1 = f - 6 * f3 + 8 * f4 - 3 * f5;
+  const Q2 = 0.5 * f2 - 1.5 * f3 + 1.5 * f4 - 0.5 * f5;
+  const Q3 = 10 * f3 - 15 * f4 + 6 * f5;
+  const Q4 = -4 * f3 + 7 * f4 - 3 * f5;
+  const Q5 = 0.5 * f3 - f4 + 0.5 * f5;
+  const spanY2 = spanY * spanY;
+  // Massive Koerper (Gravitationsquellen) mit Position in s0 und s1 —
+  // je [G*Masse, x, y]. Nur gesammelt, wenn es schnelle Koerper gibt.
+  let mass0 = null, mass1 = null;
+  if (doQuint) {
+    const p0map = _filmPos(s0, nRef), p1map = _filmPos(s1, nRef);
+    mass0 = []; mass1 = [];
+    for (const mk of _filmMassiveIdx()) {
+      const q0 = p0map[mk], q1 = p1map[mk];
+      if (q0 < 0 || q1 < 0) continue;
+      const gm = G_AU * filmRefs[mk].mass;
+      mass0.push(gm, b0.x0 + s0.qx[q0] * fx0, b0.y0 + s0.qy[q0] * fy0);
+      mass1.push(gm, b1.x0 + s1.qx[q1] * fx1, b1.y0 + s1.qy[q1] * fy1);
+    }
+  }
   const iPrev = i - 1, iNext = j + 1;
   const hatPrev = filmInterp && span > 0 && iPrev >= 0;
   const hatNext = hatPrev && iNext < q.times.length;
@@ -5140,8 +5189,25 @@ function filmApply(t) {
     if (vp0 >= 0 && vp1 >= 0) {
       const m0x = s0.vx[vp0] * spanY, m0y = s0.vy[vp0] * spanY;
       const m1x = s1.vx[vp1] * spanY, m1y = s1.vy[vp1] * spanY;
-      bx = H00 * x0 + H10 * m0x + H01 * p2x + H11 * m1x;     // Hermite (echt)
-      by = H00 * y0 + H10 * m0y + H01 * p2y + H11 * m1y;
+      // Beschleunigung an s0 (x0,y0) und s1 (p2x,p2y) aus der Gravitation
+      // der Massiven — a = sum G*M_j/r_j^3 * (pos_j - pos).
+      let a0x = 0, a0y = 0, a1x = 0, a1y = 0;
+      for (let mi = 0; mi < mass0.length; mi += 3) {
+        const gm = mass0[mi];
+        let dx = mass0[mi + 1] - x0, dy = mass0[mi + 2] - y0;
+        let r2 = dx * dx + dy * dy + 1e-6;
+        let inv = gm / (r2 * Math.sqrt(r2));
+        a0x += inv * dx; a0y += inv * dy;
+        dx = mass1[mi + 1] - p2x; dy = mass1[mi + 2] - p2y;
+        r2 = dx * dx + dy * dy + 1e-6;
+        inv = gm / (r2 * Math.sqrt(r2));
+        a1x += inv * dx; a1y += inv * dy;
+      }
+      // Quintische Hermite: die a-Terme tragen spanY^2 (a ist AU/Jahr^2).
+      bx = Q0 * x0 + Q1 * m0x + Q2 * a0x * spanY2 +
+           Q3 * p2x + Q4 * m1x + Q5 * a1x * spanY2;
+      by = Q0 * y0 + Q1 * m0y + Q2 * a0y * spanY2 +
+           Q3 * p2y + Q4 * m1y + Q5 * a1y * spanY2;
     } else if (mp >= 0) {
       const p0x = bp.x0 + sPrev.qx[mp] * fxp;
       const p0y = bp.y0 + sPrev.qy[mp] * fyp;
