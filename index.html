@@ -879,6 +879,8 @@ const DEFAULTS = {
   cloudDensity: 4,      // log10 — 4 → 10.000 Asteroiden/AU²
   cloudJit: 5,          // % Speed-Streuung + ° Richtungs-Streuung
   filmLod: 3.9,         // Punkte-im-Bild-Regler: 3.9 = linker Anschlag (Auto)
+  filmRaster: -0.3,     // Sample-Raster (log10 Tage) — 10^-0.3 ~ 0,5 Tage
+  filmSpeed: 1.78,      // Abspieltempo (log10 Tage/s) — 10^1.78 ~ 60
   // --- Guertel (Sonnensystem mit Guerteln) ---
   beltAB: 800,          // Anzahl Asteroidengürtel
   beltKB: 600,          // Anzahl Kuipergürtel
@@ -8533,10 +8535,13 @@ function applyDefaults() {
     ['cloud-mass',       DEFAULTS.cloudMass],
     ['cloud-density',    DEFAULTS.cloudDensity],
     ['cloud-jit',        DEFAULTS.cloudJit],
-    // Punkte im Bild bleibt erhalten: hat man sich einmal fuer eine
-    // dichtere Anzeige entschieden (Auto ist je nach Hardware zu duenn),
-    // soll der Film nicht bei jedem Start wieder auf Auto zurueckfallen.
-    // Der input-Handler (film-lod) setzt filmLodBudget + Anzeige selbst.
+    // Film-Regler bleiben erhalten: einmal eingestelltes Sample-Raster,
+    // Abspieltempo und Punkte im Bild sollen den Film-Neustart und den
+    // Reload ueberleben (je nach Hardware/Szene sind die Defaults nicht
+    // ideal). Die input-Handler setzen filmRasterDays/filmSpeed/
+    // filmLodBudget + Anzeige selbst.
+    ['film-raster',      DEFAULTS.filmRaster],
+    ['film-speed',       DEFAULTS.filmSpeed],
     ['film-lod',         DEFAULTS.filmLod],
   ];
   for (const [stem, val] of sliderDefs) {
