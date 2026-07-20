@@ -76,6 +76,14 @@ FILM_PROTO_VERSION = 3
 # Kalibriert an einer Sonnentaucher-Szene (siehe bench, Schritt 4).
 FILM_V_SCHNELL2 = 100.0
 
+# Log-Zoom-Basis, identisch zum Client (logTransform in index.html):
+# r_log = log(1+r) / log(33). Im Log-Zoom werden die Positionen in DIESEM
+# Raum quantisiert — die u16-Aufloesung ist dann im gestauchten Zentrum
+# ~25x feiner (dort schaut der Nutzer hin), ohne mehr Bandbreite. Sonst
+# waere die lineare u16 ueber die riesige Auto-Box (bis ~100 AE) im Zentrum
+# grob und zeigte ein Schachbrettraster.
+FILM_LOG33 = float(np.log(33.0))
+
 HEADER = struct.Struct("<IId")   # typ, N/pad, dtYears
 MSG_FULL = 0
 MSG_STEP = 1
@@ -335,24 +343,40 @@ class FilmSession:
             y = raw[self.n:2 * self.n]
             vx = raw[2 * self.n:3 * self.n]
             vy = raw[3 * self.n:4 * self.n]
+            # Anzeige-Koordinaten fuer Box/Culling/LOD/Quantisierung: im
+            # Log-Zoom (hw<=0, Auto-Box) der radial gestauchte Log-Raum,
+            # sonst die Weltkoordinaten. Die Geschwindigkeit bleibt Welt
+            # (der Client integriert damit); der Client dekodiert die
+            # Positionen per inverser Log-Transform zurueck.
+            log_zoom = hw <= 0 or hh <= 0
+            if log_zoom:
+                r = np.hypot(x, y)
+                sk = np.where(r > 1e-9,
+                              np.log1p(r) / (FILM_LOG33 * np.maximum(r, 1e-30)),
+                              0.0)
+                qxs = x * sk
+                qys = y * sk
+            else:
+                qxs = x
+                qys = y
             if box is None:
-                if hw <= 0 or hh <= 0:
-                    # Auto-Box: gesamte Koerperverteilung (+5% Rand)
-                    bx0, bx1 = float(x.min()), float(x.max())
-                    by0, by1 = float(y.min()), float(y.max())
+                if log_zoom:
+                    # Auto-Box im Log-Raum: gesamte Verteilung (+5% Rand)
+                    bx0, bx1 = float(qxs.min()), float(qxs.max())
+                    by0, by1 = float(qys.min()), float(qys.max())
                     mx = 0.05 * max(bx1 - bx0, 1e-6)
                     my = 0.05 * max(by1 - by0, 1e-6)
                     box = (bx0 - mx, by0 - my,
                            max(bx1 - bx0 + 2 * mx, 1e-6),
                            max(by1 - by0 + 2 * my, 1e-6))
                 else:
-                    # Referenz-Box = 2x Viewport um die Kamera
+                    # Referenz-Box = 2x Viewport um die Kamera (Welt)
                     box = (cx - 2 * hw, cy - 2 * hh,
                            max(4 * hw, 1e-6), max(4 * hh, 1e-6))
             x0, y0, spanx, spany = box
             sel = np.flatnonzero(
-                alive_i & (x >= x0) & (x <= x0 + spanx)
-                & (y >= y0) & (y <= y0 + spany))
+                alive_i & (qxs >= x0) & (qxs <= x0 + spanx)
+                & (qys >= y0) & (qys <= y0 + spany))
             # Dichte-LOD: mehr sichtbare Punkte, als Bandbreite und
             # Client-Dekodierung bei 20 Samples/s verkraften.
             # Obergrenze 120k: mehr Punkte pro Sample schafft der
@@ -360,10 +384,13 @@ class FilmSession:
             # lod_budget != 0 = vom Nutzer gesetzt (Regler), sonst Auto.
             lod_max = self.lod_budget or min(
                 120_000, max(20000, int(self._bw * 0.7 / 20.0 / 8.0)))
-            sel = self._lod_auswahl(sel, x, y, box, lod_max)
-            qx = np.clip((x[sel] - x0) / spanx * 65535.0,
+            # LOD + Quantisierung laufen in Anzeige-Koordinaten (qxs/qys):
+            # so ist die Dichte-Ausduennung gleichmaessig ueber das ANGE-
+            # ZEIGTE Bild und die u16-Aufloesung passt zur Anzeige.
+            sel = self._lod_auswahl(sel, qxs, qys, box, lod_max)
+            qx = np.clip((qxs[sel] - x0) / spanx * 65535.0,
                          0, 65535).astype("<u2")
-            qy = np.clip((y[sel] - y0) / spany * 65535.0,
+            qy = np.clip((qys[sel] - y0) / spany * 65535.0,
                          0, 65535).astype("<u2")
             # Selektives Geschwindigkeits-Streaming: NUR schnelle
             # dargestellte Koerper bekommen vx,vy fuer die
@@ -388,8 +415,12 @@ class FilmSession:
             blocks.append(block)
 
         head = struct.pack("<IIII", 4, self.n, len(idxs), ev_n)
-        meta = struct.pack("<dddddd", self.tail, self.head,
-                           box[0], box[1], box[2], box[3])
+        # logFlag als 7. f64 im Meta: 1 = Positionen sind log-polar
+        # kodiert (der Client muss sie per inverser Log-Transform
+        # zuruecktransformieren), 0 = Weltkoordinaten.
+        meta = struct.pack("<ddddddd", self.tail, self.head,
+                           box[0], box[1], box[2], box[3],
+                           1.0 if log_zoom else 0.0)
         return head + meta + times.tobytes() + \
             b"".join(blocks) + b"".join(ev_parts)
 
