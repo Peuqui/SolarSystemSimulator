@@ -761,10 +761,14 @@ class NBodyCuda:
                      cp.float64(YOSHIDA_W1), cp.float64(YOSHIDA_W0)))
         # Einsammeln + Host-Scatter in Originalreihenfolge
         n = st["N"]
-        out = np.empty((k, 4 * n), dtype=np.float32)
+        out = _pinned(k * 4 * n, (k, 4 * n))
         for sh in st["shards"]:
             n_ast = sh["n_ast"]
             with cp.cuda.Device(sh["dev"]):
+                # Hier bewusst normales asnumpy: gemessen bringt pinned
+                # beim DOWNLOAD nichts (3,21 gegen 3,24 GB/s) — der
+                # ×4-Link ist bereits ausgereizt, und der Treiber holt
+                # aus auslagerbarem Speicher praktisch dasselbe heraus.
                 snap = cp.asnumpy(sh["snap"][:k * 4 * n_ast]) \
                     .reshape(k, 4, n_ast)
                 if sh["gpu_id"] == 0:
@@ -889,6 +893,33 @@ class NBodyCuda:
                 for f in range(4):
                     out4[f * n + mi] = f64[base + f * m:base + (f + 1) * m]
         return out4
+
+
+def _pinned(n: int, shape=None) -> np.ndarray:
+    """Seitengesperrter (page-locked) f32-Hostpuffer mit n Elementen.
+
+    Genutzt fuer den Batch-Ausgabepuffer, weil der anschliessend zu JEDER
+    Erkennungskarte hochgeladen wird. Gemessen an 32 MB ueber PCIe ×4:
+
+        H2D   2,83 GB/s pageable  ->  3,34 GB/s pinned   (1,18x)
+        D2H   3,21 GB/s pageable  ->  3,24 GB/s pinned   (1,01x)
+
+    Nur der Upload gewinnt; beim Download ist der ×4-Link bereits
+    ausgereizt. Die urspruengliche Erwartung (Faktor 2, weil pageable
+    ueber einen Zwischenpuffer laeuft) trifft auf heutige Treiber nicht
+    mehr zu — deshalb steht die Zahl hier und nicht die Vermutung.
+
+    Pro Aufruf frisch, NICHT wiederverwendet: CuPy fuehrt fuer pinned
+    Speicher standardmaessig einen Pool, das Seitensperren faellt also
+    nur beim ersten Mal an, waehrend jeder Aufrufer seinen eigenen Puffer
+    behaelt. Ein gemeinsam genutzter Puffer waere schneller zu schreiben,
+    haette aber eine unsichtbare Lebensdauer-Kopplung: wer ein Ergebnis
+    ueber den naechsten step_batch hinaus festhaelt (test_kernel.py
+    vergleicht genau so einen Batch gegen Einzelschritte), bekaeme es
+    unter der Hand ueberschrieben."""
+    mem = cp.cuda.alloc_pinned_memory(n * 4)
+    puffer = np.frombuffer(mem, dtype=np.float32, count=n)
+    return puffer if shape is None else puffer.reshape(shape)
 
 
 def _device_view_of_host(host_ptr: int, nbytes: int, device: int):

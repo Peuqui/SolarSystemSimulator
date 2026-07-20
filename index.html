@@ -3533,18 +3533,13 @@ function draw() {
       const [sx, sy] = worldToScreen(f.x, f.y);
       const targetR = Math.max(14, Math.min(28, f.scale * cam.zoom * 80 * 6));
       const r = targetR * Math.min(1, t / 0.35);
-      const centerA = Math.max(0, 1 - t * 2.4);
-      const midA    = Math.max(0, 1 - t * 1.4);
-      const edgeA   = Math.max(0, 1 - t * 0.9);
-      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
-      grad.addColorStop(0,    `rgba(255, 250, 210, ${centerA.toFixed(3)})`);
-      grad.addColorStop(0.45, `rgba(255, 190, 80,  ${midA.toFixed(3)})`);
-      grad.addColorStop(0.85, `rgba(230, 110, 30,  ${(edgeA*0.7).toFixed(3)})`);
-      grad.addColorStop(1,    'rgba(200, 70, 20, 0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(sx, sy, r, 0, Math.PI * 2);
-      ctx.fill();
+      // Vorgerendertes Sprite blitten statt den Gradient pro Blitz und
+      // Bild neu zu bauen (siehe _flashSprite). Die Farbstopps liegen bei
+      // festen Bruchteilen des Radius, das Sprite ist also exakt
+      // skalierbar — identische Optik, nur ohne die teure Gradient-
+      // Erzeugung und den pixelweisen Radial-Fill.
+      const sprite = _flashSprite(t);
+      ctx.drawImage(sprite, sx - r, sy - r, 2 * r, 2 * r);
     }
   }
 
@@ -5041,7 +5036,7 @@ function filmApplyEvents(t) {
       const imBild = _filmInView && _filmInView[ev.a] === 1 &&
                      _filmInView[ev.b] === 1;
       if (ha && hb && imBild) _markBouncePair(ha, hb);
-      if (ha && hb && imBild && flashes < 8) {
+      if (ha && hb && imBild && flashes < MAX_FLASHES_PRO_BILD) {
         // exakter Ort vom Producer; track = schwererer (wie im Live-Pfad)
         if (spawnCollisionFlash(ev.x, ev.y,
                                 Math.max(ha.realR || 0, hb.realR || 0),
@@ -5072,7 +5067,7 @@ function filmApplyEvents(t) {
     // nicht dargestellter Asteroiden als "Geisterkollisionen" im Leeren
     // (remote mit LOD-Untergrenze ist nur jeder n-te Koerper im Bild).
     // Der Zaehler zaehlt weiterhin JEDES Ereignis.
-    if (loser && _filmInView && _filmInView[ev.b] === 1 && flashes < 8) {
+    if (loser && _filmInView && _filmInView[ev.b] === 1 && flashes < MAX_FLASHES_PRO_BILD) {
       // Position: exakter Ereignis-Ort vom Producer — aus dem Stream
       // ist er nicht rekonstruierbar (Opfer fehlt im Folge-Sample).
       // Skala wie live: realR. Deckel 64 lebende Flashes (Gradient-
@@ -5811,6 +5806,60 @@ const COLLISION_FLASH_MS = DEFAULTS.collFlashMs;
 // das aus wie ein permanenter Fleck, der mitwandert und nie verblasst.
 // Mit Cooldown bleiben einzelne, sichtbar abklingende Einschlaege uebrig.
 const FLASH_COOLDOWN_MS = 400;
+// Gleichzeitig lebende Explosionen.
+const MAX_FLASHES = 256;
+// Neue Explosionen pro Bild. Begrenzt den Nachschub beim Scrub-Sprung
+// (dort werden tausende Ereignisse in EINEM Bild angewandt), damit die
+// Blitze als Strom erscheinen statt als ein Klumpen.
+const MAX_FLASHES_PRO_BILD = 32;
+// Vorgerenderte Explosions-Sprites über die Lebenszeit eines Blitzes.
+//
+// Vorher baute die Renderschleife für JEDEN lebenden Blitz in JEDEM Bild
+// einen createRadialGradient und füllte damit pixelweise einen Kreis —
+// bei 64 gleichzeitigen Blitzen 64 Gradient-Objekte und ~160 000
+// schattierte Pixel pro Frame, ohne Batching. Genau deshalb war die
+// Spawn-Rate auf 8/Frame gedeckelt.
+//
+// Die Farbstopps liegen bei festen BRUCHTEILEN des Radius (0, 0,45,
+// 0,85, 1). Ein bei Einheitsradius gebackenes Sprite lässt sich daher
+// exakt auf jede Größe skalieren — die Optik bleibt identisch. Über die
+// Lebenszeit ändern sich nur die drei Alphawerte; die werden in
+// FLASH_SPRITE_STUFEN Schritten vorgerendert. Bei ~600 ms Lebensdauer
+// und 24 Stufen ist eine Stufe 25 ms — unterhalb der Wahrnehmbarkeit,
+// aber statt 64 Gradienten pro Frame gibt es 24 Sprites für immer.
+const FLASH_SPRITE_STUFEN = 24;
+const FLASH_SPRITE_R = 32;          // Backradius; wir skalieren nur herunter
+let _flashSprites = null;
+
+function _flashSprite(t) {
+  if (!_flashSprites) {
+    _flashSprites = [];
+    for (let i = 0; i < FLASH_SPRITE_STUFEN; i++) {
+      const tt = i / (FLASH_SPRITE_STUFEN - 1);
+      const c = document.createElement('canvas');
+      c.width = c.height = 2 * FLASH_SPRITE_R;
+      const g = c.getContext('2d');
+      const m = FLASH_SPRITE_R;
+      const centerA = Math.max(0, 1 - tt * 2.4);
+      const midA    = Math.max(0, 1 - tt * 1.4);
+      const edgeA   = Math.max(0, 1 - tt * 0.9);
+      const grad = g.createRadialGradient(m, m, 0, m, m, m);
+      grad.addColorStop(0,    `rgba(255, 250, 210, ${centerA.toFixed(3)})`);
+      grad.addColorStop(0.45, `rgba(255, 190, 80,  ${midA.toFixed(3)})`);
+      grad.addColorStop(0.85, `rgba(230, 110, 30,  ${(edgeA * 0.7).toFixed(3)})`);
+      grad.addColorStop(1,    'rgba(200, 70, 20, 0)');
+      g.fillStyle = grad;
+      g.beginPath();
+      g.arc(m, m, m, 0, Math.PI * 2);
+      g.fill();
+      _flashSprites.push(c);
+    }
+  }
+  const i = Math.min(FLASH_SPRITE_STUFEN - 1,
+                     Math.max(0, Math.round(t * (FLASH_SPRITE_STUFEN - 1))));
+  return _flashSprites[i];
+}
+
 function spawnCollisionFlash(x, y, scale, asteroid, track, cooldownBody) {
   const now = performance.now();
   const cb = cooldownBody || track;
@@ -5818,8 +5867,12 @@ function spawnCollisionFlash(x, y, scale, asteroid, track, cooldownBody) {
     if (now - (cb._lastFlashMs || 0) < FLASH_COOLDOWN_MS) return false;
     cb._lastFlashMs = now;
   }
-  // Deckel: die Gradient-Kreise sind teuer (FPS-Schutz bei Event-Stuermen)
-  if (collisionFlashes.length >= 64) return false;
+  // Deckel gegen Event-Stuerme. Seit die Blitze als vorgerendertes
+  // Sprite geblittet werden (siehe _flashSprite) statt pro Bild einen
+  // Radial-Gradient aufzubauen, kostet ein Blitz nur noch eine
+  // Bildkopie — der frueher noetige Wert 64 war an den alten Kosten
+  // bemessen.
+  if (collisionFlashes.length >= MAX_FLASHES) return false;
   collisionFlashes.push({ x, y, scale, t: now, asteroid, track });
   return true;
 }
