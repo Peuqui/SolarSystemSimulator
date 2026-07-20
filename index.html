@@ -5649,9 +5649,19 @@ const FILM_LOD_ALLE = 1e9;
     document.getElementById('film-raster-val').textContent =
       fmtDE(Math.pow(10, parseFloat(this.value)), 2);
   });
-  // Raster-Aenderung waehrend eines laufenden Films: neu starten
+  // Raster-Aenderung waehrend eines laufenden Films = neue Session.
+  // ueber den Dump-Mechanismus neu starten (wie Mutation/Engine-Wechsel),
+  // damit die EXAKTEN f64-Geschwindigkeiten uebernommen werden. Ein
+  // direkter filmStart lud die beim letzten Start eingefrorenen v hoch —
+  // im Film werden b.vx/b.vy nie aktualisiert (nur die Positionen aus dem
+  // Stream), also passten die alten v nach dem Flug nicht mehr zur
+  // Position und die Koerper stuerzten in die Sonne.
   document.getElementById(id).addEventListener('change', function() {
-    if (filmActive) { filmApply(filmPlayheadDays); filmStart(); }
+    if (!filmActive) return;
+    filmApply(filmPlayheadDays);
+    _filmRestartPending = true;
+    filmHandoverStart('Neustart nach Raster-Wechsel');
+    filmStop();
   });
 });
 
