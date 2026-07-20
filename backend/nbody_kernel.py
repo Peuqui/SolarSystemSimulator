@@ -553,21 +553,26 @@ def pick_devices() -> list[int]:
     return devs[:G_MAX]
 
 
-def pick_detect_device(exclude, rank: int = 0) -> int | None:
-    """GPU AUSSERHALB der Physik-Karten fuer die ausgelagerte
-    Kollisions-/Bounce-Erkennung — die Erkennung ist leichtgewichtig
-    (1-3% Last), da reicht auch eine f64-schwache Karte. rank verteilt
-    parallele Sessions round-robin auf die freien Karten (zwei
-    gleichzeitige Nutzer bekommen getrennte Erkennungskarten). None,
-    wenn es keine weitere Karte gibt."""
+def pick_detect_devices(exclude, rank: int = 0,
+                        count: int = 1) -> list[int]:
+    """GPUs AUSSERHALB der Physik-Karten fuer die ausgelagerte
+    Kollisions-/Bounce-Erkennung. Die Erkennung laeuft in f32, da reicht
+    auch eine f64-schwache Karte.
+
+    Es werden bis zu `count` Karten zurueckgegeben — die Bounce-Suche
+    teilt die Szene raeumlich unter ihnen auf. rank verteilt parallele
+    Sessions round-robin ueber die freien Karten, damit zwei gleichzeitige
+    Nutzer nicht mit derselben Karte anfangen. Leere Liste, wenn es keine
+    freie Karte gibt (dann analysiert die Physik-Karte selbst)."""
     excl = set(exclude) if isinstance(exclude, (list, tuple, set)) \
         else {exclude}
     n = cp.cuda.runtime.getDeviceCount()
     cands = sorted((i for i in range(n) if i not in excl),
                    key=lambda i: -_f64_score(i))
     if not cands:
-        return None
-    return cands[rank % len(cands)]
+        return []
+    count = min(count, len(cands))
+    return [cands[(rank + i) % len(cands)] for i in range(count)]
 
 
 class NBodyCuda:

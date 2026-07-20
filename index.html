@@ -597,6 +597,10 @@ input[type=range] {
     <span data-i18n="lbl.film-speed">Abspieltempo (Tage/s)</span> <span class="val" id="film-speed-val">60</span>
     <input type="range" autocomplete="off" id="film-speed" min="-1" max="3" step="0.01" value="1.78">
   </label>
+  <label data-i18n-title="tt.film-lod" id="lbl-film-lod" style="display:none; margin-left:20px;">
+    <span data-i18n="lbl.film-lod">Punkte im Bild</span> <span class="val" id="film-lod-val">Auto</span>
+    <input type="range" autocomplete="off" id="film-lod" min="3.9" max="6.8" step="0.1" value="3.9">
+  </label>
   <label data-i18n-title="tt.film-interp" id="lbl-film-interp" style="display:none; margin-left:20px;">
     <input type="checkbox" id="chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span>
   </label>
@@ -779,6 +783,7 @@ input[type=range] {
   <label data-i18n-title="tt.cuda" id="mob-lbl-engine-cuda" style="display:none;"><input type="radio" name="engine-mob" id="mob-rad-cuda" value="cuda"> <span data-i18n="lbl.enginecuda">CUDA-Backend (nativ, f64)</span></label>
   <label data-i18n-title="tt.film" id="mob-lbl-film-mode" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film"> <span data-i18n="lbl.film">Film-Modus</span></label>
   <label data-i18n-title="tt.film-speed" id="mob-lbl-film-speed" style="display:none; margin-left:20px;"><span data-i18n="lbl.film-speed">Abspieltempo (Tage/s)</span> <span class="val" id="mob-film-speed-val">60</span><input type="range" autocomplete="off" id="mob-film-speed" min="-1" max="3" step="0.01" value="1.78"></label>
+  <label data-i18n-title="tt.film-lod" id="mob-lbl-film-lod" style="display:none; margin-left:20px;"><span data-i18n="lbl.film-lod">Punkte im Bild</span> <span class="val" id="mob-film-lod-val">Auto</span><input type="range" autocomplete="off" id="mob-film-lod" min="3.9" max="6.8" step="0.1" value="3.9"></label>
   <label data-i18n-title="tt.film-interp" id="mob-lbl-film-interp" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
@@ -1011,6 +1016,9 @@ const I18N = {
     'tt.film-speed': 'Wie schnell die vorgerechnete Timeline abgespielt wird, direkt in Sim-Tagen pro Sekunde. Reine Wiedergabegeschwindigkeit — die Physik ist bereits gerechnet, langsameres Abspielen kostet KEINE Genauigkeit. Vorher ergab sich das Tempo aus "Tage pro Schritt" mal 60 geteilt durch die Verlangsamung; zwei gegenläufige Regler hoben sich dabei auf. Liegt das Tempo über der Produktionsrate der GPU, klebt der Playhead an der Live-Kante und es stockt.',
     'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
+    'lbl.film-lod': 'Punkte im Bild',
+    'lbl.film-lod-auto': 'Auto',
+    'tt.film-lod': 'Wie viele Punkte der Server hoechstens pro Sample schickt. Auto richtet sich nach der gemessenen Bandbreite (Deckel 120.000). Das ist der EINZIGE Regler, der die Bildrate beeinflusst — ruckelt es, gehoere hier herunter. Reicht das Budget nicht fuer alle Koerper, gilt eine Rangfolge: massive Koerper (Sonne, Planeten, Rogues, Sterne, Schwarze Loecher) werden NIE ausgeduennt, danach kommen die Asteroiden des geladenen Systems, den Rest bekommen nachtraeglich injizierte Wolken. Innerhalb jeder Stufe werden dichte Gebiete staerker ausgeduennt als duenne, damit ein Guertel mit wenigen hundert Objekten nicht neben einer Wolke mit hunderttausenden verschwindet — dichte Gebiete bleiben trotzdem sichtbar dichter. Physik und Kollisionen laufen immer fuer ALLE Koerper.',
     'lbl.film-interp': 'Zwischenbilder interpolieren',
     'tt.film-interp': 'Zwischen zwei gestreamten Samples linear interpolieren — sorgt fuer fluessige Darstellung (sonst laeuft das Bild nur mit der Sample-Rate, je nach Tempo unter 10 Bilder/s). Preis: Bei stark gekruemmten Bahnen (naher Vorbeiflug an einem schweren Koerper) laeuft der Punkt auf der Sehne statt auf dem Bogen und springt beim naechsten Sample zurueck. Aus = nur berechnete Positionen, exakt aber ruckelig.',
     'tt.film': 'Compute und Darstellung entkoppelt: die GPU rechnet mit maximalem Durchsatz voraus (Ringpuffer), der Browser spielt die Timeline wie ein Video ab — scrubben, zurückspulen, live folgen. Kollisionen verschmelzen serverseitig (immer Merge, kein Zerbersten/Abprallen).',
@@ -1261,6 +1269,9 @@ const I18N = {
     'tt.film-speed': 'How fast the precomputed timeline plays back, directly in sim days per second. Pure playback speed — the physics is already computed, so playing slower costs NO accuracy. Previously the speed derived from "days per step" times 60 divided by the slowdown factor; two opposing sliders could cancel each other out. If the speed exceeds the GPU production rate, the playhead sticks to the live edge and stutters.',
     'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
+    'lbl.film-lod': 'Points on screen',
+    'lbl.film-lod-auto': 'Auto',
+    'tt.film-lod': 'How many points the server sends per sample at most. Auto follows the measured bandwidth (capped at 120,000). This is the ONLY slider affecting frame rate — turn it down if playback stutters. If the budget cannot cover every body, a priority applies: massive bodies (sun, planets, rogues, stars, black holes) are NEVER thinned, then come the asteroids of the loaded system, and injected clouds get whatever is left. Within each tier dense regions are thinned harder than sparse ones, so a belt of a few hundred objects does not vanish next to a cloud of hundreds of thousands — dense regions still read as visibly denser. Physics and collisions always run for ALL bodies.',
     'lbl.film-interp': 'Interpolate between samples',
     'tt.film-interp': 'Linearly interpolate between two streamed samples — keeps playback smooth (otherwise the picture only advances at the sample rate, below 10 fps depending on speed). Cost: on sharply curved paths (close flyby of a massive body) the point travels along the chord instead of the arc and snaps back at the next sample. Off = computed positions only, exact but choppy.',
     'tt.film': 'Compute and display decoupled: the GPU simulates ahead at full throughput (ring buffer), the browser plays the timeline like a video — scrub, rewind, follow live. Collisions merge server-side (always merge, no shattering/bouncing).',
@@ -2055,6 +2066,11 @@ function captureState() {
     bodies: bodies.map(b => ({
       name: b.name, mass: b.mass, x: b.x, y: b.y, vx: b.vx, vy: b.vy,
       color: b.color, isStar: b.isStar, realR: b.realR, visible: b.visible,
+      // isAsteroid MUSS mit: ohne das kehrte jeder Import alle Asteroiden
+      // in massive Koerper um — der Film-Producer haette sie als solche
+      // integriert (M_MAX!) und das Dichte-LOD haette sie nie ausgeduennt.
+      // injiziert steuert den Vorrang beim LOD-Budget.
+      isAsteroid: !!b.isAsteroid, injiziert: !!b.injiziert,
     })),
   };
 }
@@ -2070,6 +2086,7 @@ function restoreState(state) {
       ax: 0, ay: 0, color: s.color, radius: massToRadius(s.mass),
       realR: s.realR != null ? s.realR : realRadiusFromMass(s.mass),
       visible: s.visible !== false, isStar: !!s.isStar, escapeScore: 0,
+      isAsteroid: !!s.isAsteroid, injiziert: !!s.injiziert,
     });
     trails[s.name] = [];
   }
@@ -4105,6 +4122,7 @@ function _cudaSetVisible(visible) {
   for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda',
                     'lbl-film-mode', 'mob-lbl-film-mode', 'lbl-film-raster',
                     'lbl-film-speed', 'mob-lbl-film-speed',
+                    'lbl-film-lod', 'mob-lbl-film-lod',
                     'lbl-film-interp', 'mob-lbl-film-interp']) {
     const el = document.getElementById(id);
     if (el) el.style.display = visible ? '' : 'none';
@@ -4112,23 +4130,120 @@ function _cudaSetVisible(visible) {
   if (!visible && typeof filmActive !== 'undefined' && filmActive) filmStop();
 }
 
-function initCudaBackend(urlIndex = 0) {
-  if (urlIndex >= CUDA_WS_URLS.length) return;
-  let ws;
-  try { ws = new WebSocket(CUDA_WS_URLS[urlIndex]); } catch (e) {
-    initCudaBackend(urlIndex + 1);
+// Netz-Worker: besitzt den WebSocket und zerlegt die Film-Frames.
+//
+// GRUND: Der Main-Thread haengt pro Bild in filmApply + Rendern (bei 120k
+// Punkten zweistellige Millisekunden). Solange er dort steckt, laeuft
+// kein onmessage — der Socket wird nicht geleert, das TCP-Empfangsfenster
+// kollabiert (gemessen: 44 KB, rwnd_limited 63%) und die Leitung liefert
+// nur ~35 Mbit/s, obwohl 856 anlaegen. Der Worker leert den Socket
+// unabhaengig davon weiter und reicht fertig zerlegte Samples herueber;
+// das Fenster bleibt offen.
+//
+// Die Nutzlast wird TRANSFERIERT, nicht kopiert: idx/qx/qy sind Views auf
+// den empfangenen ArrayBuffer, der Besitz wechselt ohne Kopie.
+const NET_WORKER_SRC = `
+let ws = null;
+
+// v4-Frame zerlegen: u32 status | u32 N | u32 count | u32 evCount |
+// f64 tail, head, boxX0, boxY0, boxSpanX, boxSpanY |
+// count x f64 zeiten | count x (u32 visCount | u32 idx[] | u16 qx[] |
+// u16 qy[] | pad4) | evCount x Ereignis(32 B)
+function zerlegeFilm(buf) {
+  const hdr = new Uint32Array(buf, 0, 4);
+  const count = hdr[2], evCount = hdr[3];
+  const dv = new DataView(buf);
+  // EIN box-Objekt fuer alle Samples des Frames — structured clone
+  // erhaelt geteilte Referenzen, es wird also nicht count-fach kopiert.
+  const box = { x0: dv.getFloat64(32, true), y0: dv.getFloat64(40, true),
+                sx: dv.getFloat64(48, true), sy: dv.getFloat64(56, true) };
+  const times = new Float64Array(buf, 64, count);
+  const samples = [];
+  let off = 64 + 8 * count;
+  for (let i = 0; i < count; i++) {
+    const visCount = dv.getUint32(off, true);
+    samples.push({
+      idx: new Uint32Array(buf, off + 4, visCount),
+      qx: new Uint16Array(buf, off + 4 + 4 * visCount, visCount),
+      qy: new Uint16Array(buf, off + 4 + 6 * visCount, visCount),
+      box,
+    });
+    const blockLen = 4 + 8 * visCount;
+    off += blockLen + ((4 - (blockLen % 4)) % 4);
+  }
+  const evs = [];
+  for (let e = 0; e < evCount; e++) {
+    evs.push({
+      t: dv.getFloat64(off, true),
+      a: dv.getUint32(off + 8, true),
+      b: dv.getUint32(off + 12, true),
+      mass: dv.getFloat32(off + 16, true),
+      kind: dv.getUint32(off + 20, true),   // 0=merge/kill, 1=bounce
+      x: dv.getFloat32(off + 24, true),     // exakter Ereignis-Ort
+      y: dv.getFloat32(off + 28, true),
+    });
+    off += 32;
+  }
+  return { typ: 'film', n: hdr[1], tail: dv.getFloat64(16, true),
+           head: dv.getFloat64(24, true), times, samples, evs };
+}
+
+self.onmessage = (e) => {
+  const m = e.data;
+  if (m.typ === 'verbinden') {
+    let offen = false;
+    try { ws = new WebSocket(m.url); } catch (err) {
+      self.postMessage({ typ: 'zu', offen });
+      return;
+    }
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => { offen = true; ws.send('ping'); };
+    ws.onclose = () => { self.postMessage({ typ: 'zu', offen }); };
+    ws.onerror = () => {};
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        self.postMessage({ typ: 'hallo', info: ev.data });
+        return;
+      }
+      const buf = ev.data;
+      if (new Uint32Array(buf, 0, 2)[0] === 4) {
+        self.postMessage(zerlegeFilm(buf), [buf]);
+      } else {
+        self.postMessage({ typ: 'roh', buf }, [buf]);
+      }
+    };
     return;
   }
-  let connected = false;
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = () => { connected = true; ws.send('ping'); };
-  ws.onmessage = (e) => {
-    if (typeof e.data === 'string') {
+  if (m.typ === 'senden' && ws) { ws.send(m.buf); return; }
+  if (m.typ === 'schliessen' && ws) { ws.close(); }
+};
+`;
+
+function initCudaBackend(urlIndex = 0) {
+  if (urlIndex >= CUDA_WS_URLS.length) return;
+  const w = new Worker(URL.createObjectURL(
+    new Blob([NET_WORKER_SRC], { type: 'application/javascript' })));
+  // Fassade auf den Socket im Worker: der uebrige Code spricht
+  // unveraendert send()/close()/readyState. Gesendete Puffer werden
+  // transferiert — jede Sendestelle baut ihren Puffer frisch und fasst
+  // ihn danach nicht mehr an.
+  const ws = {
+    readyState: 0,
+    send(buf) { w.postMessage({ typ: 'senden', buf }, [buf]); },
+    close() { w.postMessage({ typ: 'schliessen' }); },
+  };
+  w.postMessage({ typ: 'verbinden', url: CUDA_WS_URLS[urlIndex] });
+  w.onmessage = (e) => {
+    const msg = e.data;
+    if (msg.typ === 'zu') { onSocketZu(msg.offen); return; }
+    if (msg.typ === 'film') { onFilmFrame(msg); return; }
+    if (msg.typ === 'hallo') {
       // Ping-Antwort mit Geraeteinfo — Backend ist da.
+      ws.readyState = 1;
       cudaSocket = ws;
       cudaReady = true;
       _cudaSetVisible(true);
-      console.log('CUDA-Backend verbunden:', e.data);
+      console.log('CUDA-Backend verbunden:', msg.info);
       if (useCuda) {
         applyEngine('cuda', false);   // persistierten Modus nachziehen
       } else {
@@ -4142,76 +4257,8 @@ function initCudaBackend(urlIndex = 0) {
       }
       return;
     }
-    const buf = e.data;
+    const buf = msg.buf;
     const status = new Uint32Array(buf, 0, 2)[0];
-    if (status === 4) {
-      // v4-Frame: u32 status | u32 N | u32 count | u32 evCount |
-      // f64 tail, head, boxX0, boxY0, boxSpanX, boxSpanY |
-      // count x f64 zeiten | count x (u32 visCount | u32 idx[] |
-      // u16 qx[] | u16 qy[] | pad4) | evCount x Ereignis(24 B)
-      const hdr = new Uint32Array(buf, 0, 4);
-      const n = hdr[1], count = hdr[2], evCount = hdr[3];
-      if (!filmRefs || n !== filmRefs.length) return;   // stale Session
-      const dv = new DataView(buf);
-      const tail = dv.getFloat64(16, true);
-      const head = dv.getFloat64(24, true);
-      const box = {
-        x0: dv.getFloat64(32, true),
-        y0: dv.getFloat64(40, true),
-        sx: dv.getFloat64(48, true),
-        sy: dv.getFloat64(56, true),
-      };
-      const times = new Float64Array(buf, 64, count);
-      if (!filmQueue) filmQueue = { times: [], samples: [], tail, head };
-      filmQueue.tail = tail;
-      filmQueue.head = head;
-      _filmMetaTail = tail;
-      _filmMetaHead = head;
-      let off = 64 + 8 * count;
-      let lastT = filmQueue.times.length
-        ? filmQueue.times[filmQueue.times.length - 1] : -Infinity;
-      for (let i = 0; i < count; i++) {
-        const visCount = dv.getUint32(off, true);
-        const idx = new Uint32Array(buf, off + 4, visCount);
-        const qx = new Uint16Array(buf, off + 4 + 4 * visCount, visCount);
-        const qy = new Uint16Array(buf, off + 4 + 6 * visCount, visCount);
-        const blockLen = 4 + 8 * visCount;
-        off += blockLen + ((4 - (blockLen % 4)) % 4);
-        if (times[i] > lastT) {
-          filmQueue.times.push(times[i]);
-          filmQueue.samples.push({ idx, qx, qy, box });
-          lastT = times[i];
-        }
-      }
-      for (let e = 0; e < evCount; e++) {
-        filmEvents.push({
-          t: dv.getFloat64(off, true),
-          a: dv.getUint32(off + 8, true),
-          b: dv.getUint32(off + 12, true),
-          mass: dv.getFloat32(off + 16, true),
-          kind: dv.getUint32(off + 20, true),   // 0=merge/kill, 1=bounce
-          x: dv.getFloat32(off + 24, true),     // exakter Ereignis-Ort
-          y: dv.getFloat32(off + 28, true),
-        });
-        off += 32;
-      }
-      while (filmQueue.times.length > 2 &&
-             filmQueue.times[1] < filmPlayheadDays - 2 * filmRasterDays()) {
-        filmQueue.times.shift();
-        filmQueue.samples.shift();
-      }
-      const nowP = performance.now();
-      if (!_filmHeadPrevMs) {
-        _filmHeadPrev = head;
-        _filmHeadPrevMs = nowP;
-      } else if (nowP - _filmHeadPrevMs >= 500 && head > _filmHeadPrev) {
-        const r = (head - _filmHeadPrev) / ((nowP - _filmHeadPrevMs) / 1000);
-        _filmHeadRate = _filmHeadRate ? 0.6 * _filmHeadRate + 0.4 * r : r;
-        _filmHeadPrev = head;
-        _filmHeadPrevMs = nowP;
-      }
-      return;
-    }
     if (status === 5) {
       // Exakter f64-Endzustand des Producers (Engine-Uebergabe): sonst
       // starten Worker/CPU nach dem Film mit den beim Filmstart
@@ -4331,9 +4378,11 @@ function initCudaBackend(urlIndex = 0) {
     cudaBusy = false;
     if (cudaResolver) { const r = cudaResolver; cudaResolver = null; r(); }
   };
-  ws.onclose = () => {
+  function onSocketZu(offen) {
+    ws.readyState = 3;
+    w.terminate();
     // Verbindungsaufbau gescheitert -> naechsten Kandidaten probieren.
-    if (!connected) { initCudaBackend(urlIndex + 1); return; }
+    if (!offen) { initCudaBackend(urlIndex + 1); return; }
     if (_cudaIntentionalClose) {
       // Gewolltes Trennen: Backend bleibt verfuegbar (Option sichtbar),
       // die naechste CUDA-Wahl verbindet neu und startet den Server
@@ -4360,7 +4409,46 @@ function initCudaBackend(urlIndex = 0) {
       console.warn('CUDA-Backend getrennt — wechsle auf WebWorker-Engine.');
       applyEngine('worker', false);
     }
-  };
+  }
+
+  // Bereits im Netz-Worker zerlegtes v4-Sample-Paket einreihen. Hier
+  // bleibt nur noch Buchhaltung: Stale-Check, Zeitreihe fortschreiben,
+  // abgespielte Samples verwerfen, Producer-Rate schaetzen.
+  function onFilmFrame(msg) {
+    if (!filmRefs || msg.n !== filmRefs.length) return;   // stale Session
+    if (!filmQueue) {
+      filmQueue = { times: [], samples: [], tail: msg.tail, head: msg.head };
+    }
+    filmQueue.tail = msg.tail;
+    filmQueue.head = msg.head;
+    _filmMetaTail = msg.tail;
+    _filmMetaHead = msg.head;
+    let lastT = filmQueue.times.length
+      ? filmQueue.times[filmQueue.times.length - 1] : -Infinity;
+    for (let i = 0; i < msg.times.length; i++) {
+      if (msg.times[i] <= lastT) continue;
+      filmQueue.times.push(msg.times[i]);
+      filmQueue.samples.push(msg.samples[i]);
+      lastT = msg.times[i];
+    }
+    for (const ev of msg.evs) filmEvents.push(ev);
+    while (filmQueue.times.length > 2 &&
+           filmQueue.times[1] < filmPlayheadDays - 2 * filmRasterDays()) {
+      filmQueue.times.shift();
+      filmQueue.samples.shift();
+    }
+    const nowP = performance.now();
+    if (!_filmHeadPrevMs) {
+      _filmHeadPrev = msg.head;
+      _filmHeadPrevMs = nowP;
+    } else if (nowP - _filmHeadPrevMs >= 500 && msg.head > _filmHeadPrev) {
+      const r = (msg.head - _filmHeadPrev) /
+                ((nowP - _filmHeadPrevMs) / 1000);
+      _filmHeadRate = _filmHeadRate ? 0.6 * _filmHeadRate + 0.4 * r : r;
+      _filmHeadPrev = msg.head;
+      _filmHeadPrevMs = nowP;
+    }
+  }
 }
 initCudaBackend();
 
@@ -4584,7 +4672,7 @@ function filmStart() {
   // ein UI-Toggle (Planeten aus-/einblenden), kein Todesmerkmal.
   const src = bodies.filter(b => b.visible || !b.isAsteroid);
   const N = src.length;
-  const buf = new ArrayBuffer(24 + N * (6 * 8 + 3) + 1);
+  const buf = new ArrayBuffer(24 + N * (6 * 8 + 4) + 1);
   const dv = new DataView(buf);
   dv.setUint32(0, 3, true);                    // MSG_FILM_START
   dv.setUint32(4, N, true);
@@ -4601,6 +4689,9 @@ function filmStart() {
   // Stern/Schwarzes Loch: fuer die Shatter-Entscheidung des Producers
   // (Stern/SL-Kollisionen mergen IMMER, nur Koerper x Koerper zerbirst).
   const isStarBH = new Uint8Array(buf, 24 + 50 * N, N);
+  // Nachtraeglich injiziert (Wolken): entscheidet beim Dichte-LOD nur
+  // ueber den VORRANG am Punktbudget, nicht ueber die Physik.
+  const injiziert = new Uint8Array(buf, 24 + 51 * N, N);
   for (let i = 0; i < N; i++) {
     const b = src[i];
     x[i] = b.x; y[i] = b.y; vx[i] = b.vx; vy[i] = b.vy;
@@ -4609,17 +4700,18 @@ function filmStart() {
     visible[i] = b.visible ? 1 : 0;
     isAst[i] = b.isAsteroid ? 1 : 0;
     isStarBH[i] = (b.isStar || b.isBlackHole) ? 1 : 0;
+    injiziert[i] = b.injiziert ? 1 : 0;
   }
   // Flag-Byte: Asteroid-x-Asteroid-Bounce im Producer (UI-Toggle).
-  // Offset NACH den DREI u8-Arrays: 24 + 48N (f64) + N (visible) +
-  // N (isAst) + N (isStarBH). (Ein frueherer 49N-Tippfehler ueberschrieb
-  // isAst[0] — die SONNE wurde zum Asteroiden erklaert und der Waechter
-  // killte alle Astis sofort.)
-  // Bits 4-7: Film-Protokollversion (1) — ein Server mit anderem
-  // Event-/Frame-Format lehnt ab, statt dass ein alter Tab Muell
-  // dekodiert. Bit 0: Asteroid-x-Asteroid-Bounce (UI-Toggle).
-  new Uint8Array(buf, 24 + 51 * N, 1)[0] =
-    (1 << 4) | (astAstCollisions ? 1 : 0);
+  // Offset NACH den VIER u8-Arrays: 24 + 48N (f64) + N (visible) +
+  // N (isAst) + N (isStarBH) + N (injiziert). (Ein frueherer
+  // 49N-Tippfehler ueberschrieb isAst[0] — die SONNE wurde zum
+  // Asteroiden erklaert und der Waechter killte alle Astis sofort.)
+  // Bits 4-7: Film-Protokollversion (2 — viertes u8-Array `injiziert`).
+  // Ein Server mit anderem Format lehnt ab, statt dass ein alter Tab
+  // Muell dekodiert. Bit 0: Asteroid-x-Asteroid-Bounce (UI-Toggle).
+  new Uint8Array(buf, 24 + 52 * N, 1)[0] =
+    (2 << 4) | (astAstCollisions ? 1 : 0);
   cudaSocket.send(buf);
   filmRefs = src.slice();
   filmEvents = [];
@@ -4764,7 +4856,7 @@ function filmSub(tDays, jump) {
   // eine Referenz-Box (2x Viewport) und streamt u16-Integerkoordinaten
   // (User-Design). Log-Zoom: Auto-Box ueber alle Koerper (halbW = -1).
   if (!cudaReady || !filmActive) return;
-  const buf = new ArrayBuffer(56);
+  const buf = new ArrayBuffer(64);
   const dv = new DataView(buf);
   dv.setUint32(0, 7, true);                    // MSG_FILM_SUB v4
   dv.setUint32(4, jump ? 1 : 0, true);         // 1 = Sprung (Scrub/LIVE)
@@ -4782,10 +4874,25 @@ function filmSub(tDays, jump) {
     dv.setFloat64(40, (W / 2) / skala, true);
     dv.setFloat64(48, (H / 2) / skala, true);
   }
+  // Punktbudget mitschicken statt beim Filmstart festzunageln: der
+  // Regler wirkt dadurch sofort, ohne den Film neu zu starten.
+  dv.setFloat64(56, filmLodBudget, true);      // 0 = Automatik
   _filmLastSubMs = performance.now();
   _filmSubCam = { cx: cam.cx, cy: cam.cy, zoom: cam.zoom };
   cudaSocket.send(buf);
 }
+// Punkte pro Sample, die der Server hoechstens streamt. 0 = Automatik
+// aus gemessener Bandbreite (Deckel 120k). Vom Regler gesetzt.
+//
+// Es gibt bewusst NUR EINEN Budgetregler: was die Bildrate bestimmt, ist
+// die Summe der gestreamten Punkte. Getrennte Budgets fuer geladene und
+// injizierte Koerper liessen Kombinationen zu, die zusammen unspielbar
+// sind, ohne dass ein einzelner Regler verdaechtig aussieht — derselbe
+// Fehler, der oben schon bei dt/Verlangsamung korrigiert wurde. Die
+// Aufteilung erledigt stattdessen eine Rangfolge im Server
+// (_lod_auswahl): massive Koerper immer vollstaendig, dann die
+// Asteroiden des geladenen Systems, den Rest die injizierten Wolken.
+let filmLodBudget = 0;
 let _filmSubCam = null;
 // Zwischen zwei Samples linear interpolieren. Aus = nur die tatsaechlich
 // gestreamten Positionen zeigen: exakt, aber die Anzeige laeuft dann nur
@@ -5146,6 +5253,22 @@ function filmTick(dtDays, slowFactor, nowMs) {
   _perf.frames++;
 }
 
+// Einen Regler samt seiner Beschriftung sperren und ausgrauen.
+//
+// NICHT ueber parentElement dimmen: die Zeitsteuerungs-Regler haengen
+// direkt im Seitenmenue (kein eigener Container), dessen Opacity graut
+// also das GANZE Menue aus — und zwar als Inline-Stil, der bis zum
+// naechsten Umschalten kleben bleibt. Die Beschriftung ist das
+// unmittelbar vorangehende <label>.
+function reglerSperren(id, sperren) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.disabled = sperren;
+  el.style.opacity = sperren ? 0.4 : '';
+  const lab = el.previousElementSibling;
+  if (lab && lab.tagName === 'LABEL') lab.style.opacity = sperren ? 0.4 : '';
+}
+
 // --- Film-UI: Checkbox, Zeitleiste, LIVE-Knopf ---
 ['chk-film', 'mob-chk-film'].forEach(id => {
   const el = document.getElementById(id);
@@ -5160,11 +5283,7 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // Sample-Raster. Sperren statt wirkungslos bedienbar lassen.
     for (const id of ['dt-slider', 'slow-slider',
                       'mob-dt-slider', 'mob-slow-slider']) {
-      const el = document.getElementById(id);
-      if (el) {
-        el.disabled = useFilm;
-        if (el.parentElement) el.parentElement.style.opacity = useFilm ? 0.4 : '';
-      }
+      reglerSperren(id, useFilm);
     }
     if (useFilm && useCuda && cudaReady) {
       filmStart();
@@ -5200,6 +5319,38 @@ document.getElementById('film-live').addEventListener('click', () => {
       if (se) se.value = this.value;
       if (ve) ve.textContent = txt;
     }
+  });
+});
+// Punktbudget LOGARITHMISCH (wie Abspieltempo und Sample-Raster): der
+// nutzbare Bereich spannt zwei Groessenordnungen, linear laege die halbe
+// Reglerstrecke in einem Bereich, den man nie braucht. Am linken Anschlag
+// steht Auto, am rechten "Alle" — dort wird gar nicht mehr ausgeduennt,
+// egal wie gross die Szene ist. Ob das noch fluessig laeuft, entscheidet
+// die Maschine des Nutzers; deshalb darf er es selbst probieren.
+const FILM_LOD_AUTO_BIS = 3.95;    // Raststellung links: Automatik
+const FILM_LOD_ALLE_AB = 6.75;     // Raststellung rechts: nicht ausduennen
+const FILM_LOD_ALLE = 1e9;
+['film-lod', 'mob-film-lod'].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('input', function() {
+    const v = parseFloat(this.value);
+    filmLodBudget = v <= FILM_LOD_AUTO_BIS ? 0
+                  : v >= FILM_LOD_ALLE_AB ? FILM_LOD_ALLE
+                  : Math.round(Math.pow(10, v));
+    const txt = filmLodBudget === 0 ? t('lbl.film-lod-auto')
+              : filmLodBudget === FILM_LOD_ALLE ? t('lbl.film-lod-alle')
+              : filmLodBudget >= 1e6 ? fmtDE(filmLodBudget / 1e6, 1) + ' Mio'
+              : fmtDE(filmLodBudget / 1000, 0) + 'k';
+    for (const [s, v] of [['film-lod', 'film-lod-val'],
+                          ['mob-film-lod', 'mob-film-lod-val']]) {
+      const se = document.getElementById(s);
+      const ve = document.getElementById(v);
+      if (se) se.value = this.value;
+      if (ve) ve.textContent = txt;
+    }
+    // Sofort wirksam machen: das Abo traegt das Budget mit, ein
+    // Filmneustart ist dafuer nicht noetig.
+    if (filmActive) filmSub(filmPlayheadDays, false);
   });
 });
 ['chk-film-interp', 'mob-chk-film-interp'].forEach(id => {
@@ -7316,6 +7467,12 @@ function doInjectCloud() {
       radius: massToRadius(massSunPer),
       realR: realRadiusFromMass(massSunPer),
       visible: true, isStar: false, isAsteroid: true, escapeScore: 0,
+      // Nachtraeglich eingebrachtes Massenmaterial. Beim Dichte-LOD des
+      // Films haben die Koerper des geladenen Systems Vorrang: eine
+      // injizierte Wolke bringt hunderttausende Punkte mit und wuerde
+      // den urspruenglichen Guertel sonst unter die Sichtbarkeits-
+      // schwelle druecken (er hat nur ein paar hundert).
+      injiziert: true,
     });
     trails[name] = [];
   }

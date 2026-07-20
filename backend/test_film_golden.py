@@ -41,11 +41,15 @@ def _run(x, y, vx, vy, mass, real_r, is_ast, ast_bounce: bool,
     vis = np.ones(n, np.uint8)
     star = np.zeros(n, np.uint8)
     star[0] = 1                                  # Koerper 0 = Sonne
+    # injiziert = alles 0: die Golden-Szenen sind geladene Systeme, nichts
+    # ist nachtraeglich eingebracht. Das Feld steuert ohnehin nur den
+    # Vorrang beim Stream-LOD, nie die Physik.
     sess = server.FilmSession(
         0.0, 0.5, np.asarray(x, float), np.asarray(y, float),
         np.asarray(vx, float), np.asarray(vy, float),
         np.asarray(mass, float), np.asarray(real_r, float),
-        vis, np.asarray(is_ast, np.uint8), star, ast_bounce)
+        vis, np.asarray(is_ast, np.uint8), star,
+        np.zeros(n, np.uint8), ast_bounce)
     try:
         t0 = time.time()
         while (sess.head_val.value < samples

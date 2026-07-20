@@ -81,9 +81,18 @@ Requires the active CUDA backend. Compute and display are fully decoupled:
   production edge.
 - Only positions are transmitted, as **integer screen coordinates**
   (server-side view culling, u16 quantization); mass/visibility travel as
-  compact events. When bandwidth is tight the server adaptively thins the
-  point density (**LOD**) — the physics stays exact, only the display is
-  thinned.
+  compact events.
+- **Density LOD**: when the point budget cannot cover every body, a
+  priority applies — massive bodies (sun, planets, rogues, stars, black
+  holes) are **never** thinned, then come the asteroids of the loaded
+  system, and injected clouds get whatever is left. Within each tier
+  thinning is **density-aware** (kept ~ count^0.5 per grid cell): a belt
+  of a few hundred objects no longer vanishes next to a cloud of hundreds
+  of thousands, while dense regions still read as visibly denser. The
+  selection runs over a hash of the body index — continuous, free of grid
+  artifacts, and stable across samples. The budget is adjustable via a
+  slider (Auto … "All"). **Physics and collisions always run for every
+  body** — only the display is thinned.
 - Collision events (merge, kill, bounce, shatter) carry their **exact
   location** and are replayed as explosions at the right time.
 - On leaving film mode or switching engines the exact f64 state is handed
@@ -112,8 +121,17 @@ mode.
 - **Hierarchical time steps**: only sun-diving bodies run in private fine
   loops, the rest on the coarse raster — instead of a single sun-diver
   dragging every body onto the minimum step.
-- **Collision/bounce detection pipelined** on a separate GPU (f32 pre-filter
-  + exact f64 verification), overlapped with the physics.
+- **Collision/bounce detection pipelined** on separate GPUs (f32 pre-filter
+  + exact f64 verification), overlapped with the physics. The bounce search
+  is the bottleneck (75–93 % of batch time) and is **split spatially across
+  up to two cards**: each checks an x-stripe plus a halo and keeps only
+  pairs whose left-hand partner belongs to it — gapless, non-overlapping,
+  with no data exchange between the cards. Whether this pays off depends on
+  the **candidate-pair count per sample**, not on the body count: the same
+  250 k asteroids yield over 10⁹ pairs to check as a dense clump and under
+  10⁶ once a belt has formed. The producer therefore adds and drops the
+  second card **per batch** (thresholds with hysteresis, measured gain up
+  to 1.7×) — no film restart required.
 - **Server lifecycle driven by the browser**: selecting the CUDA engine
   starts the server on demand (optionally via systemd socket activation),
   deselecting stops it after a short idle grace — GPUs are free at rest.
@@ -131,9 +149,24 @@ python3 -m venv ../venv
 
 Then pick the engine **"CUDA backend (native, f64)"** in the browser; the
 frontend connects via WebSocket (local `127.0.0.1:8765`, remote via a
-reverse proxy). Tests: `python test_kernel.py` (physics vs. NumPy reference
-+ benchmarks) and `python test_film_golden.py` (collision chain
-end-to-end).
+reverse proxy).
+
+Useful switches: `--ring-gib` (film ring-buffer size, determines how much
+past is navigable), `--det-gpus` (detection cards per session), `--diag`
+(log time shares of producer and stream loop — for bottleneck hunting, off
+in normal operation).
+
+Tests and measurement tools (standalone scripts, no pytest):
+
+```bash
+cd backend
+../venv/bin/python test_kernel.py             # kernel vs. NumPy, 1/2/3 GPUs
+../venv/bin/python test_film_golden.py        # collision chain end-to-end
+../venv/bin/python test_erkennung_streifen.py # stripes == a single card
+../venv/bin/python test_lod_dichte.py         # priority + density selection
+../venv/bin/python bench_erkennung.py         # switch threshold, 2nd card
+../venv/bin/python bench_film.py --szene knoedel --det-gpus 1 2
+```
 
 ## Controls
 
@@ -218,6 +251,10 @@ of bodies the CUDA backend is the only way.
 - **No build pipeline, no npm, no libraries** — the sim engine loads
   nothing. Only the footer optionally fetches GoatCounter (privacy-friendly
   pageview counter) and the GitHub stars value.
+- **Network worker in film mode**: WebSocket reception and frame decoding
+  run in a dedicated worker, and the payload is transferred rather than
+  copied. Otherwise the main thread's render loop blocks socket draining,
+  the TCP receive window collapses and the link goes underused.
 - **`localStorage`** for saved configurations and UI settings.
 
 ### Backend (optional, `backend/`)
@@ -231,7 +268,11 @@ of bodies the CUDA backend is the only way.
   answers buffer requests from shared memory in microseconds — the physics
   GPU never starves on the GIL.
 - Tests: `test_kernel.py` (kernel vs. NumPy reference, 1/2/3 GPU +
-  benchmarks), `test_film_golden.py` (collision chain end-to-end).
+  benchmarks), `test_film_golden.py` (collision chain end-to-end),
+  `test_erkennung_streifen.py` (the spatially split bounce search returns
+  exactly the same hits as a single card), `test_lod_dichte.py` (priority
+  and density-aware point selection). Measurement tools:
+  `bench_erkennung.py`, `bench_film.py`.
 
 ## Stargazers over time
 

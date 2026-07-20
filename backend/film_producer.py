@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import time
 
+import cupy as cp
 import numpy as np
 
 
@@ -39,6 +40,268 @@ EV_BYTES = 32    # Ereignis: f64 tTage | u32 a (Ueberlebender/0xFFFFFFFF) |
 #                  kind 0 = merge/kill (b verschwindet), 1 = bounce (nur
 #                  Zaehler + Visual, niemand stirbt)
 
+BOUNCE_E = 0.6      # Restitution (wie BOUNCE_RESTITUTION im JS)
+
+# Erkennungskarten pro Session. Die Bounce-Suche ist der Engpass (75-93%
+# der Batchzeit); sie skaliert raeumlich, weil Kollisionen lokal sind.
+DET_MAX = 2
+
+# Umschaltschwellen der zweiten Erkennungskarte, in KANDIDATENPAAREN pro
+# Sample — nicht in Koerpern! In einem dichten Klumpen sitzen tausende
+# Koerper in derselben Gitterzelle, und Paare wachsen quadratisch: 250k
+# Asteroiden ergeben dann ueber 10^9 zu pruefende Paare, waehrend
+# derselbe Bestand als ausgebildeter Guertel unter 10^6 bleibt.
+#
+# Gemessen mit bench_erkennung.py (250k Asteroiden, zwei RTX 8000):
+#     3,4 Mio    0,65x     22,9 Mio   1,55x
+#     6,2 Mio    0,83x     91 Mio     1,72x
+#    11,4 Mio    1,18x    178 Mio     1,65x
+# Der Umschlagpunkt liegt bei rund 8-9 Mio; darunter kosten der doppelte
+# Batch-Upload und die doppelten Kernel-Starts mehr, als die halbierte
+# GPU-Arbeit einbringt. Die Schwellen liegen bewusst beidseitig daneben.
+#
+# Jenseits von ~10^10 Paaren faellt der Gewinn wieder auf 1,0x: dort wird
+# die Zellgroesse h so gross, dass der Halo (2h) einen erheblichen Teil
+# des Nachbarstreifens mit abdeckt und beide Karten dieselbe Arbeit
+# doppelt tun. Ein solcher Zustand haelt nur waehrend der ersten
+# Durchdringung frisch injizierter Wolken an — nicht optimiert.
+DET_ZU_AB = 15_000_000
+DET_AB_UNTER = 6_000_000
+
+# Restitution und Suchgitter gehoeren zusammen: die Zellgroesse h richtet
+# sich nach der Strecke, die ein schneller Koerper in einem Raster
+# zuruecklegt. Nachbarzellen werden bis Versatz 1 geprueft, ein Paar kann
+# also hoechstens 2h auseinanderliegen (plus Beruehrungsradien).
+NACHBARN = ((0, 0), (1, 0), (0, 1), (1, 1), (1, -1))
+
+# Kompakte Wolken (Injektion) haetten beim Voll-Materialisieren aller
+# Kandidaten zweistellige Millionen Paare x mehrere Arrays (GBs VRAM-Peak,
+# den der CuPy-Pool dauerhaft behielte). Daher Chunk-Verarbeitung:
+# expandieren + sweepen in Stuecken, nur Treffer ueberleben. Physik
+# identisch, Reihenfolge der Treffer identisch (Offsets + Chunks
+# aufsteigend).
+CHUNK = 4_000_000
+
+
+class Erkennungskarte:
+    """Eine Erkennungs-GPU samt ihrer residenten Hilfsarrays.
+
+    Zustaendig ist sie fuer den x-Streifen [lo, hi) der Szene: ein
+    Asteroidenpaar gehoert ihr, wenn min(x_i, x_j) darin liegt. Damit sie
+    jedes eigene Paar auch sehen kann, prueft sie Koerper bis hi + halo —
+    der Partner liegt hoechstens eine Suchreichweite weiter rechts, und
+    weiter links als lo kann er nicht liegen (sonst waere ER das Minimum).
+
+    Die Streifen sind dadurch lueckenlos UND ueberschneidungsfrei: kein
+    Paar geht verloren, keines wird doppelt gezaehlt. Zwischen den Karten
+    ist deshalb nichts abzustimmen — sie brauchen nur denselben Skalar
+    `grenze` pro Sample, den der Aufrufer einmal bestimmt.
+
+    Bei nur einer Karte ist der Streifen (-inf, +inf) und alle
+    Streifen-Tests sind wirkungslos: EIN Codepfad fuer beide Faelle.
+    """
+
+    def __init__(self, dev: int, is_ast: np.ndarray, lo: float, hi: float):
+        self.dev = dev
+        self.lo = cp.float32(lo)
+        self.hi = cp.float32(hi)
+        with cp.cuda.Device(dev):
+            self.g_ast = cp.asarray(is_ast)
+        self.g_vis = None
+        self.g_rr = None
+
+    def stammdaten(self, vis: np.ndarray, real_r: np.ndarray) -> None:
+        """Sichtbarkeit und Beruehrungsradien neu hochladen. Beide aendern
+        sich nur bei Merges/Kills — sonst waeren es 2 H2D pro Sample."""
+        with cp.cuda.Device(self.dev):
+            self.g_vis = cp.asarray(vis)
+            self.g_rr = cp.asarray(real_r.astype(np.float32))
+
+    def hochladen(self, outs: np.ndarray):
+        """EIN Host->GPU-Transfer fuer den GESAMTEN Batch statt vier pro
+        Sample. Vorher waren das bei K=8 und n=267k 32 Einzeltransfers mit
+        je eigenem Launch- und Sync-Overhead — die Erkennungs-GPU bekam
+        ihre Arbeit in Haeppchen und lief bei ~38% Auslastung, waehrend
+        der Hauptloop auf sie wartete."""
+        with cp.cuda.Device(self.dev):
+            return cp.asarray(outs)
+
+    def streifen(self, lo: float, hi: float) -> None:
+        """Zustaendigkeitsbereich fuer das naechste Sample setzen."""
+        self.lo = cp.float32(lo)
+        self.hi = cp.float32(hi)
+
+    def bounce_hits(self, gx, gy, gvx, gvy, dt_y: float,
+                    h: float, halo: float):
+        """Asteroid-x-Asteroid-Stoesse im eigenen Streifen suchen.
+
+        Rueckgabe: ((i, j) als Host-Arrays der Treffer-Paare oder None,
+        Zahl der geprueften Kandidatenpaare). Mutiert nichts."""
+        with cp.cuda.Device(self.dev):
+            return self._hits(gx, gy, gvx, gvy, dt_y, h, halo)
+
+    def _hits(self, gx, gy, gvx, gvy, dt_y, h, halo):
+        # VORFILTER komplett in f32 (auf der f64-schwachen
+        # Erkennungskarte ~30x schneller). Der Beruehrungsradius wird um
+        # mehr als den f32-Rundungsfehler (~3e-7 AU bei 5 AU) aufgeweitet
+        # — kein echter Treffer kann verloren gehen. Die wenigen
+        # Kandidaten werden danach exakt in f64 nachgeprueft.
+        F32_TOL = cp.float32(1e-6)
+        g_alive = self.g_ast & (self.g_vis != 0) & \
+            (gx >= self.lo) & (gx < self.hi + cp.float32(halo))
+        ai = cp.flatnonzero(g_alive)
+        if int(ai.size) < 2:
+            return None, 0
+        ix = cp.floor(gx[ai].astype(cp.float64) / h).astype(cp.int64)
+        iy = cp.floor(gy[ai].astype(cp.float64) / h).astype(cp.int64)
+        key = _zellschluessel(ix, iy)
+        order = cp.argsort(key)
+        ks = key[order]
+
+        def sweep_hits(pi, pj):
+            # f32-Vorfilter eines Kandidaten-Chunks: Beruehrung mit
+            # aufgeweitetem Radius; Reihenfolge bleibt erhalten.
+            dpx = gx[pj] - gx[pi]
+            dpy = gy[pj] - gy[pi]
+            dvx_ = gvx[pj] - gvx[pi]
+            dvy_ = gvy[pj] - gvy[pi]
+            dv2 = dvx_ * dvx_ + dvy_ * dvy_
+            # Fenster BEIDSEITIG: [-dt, +dt] — der Live-Algo prueft per
+            # CCD rueckwaerts ueber den Frame; nur vorwaerts verpasste
+            # frontales Tunneling im letzten Kernel-Step.
+            tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
+                           cp.where(dv2 > 0, dv2, cp.float32(1.0)),
+                           cp.float32(-dt_y), cp.float32(dt_y))
+            cxm = dpx + dvx_ * tmin
+            cym = dpy + dvy_ * tmin
+            rsum = self.g_rr[pi] + self.g_rr[pj] + F32_TOL
+            hidx = cp.flatnonzero(cxm * cxm + cym * cym <= rsum * rsum)
+            return pi[hidx], pj[hidx]
+
+        hit_i_parts = []
+        hit_j_parts = []
+        kandidaten = 0
+        for ox, oy in NACHBARN:
+            k2 = _zellschluessel(ix + ox, iy + oy)
+            lo_r = cp.searchsorted(ks, k2, side="left")
+            hi_r = cp.searchsorted(ks, k2, side="right")
+            lens = hi_r - lo_r
+            tot = int(lens.sum())
+            kandidaten += tot
+            if tot == 0:
+                continue
+            cum = cp.cumsum(lens)
+            starts = cum - lens
+            for c0 in range(0, tot, CHUNK):
+                c1 = min(c0 + CHUNK, tot)
+                r = cp.arange(c0, c1, dtype=cp.int64)
+                rows = cp.searchsorted(cum, r, side="right")
+                cols = r - starts[rows] + lo_r[rows]
+                a = ai[rows]
+                b = ai[order[cols]]
+                keep = (a < b) if (ox == 0 and oy == 0) else (a != b)
+                hi_c, hj_c = sweep_hits(a[keep], b[keep])
+                if int(hi_c.size):
+                    hit_i_parts.append(hi_c)
+                    hit_j_parts.append(hj_c)
+        if not hit_i_parts:
+            return None, kandidaten
+        ci = cp.concatenate(hit_i_parts)
+        cj = cp.concatenate(hit_j_parts)
+        # BESITZ-REGEL: nur Paare behalten, deren linkerer Partner im
+        # eigenen Streifen liegt. Ein Paar im Halo findet die
+        # Nachbarkarte ebenfalls — behalten darf es genau eine.
+        # Auf der Trefferliste (wenige tausend) statt auf den Kandidaten
+        # (Millionen) gefiltert.
+        eigen = cp.flatnonzero(cp.minimum(gx[ci], gx[cj]) < self.hi)
+        if int(eigen.size) == 0:
+            return None, kandidaten
+        ci = ci[eigen]
+        cj = cj[eigen]
+        # Exakte f64-Nachpruefung NUR der Vorfilter-Kandidaten (wenige
+        # tausend statt Millionen Paare).
+        dpx = gx[cj].astype(cp.float64) - gx[ci].astype(cp.float64)
+        dpy = gy[cj].astype(cp.float64) - gy[ci].astype(cp.float64)
+        dvx_ = gvx[cj].astype(cp.float64) - gvx[ci].astype(cp.float64)
+        dvy_ = gvy[cj].astype(cp.float64) - gvy[ci].astype(cp.float64)
+        dv2 = dvx_ * dvx_ + dvy_ * dvy_
+        tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
+                       cp.where(dv2 > 0, dv2, 1.0), -dt_y, dt_y)
+        cxm = dpx + dvx_ * tmin
+        cym = dpy + dvy_ * tmin
+        rsum = self.g_rr[ci].astype(cp.float64) + \
+            self.g_rr[cj].astype(cp.float64)
+        hidx = cp.flatnonzero(cxm * cxm + cym * cym <= rsum * rsum)
+        if int(hidx.size) == 0:
+            return None, kandidaten
+        return (cp.asnumpy(ci[hidx]), cp.asnumpy(cj[hidx])), kandidaten
+
+
+def _zellschluessel(cx, cy):
+    return cx * cp.int64(73856093) ^ cy * cp.int64(19349663)
+
+
+def bounce_suche(det, det_pool, rows, dt_y: float, rr_max: float):
+    """Asteroid-x-Asteroid-Stoesse ueber alle aktiven Erkennungskarten.
+
+    Raeumlich aufgeteilt: Kollisionen sind lokal — zwei Koerper auf
+    gegenueberliegenden Seiten der Sonne koennen sich in einem Raster
+    nicht treffen. Jede Karte prueft ihren x-Streifen plus einen Halo in
+    Suchreichweite und behaelt nur die Paare, deren linkerer Partner ihr
+    gehoert (siehe Erkennungskarte). Zwischen den Karten wird NICHTS
+    ausgetauscht — sie brauchen nur dieselben Skalare.
+
+    rows[i] sind die vier Feld-Views des Samples auf Karte i; die LAENGE
+    von rows bestimmt, ueber wie viele Karten aufgeteilt wird. Streifen 0
+    rechnet der aufrufende Thread selbst, die uebrigen laufen im Pool.
+
+    Rueckgabe: (treffer|None, geprueifte Kandidatenpaare, Zellgroesse)."""
+    gx, gy, gvx, gvy = rows[0]
+    # Suchreichweite und Streifengrenzen EINMAL global bestimmen und an
+    # alle Karten geben (SSOT): rechnete jede Karte ihr eigenes h aus
+    # ihrer Teilmenge, waeren die Halo-Breiten verschieden und die
+    # Besitz-Regel nicht mehr lueckenlos.
+    with cp.cuda.Device(det[0].dev):
+        lebt = cp.flatnonzero(det[0].g_ast & (det[0].g_vis != 0))
+        if int(lebt.size) < 2:
+            return None, 0, 0.0
+        v95 = float(cp.percentile(cp.hypot(gvx[lebt], gvy[lebt]), 95))
+        grenzen = _streifengrenzen(gx[lebt], len(rows))
+    h = max(1e-4, 2.0 * v95 * dt_y)
+    # Halo: NACHBARN prueft bis Zellversatz 1, ein Paar liegt also
+    # hoechstens 2h auseinander — plus die beiden Beruehrungsradien.
+    halo = 2.0 * h + 2.0 * rr_max
+    for karte, (lo, hi) in zip(det, grenzen):
+        karte.streifen(lo, hi)
+
+    rest = [det_pool.submit(karte.bounce_hits, *row, dt_y, h, halo)
+            for karte, row in zip(det[1:len(rows)], rows[1:])]
+    teile = [det[0].bounce_hits(gx, gy, gvx, gvy, dt_y, h, halo)]
+    teile += [f.result() for f in rest]
+
+    hits = [t for t, _ in teile if t is not None]
+    kandidaten = sum(kand for _, kand in teile)
+    if not hits:
+        return None, kandidaten, h
+    return ((np.concatenate([t[0] for t in hits]),
+             np.concatenate([t[1] for t in hits])), kandidaten, h)
+
+
+def _streifengrenzen(gx_lebt, anzahl: int) -> list[tuple[float, float]]:
+    """Die Szene in `anzahl` x-Streifen mit gleich vielen lebenden
+    Asteroiden schneiden. Gleiche Koerperzahl ist nicht dasselbe wie
+    gleiche Arbeit (die Paarzahl waechst mit der Dichte quadratisch), aber
+    ein Quantil ist ein Kernel-Aufruf — eine Lastmessung waere ein
+    Rueckkanal von den Karten zum Host in einem Pfad, der ohnehin am GIL
+    haengt. Die aeusseren Grenzen sind unendlich, damit die Streifen die
+    Szene lueckenlos ueberdecken."""
+    if anzahl < 2:
+        return [(-np.inf, np.inf)]
+    q = [100.0 * i / anzahl for i in range(1, anzahl)]
+    schnitte = [float(v) for v in cp.asnumpy(cp.percentile(gx_lebt, q))]
+    kanten = [-np.inf, *schnitte, np.inf]
+    return list(zip(kanten[:-1], kanten[1:]))
+
 
 def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   ev_name: str, ev_cap: int, ev_count_val,
@@ -47,15 +310,14 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   state: dict, raster_days: float, t0_days: float,
                   ast_bounce: bool = False,
                   shatter_flag=None, shatter_a=None, shatter_b=None,
-                  shatter_t=None, det_rank: int = 0) -> None:
-    # CUDA erst IM Kindprozess initialisieren (spawn-Kontext!)
+                  shatter_t=None, det_rank: int = 0,
+                  det_gpus: int = DET_MAX, diag: bool = False) -> None:
+    # CUDA-Kontexte erst IM Kindprozess anlegen (spawn-Kontext!)
     from multiprocessing import shared_memory
-
-    import cupy as cp
 
     from concurrent.futures import ThreadPoolExecutor
 
-    from nbody_kernel import (G_AU, NBodyCuda, pick_detect_device,
+    from nbody_kernel import (G_AU, NBodyCuda, pick_detect_devices,
                               pick_devices)
 
     # Multi-GPU lohnt erst, wenn die Rechenlast den Barrier-Overhead
@@ -76,17 +338,24 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     phys_devs = pick_devices() if n_ast_total >= MULTI_GPU_AB \
         else pick_devices()[:1]
     sim = NBodyCuda(phys_devs)
-    # Kollisions-/Bounce-Erkennung auf die zweitbeste f64-GPU auslagern:
-    # sie laeuft dann UEBERLAPPT mit dem naechsten Kernel-Step (Pipeline).
+    # Kollisions-/Bounce-Erkennung auf die freien GPUs auslagern: sie
+    # laeuft dann UEBERLAPPT mit dem naechsten Kernel-Step (Pipeline).
     # Preis: Erkennungs-Ergebnisse von Sample k werden erst vor Step k+2
     # angewandt (1 Raster Versatz) — feiner als der Live-JS-Algo, der
-    # Kollisionen einmal pro Frame (oft 1-2 Tage) aufloest. Ohne zweite
+    # Kollisionen einmal pro Frame (oft 1-2 Tage) aufloest. Ohne freie
     # GPU laeuft die Analyse im selben Muster auf der Physik-GPU.
-    det_dev = pick_detect_device(phys_devs, det_rank)
-    ana_dev = det_dev if det_dev is not None else sim.device
-    print(f"[film] physik auf gpus {phys_devs}, erkennung auf gpu "
-          f"{ana_dev}" + (" (pipelined)" if det_dev is not None else
-                          " (seriell, keine weitere gpu)"), flush=True)
+    # Mehr als eine Erkennungskarte lohnt nur fuer die Bounce-Suche — sie
+    # allein ist raeumlich aufgeteilt. Ohne Bounces bliebe die zweite
+    # Karte untaetig und bekaeme trotzdem jeden Batch geschickt.
+    det_devs = pick_detect_devices(phys_devs, det_rank,
+                                   max(1, det_gpus) if ast_bounce else 1)
+    ausgelagert = bool(det_devs)
+    if not ausgelagert:
+        det_devs = [sim.device]
+    ana_dev = det_devs[0]      # Merge-Erkennung (2-4%, nicht aufgeteilt)
+    print(f"[film] physik auf gpus {phys_devs}, erkennung auf gpus "
+          f"{det_devs}" + (" (pipelined)" if ausgelagert else
+                           " (seriell, keine weitere gpu)"), flush=True)
     x = state["x"]
     y = state["y"]
     vx = state["vx"]
@@ -103,13 +372,26 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     collisions = 0
     dt_years = raster_days / 365.25
 
-    with cp.cuda.Device(ana_dev):
-        g_ast = cp.asarray(is_ast)
-        prev_det = None          # voriges Sample (fuer den Merge-Sweep)
-        g_vis_det = cp.asarray(vis)
-        g_rr_det = cp.asarray(real_r.astype(np.float32))
-    # vis/real_r aendern sich nur bei Merges/Kills — nur dann neu auf die
-    # Erkennungs-GPU laden statt bei jedem Sample (spart 2 H2D/Sample).
+    # Erkennungskarten: lueckenlose x-Streifen ueber die Szene. Die
+    # Streifengrenze wird pro Sample neu bestimmt (Median der lebenden
+    # Asteroiden) — die Szene wandert und verdichtet sich laufend, eine
+    # feste Grenze liefe binnen Minuten aus dem Gleichgewicht.
+    det = [Erkennungskarte(d, is_ast, -np.inf, np.inf) for d in det_devs]
+    prev_det = None              # voriges Sample (fuer den Merge-Sweep)
+    # Beruehrungsradius des groessten Asteroiden: geht in die Halo-Breite
+    # ein. Wird zusammen mit den Stammdaten fortgeschrieben.
+    ast_rr_max = [0.0]
+
+    def stammdaten_laden() -> None:
+        """vis/real_r auf ALLE Erkennungskarten spiegeln. Beide aendern
+        sich nur bei Merges/Kills — sonst waeren es 2 H2D pro Sample und
+        Karte."""
+        rr32 = real_r.astype(np.float32)
+        for karte in det:
+            karte.stammdaten(vis, rr32)
+        ast_rr_max[0] = float(real_r[is_ast].max()) if is_ast.any() else 0.0
+
+    stammdaten_laden()
     det_dirty = [False]
     # Zeitanteile INNERHALB der Erkennung. Sie laeuft im Pipeline-Thread,
     # deshalb Listen statt nonlocal. Trennt GPU-Anteile (merge-det,
@@ -123,16 +405,9 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     # der Bounce-Erkennung. Die Zellgroesse h richtet sich nach der
     # GESCHWINDIGKEIT der schnellsten 5% und gilt global — in dichten
     # Clustern landen dadurch sehr viele Koerper in derselben Zelle und
-    # die Paarzahl waechst quadratisch. Hier wird gezaehlt, wie viele
-    # Paare tatsaechlich durch den f32-Vorfilter muessen.
+    # die Paarzahl waechst quadratisch.
     diag_kandidaten = [0]
     diag_zellgroesse = [0.0]
-    diag_v95 = [0.0]           # 95-Perzentil der ABSOLUTEN Geschwindigkeit
-    diag_disp95 = [0.0]        # 95-Perzentil der LOKALEN Dispersion
-    diag_zellbelegung = [0.0]  # groesste Zellbelegung (Paare wachsen quadratisch)
-    diag_nachbardiff = [0.0]   # Geschwindigkeitsdifferenz benachbarter Zellmittel
-    diag_dispmax = [0.0]       # Maximum statt Perzentil (Korrektheitsgrenze)
-    diag_nbmax = [0.0]
 
     shm = shared_memory.SharedMemory(name=shm_name)
     buf = shm.buf
@@ -162,61 +437,65 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             float(ex), float(ey))
         ev_count_val.value += 1
 
-    def analyze_merge(sx, sy, gx, gy, gvx, gvy, g_vis_a, g_rr_a):
-        """Merge-Kandidaten + Runaways auf der Erkennungs-GPU bestimmen.
-        Reine Analyse — mutiert nichts; Anwendung im Hauptloop."""
+    def analyze_merge(sx, sy, gx, gy, gvx, gvy):
+        """Merge-Kandidaten + Runaways auf der ersten Erkennungs-GPU
+        bestimmen. Reine Analyse — mutiert nichts; Anwendung im Hauptloop.
+
+        NICHT raeumlich aufgeteilt: massiv-x-alles kostet nur 2-4% der
+        Batchzeit, eine Aufteilung braechte hier nichts ausser Komplexitaet
+        (und liefe waehrend der Bounce-Suche ohnehin ueberlappt mit)."""
         nonlocal prev_det
+        g_vis_a = det[0].g_vis
+        g_rr_a = det[0].g_rr
         hit_pairs = []
         runaway_np = None
-        m_alive = np.empty(0, dtype=np.int64)
-        if True:
-            px, py = (gx, gy) if prev_det is None else prev_det
-            m_idx_all = st["m_idx_h"]
-            m_alive = m_idx_all[(vis[m_idx_all] != 0) & (mass[m_idx_all] > 0)]
-            if len(m_alive):
-                gm = cp.asarray(m_alive)
-                cx = gx[gm][:, None]
-                cy = gy[gm][:, None]
-                rsum = g_rr_a[gm][:, None] + g_rr_a[None, :]
-                rsum2 = rsum * rsum
-                alive = g_vis_a != 0
+        px, py = (gx, gy) if prev_det is None else prev_det
+        m_idx_all = st["m_idx_h"]
+        m_alive = m_idx_all[(vis[m_idx_all] != 0) & (mass[m_idx_all] > 0)]
+        if len(m_alive):
+            gm = cp.asarray(m_alive)
+            cx = gx[gm][:, None]
+            cy = gy[gm][:, None]
+            rsum = g_rr_a[gm][:, None] + g_rr_a[None, :]
+            rsum2 = rsum * rsum
+            alive = g_vis_a != 0
 
-                def seg_hit(p0x, p0y, p1x, p1y):
-                    ssx = (p1x - p0x)[None, :]
-                    ssy = (p1y - p0y)[None, :]
-                    seg2 = ssx * ssx + ssy * ssy
-                    tt = ((cx - p0x[None, :]) * ssx +
-                          (cy - p0y[None, :]) * ssy) / cp.where(
-                              seg2 > 0, seg2, cp.float32(1.0))
-                    tt = cp.clip(tt, 0.0, 1.0)
-                    ddx = p0x[None, :] + tt * ssx - cx
-                    ddy = p0y[None, :] + tt * ssy - cy
-                    return ddx * ddx + ddy * ddy <= rsum2
+            def seg_hit(p0x, p0y, p1x, p1y):
+                ssx = (p1x - p0x)[None, :]
+                ssy = (p1y - p0y)[None, :]
+                seg2 = ssx * ssx + ssy * ssy
+                tt = ((cx - p0x[None, :]) * ssx +
+                      (cy - p0y[None, :]) * ssy) / cp.where(
+                          seg2 > 0, seg2, cp.float32(1.0))
+                tt = cp.clip(tt, 0.0, 1.0)
+                ddx = p0x[None, :] + tt * ssx - cx
+                ddy = p0y[None, :] + tt * ssy - cy
+                return ddx * ddx + ddy * ddy <= rsum2
 
-                g_dt = cp.float32(dt_years)
-                hit2d = (seg_hit(px, py, gx, gy) |
-                         seg_hit(gx, gy, gx + gvx * g_dt, gy + gvy * g_dt)) \
-                    & alive[None, :]
-                hit2d[cp.arange(len(gm)), gm] = False
-                rows, cols = cp.nonzero(hit2d)
-                if rows.size:
-                    hit_pairs = list(zip(cp.asnumpy(rows).tolist(),
-                                         cp.asnumpy(cols).tolist()))
-                mw = mass[m_alive]
-                msum = float(mw.sum())
-                if msum > 0:
-                    bx = float((sx[m_alive] * mw).sum() / msum)
-                    by = float((sy[m_alive] * mw).sum() / msum)
-                    r = cp.maximum(cp.hypot(gx - cp.float32(bx),
-                                            gy - cp.float32(by)),
-                                   cp.float32(1e-6))
-                    v2 = gvx * gvx + gvy * gvy
-                    vesc2 = cp.float32(2.0 * G_AU * msum) / r
-                    runaway = (v2 > 9.0 * vesc2) & g_ast & (g_vis_a != 0)
-                    ridx = cp.flatnonzero(runaway)
-                    if ridx.size:
-                        runaway_np = cp.asnumpy(ridx)
-            prev_det = (gx.copy(), gy.copy())
+            g_dt = cp.float32(dt_years)
+            hit2d = (seg_hit(px, py, gx, gy) |
+                     seg_hit(gx, gy, gx + gvx * g_dt, gy + gvy * g_dt)) \
+                & alive[None, :]
+            hit2d[cp.arange(len(gm)), gm] = False
+            rows, cols = cp.nonzero(hit2d)
+            if rows.size:
+                hit_pairs = list(zip(cp.asnumpy(rows).tolist(),
+                                     cp.asnumpy(cols).tolist()))
+            mw = mass[m_alive]
+            msum = float(mw.sum())
+            if msum > 0:
+                bx = float((sx[m_alive] * mw).sum() / msum)
+                by = float((sy[m_alive] * mw).sum() / msum)
+                r = cp.maximum(cp.hypot(gx - cp.float32(bx),
+                                        gy - cp.float32(by)),
+                               cp.float32(1e-6))
+                v2 = gvx * gvx + gvy * gvy
+                vesc2 = cp.float32(2.0 * G_AU * msum) / r
+                runaway = (v2 > 9.0 * vesc2) & det[0].g_ast & alive
+                ridx = cp.flatnonzero(runaway)
+                if ridx.size:
+                    runaway_np = cp.asnumpy(ridx)
+        prev_det = (gx.copy(), gy.copy())
         pairs = [(int(m_alive[row]), int(j)) for row, j in hit_pairs]
         return pairs, runaway_np
 
@@ -289,173 +568,52 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             coll_val.value = collisions
             det_dirty[0] = True
 
-    BOUNCE_E = 0.6            # Restitution (wie BOUNCE_RESTITUTION im JS)
     bounce_count = 0
+    kand_letzte = [0]        # Kandidatenpaare des zuletzt geprueften Samples
+    det_aktiv = [1]
 
-    def analyze_bounce(gx32, gy32, gvx32, gvy32, g_vis_a, g_rr_a):
-        """Asteroid-x-Asteroid-Stoesse nach dem bisherigen Algo (Bounce,
-        Restitution 0,6, Ein-Stoss pro Sample, Ueberlapp-Aufloesung 1,1x).
-        Kandidaten + Swept-Check laufen auf der Erkennungs-GPU; Rueckgabe
-        sind die Treffer-Paare (Anwendung als Deltas im Hauptloop)."""
-        dt_y = raster_days / 365.25
-        hits_host = None
-        if True:
-            # VORFILTER komplett in f32 (auf der f64-schwachen
-            # Erkennungskarte ~30x schneller). Der Beruehrungsradius wird
-            # um mehr als den f32-Rundungsfehler (~3e-7 AU bei 5 AU)
-            # aufgeweitet — kein echter Treffer kann verloren gehen. Die
-            # wenigen Kandidaten werden danach exakt in f64 nachgeprueft.
-            gx = gx32
-            gy = gy32
-            gvx = gvx32
-            gvy = gvy32
-            F32_TOL = cp.float32(1e-6)
-            g_alive = g_ast & (g_vis_a != 0)
-            ai = cp.flatnonzero(g_alive)
-            if int(ai.size) < 2:
-                return None
-            axp = gx[ai].astype(cp.float64)
-            ayp = gy[ai].astype(cp.float64)
-            sp = cp.hypot(gvx[ai], gvy[ai]).astype(cp.float64)
-            v95 = float(cp.percentile(sp, 95))
-            h = max(1e-4, 2.0 * v95 * dt_y)
-            diag_zellgroesse[0] = h
-            ix = cp.floor(axp / h).astype(cp.int64)
-            iy = cp.floor(ayp / h).astype(cp.int64)
+    def karten_wahl() -> int:
+        """Wie viele Erkennungskarten der naechste Batch benutzt.
 
-            def cell_key(cx_, cy_):
-                return cx_ * cp.int64(73856093) ^ cy_ * cp.int64(19349663)
+        Die Aufteilung halbiert die GPU-ARBEIT, verdoppelt aber Uploads
+        und Kernel-Starts und laesst zwei Threads um den GIL konkurrieren.
+        Das lohnt nur, solange die Suche rechengebunden ist — gemessen
+        (siehe bench_erkennung.py):
 
-            key = cell_key(ix, iy)
-            order = cp.argsort(key)
-            ks = key[order]
+            dichte Klumpen, >10^8 Kandidaten/Sample: 2 Karten ~1,4-2,0x
+            ausgebildeter Guertel, <10^6:             2 Karten ~0,7x
 
-            # DIAGNOSE (misst nur, aendert nichts): Die Suchreichweite h
-            # leitet sich aus der ABSOLUTEN Bahngeschwindigkeit ab (~6
-            # AE/Jahr). Fuer Kollisionen zaehlt aber nur die RELATIVE
-            # Geschwindigkeit — in einer gemeinsam fliegenden Wolke ist die
-            # um Groessenordnungen kleiner. Hier wird die lokale Dispersion
-            # (Abweichung vom Zellmittel) gemessen, um zu beziffern, wie
-            # weit die heutige Reichweite ueber dem Noetigen liegt.
-            uniq, inv, counts = cp.unique(key, return_inverse=True,
-                                          return_counts=True)
-            mvx = cp.bincount(inv, weights=gvx[ai].astype(cp.float64),
-                              minlength=int(uniq.size)) / counts
-            mvy = cp.bincount(inv, weights=gvy[ai].astype(cp.float64),
-                              minlength=int(uniq.size)) / counts
-            disp = cp.hypot(gvx[ai].astype(cp.float64) - mvx[inv],
-                            gvy[ai].astype(cp.float64) - mvy[inv])
-            diag_v95[0] = v95
-            diag_disp95[0] = float(cp.percentile(disp, 95))
-            # MAXIMUM zusaetzlich: fuer die Korrektheit zaehlt nicht das
-            # Perzentil, sondern der schnellste Ausreisser — sonst gehen
-            # genau dessen Treffer verloren. Liegt das Maximum nahe am
-            # Perzentil, genuegt eine einfache globale Reichweite; klafft
-            # es weit auseinander, braucht es einen Sonderdurchgang fuer
-            # die Ausreisser (deutlich mehr Code an kritischer Stelle).
-            diag_dispmax[0] = float(disp.max())
-            diag_zellbelegung[0] = float(counts.max())
-            # Differenz der ZELLMITTEL zwischen benachbarten Zellen. Die
-            # Dispersion allein genuegt als Reichweiten-Mass NICHT: zwei
-            # benachbarte Zellen koennen je fuer sich kohaerent sein und
-            # trotzdem mit voller Relativgeschwindigkeit aufeinander
-            # zulaufen (kreuzende Stroeme). Genau diese Paare duerfen nicht
-            # verlorengehen. Gemessen wird ueber den (1,0)-Nachbarn als
-            # Stichprobe — reicht, um die Groessenordnung zu beziffern.
-            nb_key = cell_key(ix + 1, iy)
-            nb_pos = cp.searchsorted(uniq, nb_key)
-            nb_ok = (nb_pos < uniq.size)
-            nb_pos = cp.where(nb_ok, nb_pos, 0)
-            nb_treffer = nb_ok & (uniq[nb_pos] == nb_key)
-            if bool(nb_treffer.any()):
-                d_nb = cp.hypot(mvx[nb_pos] - mvx[inv],
-                                mvy[nb_pos] - mvy[inv])[nb_treffer]
-                diag_nachbardiff[0] = float(cp.percentile(d_nb, 95))
-                diag_nbmax[0] = float(d_nb.max())
-            else:
-                diag_nachbardiff[0] = 0.0
-                diag_nbmax[0] = 0.0
+        Genau dieser Verlauf entsteht von selbst, wenn eng injizierte
+        Wolken sich durchdringen (Erkennung am Anschlag, Physik-Karten
+        langweilen sich) und mit der Zeit zu einem Guertel ausduennen.
+        Deshalb wird pro Batch neu entschieden — ein Filmneustart ist
+        dafuer NICHT noetig: die Streifen werden ohnehin je Sample
+        zugeteilt, und eine ruhende Karte bekommt schlicht keinen Upload
+        mehr. Ihre residenten Arrays bleiben liegen, das Zuschalten
+        kostet daher nur den naechsten Batch-Upload.
 
-            def sweep_hits(pi, pj):
-                # f32-Vorfilter eines Kandidaten-Chunks: Beruehrung mit
-                # aufgeweitetem Radius; Reihenfolge bleibt erhalten.
-                dpx = gx[pj] - gx[pi]
-                dpy = gy[pj] - gy[pi]
-                dvx_ = gvx[pj] - gvx[pi]
-                dvy_ = gvy[pj] - gvy[pi]
-                dv2 = dvx_ * dvx_ + dvy_ * dvy_
-                # Fenster BEIDSEITIG: [-dt, +dt] — der Live-Algo prueft
-                # per CCD rueckwaerts ueber den Frame; nur vorwaerts
-                # verpasste frontales Tunneling im letzten Kernel-Step.
-                tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
-                               cp.where(dv2 > 0, dv2, cp.float32(1.0)),
-                               cp.float32(-dt_y), cp.float32(dt_y))
-                cxm = dpx + dvx_ * tmin
-                cym = dpy + dvy_ * tmin
-                rsum = g_rr_a[pi] + g_rr_a[pj] + F32_TOL
-                hitm = cxm * cxm + cym * cym <= rsum * rsum
-                hidx = cp.flatnonzero(hitm)
-                return pi[hidx], pj[hidx]
+        Getrennte Schwellen fuer Hoch- und Runterschalten (Hysterese):
+        an der Kante pendelt die Kandidatenzahl sonst um einen einzigen
+        Wert und die Karte wird im Sekundentakt zu- und abgeschaltet."""
+        if len(det) < 2:
+            return 1
+        kand = kand_letzte[0]
+        if det_aktiv[0] == 1 and kand > DET_ZU_AB:
+            det_aktiv[0] = len(det)
+        elif det_aktiv[0] > 1 and kand < DET_AB_UNTER:
+            det_aktiv[0] = 1
+        return det_aktiv[0]
 
-            # Kompakte Wolken (Injektion) haetten beim Voll-Materialisieren
-            # aller Kandidaten zweistellige Millionen Paare x mehrere
-            # Arrays (GBs VRAM-Peak, den der CuPy-Pool dauerhaft behielte).
-            # Daher Chunk-Verarbeitung: expandieren + sweepen in Stuecken,
-            # nur Treffer ueberleben. Physik identisch, Reihenfolge der
-            # Treffer identisch (Offsets + Chunks aufsteigend).
-            CHUNK = 4_000_000
-            hit_i_parts = []
-            hit_j_parts = []
-            for ox, oy in ((0, 0), (1, 0), (0, 1), (1, 1), (1, -1)):
-                k2 = cell_key(ix + ox, iy + oy)
-                lo = cp.searchsorted(ks, k2, side="left")
-                hi_r = cp.searchsorted(ks, k2, side="right")
-                lens = hi_r - lo
-                tot = int(lens.sum())
-                diag_kandidaten[0] += tot
-                if tot == 0:
-                    continue
-                cum = cp.cumsum(lens)
-                starts = cum - lens
-                for c0 in range(0, tot, CHUNK):
-                    c1 = min(c0 + CHUNK, tot)
-                    r = cp.arange(c0, c1, dtype=cp.int64)
-                    rows = cp.searchsorted(cum, r, side="right")
-                    cols = r - starts[rows] + lo[rows]
-                    a = ai[rows]
-                    b = ai[order[cols]]
-                    keep = (a < b) if (ox == 0 and oy == 0) else (a != b)
-                    hi_c, hj_c = sweep_hits(a[keep], b[keep])
-                    if int(hi_c.size):
-                        hit_i_parts.append(hi_c)
-                        hit_j_parts.append(hj_c)
-            if not hit_i_parts:
-                return None
-            # Exakte f64-Nachpruefung NUR der Vorfilter-Kandidaten
-            # (wenige tausend statt Millionen Paare).
-            ci = cp.concatenate(hit_i_parts)
-            cj = cp.concatenate(hit_j_parts)
-            x64i = gx[ci].astype(cp.float64)
-            y64i = gy[ci].astype(cp.float64)
-            x64j = gx[cj].astype(cp.float64)
-            y64j = gy[cj].astype(cp.float64)
-            dvx_ = gvx[cj].astype(cp.float64) - gvx[ci].astype(cp.float64)
-            dvy_ = gvy[cj].astype(cp.float64) - gvy[ci].astype(cp.float64)
-            dpx = x64j - x64i
-            dpy = y64j - y64i
-            dv2 = dvx_ * dvx_ + dvy_ * dvy_
-            tmin = cp.clip(-(dpx * dvx_ + dpy * dvy_) /
-                           cp.where(dv2 > 0, dv2, 1.0), -dt_y, dt_y)
-            cxm = dpx + dvx_ * tmin
-            cym = dpy + dvy_ * tmin
-            rsum = g_rr_a[ci].astype(cp.float64) + \
-                g_rr_a[cj].astype(cp.float64)
-            hitm = cxm * cxm + cym * cym <= rsum * rsum
-            hidx = cp.flatnonzero(hitm)
-            if int(hidx.size) == 0:
-                return None
-            hits_host = (cp.asnumpy(ci[hidx]), cp.asnumpy(cj[hidx]))
-        return hits_host
+    def analyze_bounce(rows):
+        """Bounce-Suche fuer ein Sample; Anwendung als Deltas im
+        Hauptloop. Die Aufteilungs-Logik steckt in bounce_suche (SSOT mit
+        bench_erkennung.py)."""
+        hits, kandidaten, h = bounce_suche(
+            det, det_pool, rows, raster_days / 365.25, ast_rr_max[0])
+        diag_kandidaten[0] += kandidaten
+        diag_zellgroesse[0] = h
+        kand_letzte[0] = kandidaten
+        return hits
 
     def bounce_deltas(sample: np.ndarray, hits_host):
         """Host-Teil des Bounce-Algos: Ein-Stoss-Filter, Impuls und
@@ -602,41 +760,42 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         # erkennung, also keinerlei Ueberlappung mit der Physik).
         # outs ist (K, 4n) f32 und zusammenhaengend, die Zeilen-Views
         # brauchen daher keine weitere Kopie.
-        with cp.cuda.Device(ana_dev):
-            g_all = cp.asarray(outs)
-        return [analyze_sample(outs[i], k0 + i, g_all[i])
+        #
+        # JEDE Erkennungskarte bekommt den GESAMTEN Batch und filtert
+        # ihren Streifen selbst auf der GPU. Die Alternative — Masken auf
+        # dem Host bilden und nur die jeweilige Haelfte uebertragen —
+        # spart Transfer, kostet aber CPU-Zeit im Erkennungs-Thread, und
+        # genau dort klemmt der GIL.
+        aktiv = karten_wahl()
+        rest = [det_pool.submit(karte.hochladen, outs)
+                for karte in det[1:aktiv]]
+        g_all = [det[0].hochladen(outs)] + [f.result() for f in rest]
+        if det_dirty[0]:
+            stammdaten_laden()
+            det_dirty[0] = False
+        return [analyze_sample(outs[i], k0 + i,
+                               [g[i] for g in g_all])
                 for i in range(len(outs))]
 
-    def analyze_sample(out_np: np.ndarray, k_ev: int, g_row) -> dict:
-        """Komplette Erkennung eines Samples auf der Erkennungs-GPU —
+    def analyze_sample(out_np: np.ndarray, k_ev: int, g_zeilen) -> dict:
+        """Komplette Erkennung eines Samples auf den Erkennungs-GPUs —
         laeuft im Pipeline-Thread, mutiert nichts. vis/mass/real_r werden
         hier nur GELESEN; der Hauptloop mutiert sie erst nach dem
         Einsammeln des Ergebnisses (keine Gleichzeitigkeit).
 
-        g_row ist die bereits auf der Erkennungs-GPU liegende Zeile des
-        Batches (siehe analyze_batch) — hier wird nur noch geschnitten,
-        nicht mehr transferiert."""
-        nonlocal g_vis_det, g_rr_det
+        g_zeilen[i] ist die bereits auf Karte i liegende Zeile des Batches
+        (siehe analyze_batch) — hier wird nur noch geschnitten, nicht mehr
+        transferiert."""
+        rows = [(g[0:n], g[n:2 * n], g[2 * n:3 * n], g[3 * n:4 * n])
+                for g in g_zeilen]
+        _t = time.monotonic()
         with cp.cuda.Device(ana_dev):
-            gx = g_row[0:n]
-            gy = g_row[n:2 * n]
-            gvx = g_row[2 * n:3 * n]
-            gvy = g_row[3 * n:4 * n]
-            if det_dirty[0]:
-                g_vis_det = cp.asarray(vis)
-                g_rr_det = cp.asarray(real_r.astype(np.float32))
-                det_dirty[0] = False
-            g_vis_a = g_vis_det
-            g_rr_a = g_rr_det
-            _t = time.monotonic()
             pairs, runaway_np = analyze_merge(
-                out_np[0:n], out_np[n:2 * n],
-                gx, gy, gvx, gvy, g_vis_a, g_rr_a)
-            diag_t_merge_det[0] += time.monotonic() - _t
-            _t = time.monotonic()
-            hits = analyze_bounce(gx, gy, gvx, gvy, g_vis_a, g_rr_a) \
-                if ast_bounce else None
-            diag_t_bounce_det[0] += time.monotonic() - _t
+                out_np[0:n], out_np[n:2 * n], *rows[0])
+        diag_t_merge_det[0] += time.monotonic() - _t
+        _t = time.monotonic()
+        hits = analyze_bounce(rows) if ast_bounce else None
+        diag_t_bounce_det[0] += time.monotonic() - _t
         _t = time.monotonic()
         bounce = bounce_deltas(out_np, hits) if hits is not None else None
         diag_t_bounce_host[0] += time.monotonic() - _t
@@ -654,6 +813,10 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             diag_t_bounce += time.monotonic() - _t
 
     executor = ThreadPoolExecutor(max_workers=1)
+    # Fuer die Streifen 1..N-1; Streifen 0 rechnet der Erkennungs-Thread
+    # selbst. Kein Pool bei nur einer Karte.
+    det_pool = ThreadPoolExecutor(max_workers=len(det) - 1) \
+        if len(det) > 1 else None
     future = None
     # Batch-Groesse: K Raster pro Kernel-Launch. Erkennungs-Ergebnisse
     # werden nach dem Batch angewandt — mit K=8 (4 Tage) bleibt der
@@ -711,38 +874,30 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 prod_rate = (k - diag_prev_k) * raster_days / diag_span
                 play_rate = (ph_val - diag_prev_ph) / diag_span
                 vorlauf_abs = k - ph_abs
-                print(f"[film-diag] n={n} raster={raster_days:g}d "
-                      f"prod={prod_rate:.1f}d/s play={play_rate:.1f}d/s "
-                      f"vorlauf={vorlauf_abs * raster_days:.0f}d "
-                      f"({100.0 * vorlauf_abs / capacity:.0f}% ring) "
-                      f"drossel={100.0 * diag_throttled_s / diag_span:.0f}% "
-                      f"| step={100.0 * diag_t_step / diag_span:.0f}% "
-                      f"apply={100.0 * diag_t_analyse / diag_span:.0f}% "
-                      f"(wait={100.0 * diag_t_wait / diag_span:.0f}% "
-                      f"erkennung={100.0 * diag_t_erkennung / diag_span:.0f}% "
-                      f"merge={100.0 * diag_t_merges / diag_span:.0f}% "
-                      f"bounce={100.0 * diag_t_bounce / diag_span:.0f}%) "
-                      f"ring={100.0 * diag_t_ring / diag_span:.0f}% "
-                      f"| det: mergeGPU="
-                      f"{100.0 * diag_t_merge_det[0] / diag_span:.0f}% "
-                      f"bounceGPU="
-                      f"{100.0 * diag_t_bounce_det[0] / diag_span:.0f}% "
-                      f"bounceCPU="
-                      f"{100.0 * diag_t_bounce_host[0] / diag_span:.0f}% "
-                      f"kandidaten/sample="
-                      f"{diag_kandidaten[0] / max(1, k - diag_prev_k):,.0f} "
-                      f"zelle={diag_zellgroesse[0]:.4f}AE "
-                      f"v95={diag_v95[0]:.3f} disp95={diag_disp95[0]:.5f} "
-                      f"nachbardiff={diag_nachbardiff[0]:.3f} "
-                      f"(noetig {2.0 * (diag_disp95[0] + diag_nachbardiff[0]):.3f} "
-                      f"statt {2.0 * diag_v95[0]:.3f} -> faktor "
-                      f"{diag_v95[0] / max(1e-9, diag_disp95[0] + diag_nachbardiff[0]):.1f}x) "
-                      f"| MAX: disp={diag_dispmax[0]:.3f} nb={diag_nbmax[0]:.3f} "
-                      f"-> sicher {2.0 * (diag_dispmax[0] + diag_nbmax[0]):.3f} "
-                      f"(faktor "
-                      f"{diag_v95[0] / max(1e-9, diag_dispmax[0] + diag_nbmax[0]):.1f}x) "
-                      f"maxzelle={diag_zellbelegung[0]:.0f}",
-                      flush=True)
+                if diag:
+                    print(f"[film-diag] n={n} raster={raster_days:g}d "
+                          f"prod={prod_rate:.1f}d/s play={play_rate:.1f}d/s "
+                          f"vorlauf={vorlauf_abs * raster_days:.0f}d "
+                          f"({100.0 * vorlauf_abs / capacity:.0f}% ring) "
+                          f"drossel={100.0 * diag_throttled_s / diag_span:.0f}% "
+                          f"| step={100.0 * diag_t_step / diag_span:.0f}% "
+                          f"apply={100.0 * diag_t_analyse / diag_span:.0f}% "
+                          f"(wait={100.0 * diag_t_wait / diag_span:.0f}% "
+                          f"erkennung={100.0 * diag_t_erkennung / diag_span:.0f}% "
+                          f"merge={100.0 * diag_t_merges / diag_span:.0f}% "
+                          f"bounce={100.0 * diag_t_bounce / diag_span:.0f}%) "
+                          f"ring={100.0 * diag_t_ring / diag_span:.0f}% "
+                          f"| det: mergeGPU="
+                          f"{100.0 * diag_t_merge_det[0] / diag_span:.0f}% "
+                          f"bounceGPU="
+                          f"{100.0 * diag_t_bounce_det[0] / diag_span:.0f}% "
+                          f"bounceCPU="
+                          f"{100.0 * diag_t_bounce_host[0] / diag_span:.0f}% "
+                          f"kandidaten/sample="
+                          f"{diag_kandidaten[0] / max(1, k - diag_prev_k):,.0f} "
+                          f"zelle={diag_zellgroesse[0]:.4f}AE "
+                          f"detkarten={det_aktiv[0]}/{len(det)}",
+                          flush=True)
                 diag_t_merge_det[0] = 0.0
                 diag_t_bounce_det[0] = 0.0
                 diag_t_bounce_host[0] = 0.0
@@ -788,6 +943,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         # Nach einem Zerbersten ist der SHATTER-Dump massgeblich — dann
         # weder ausstehende Analysen anwenden noch neu dumpen.
         try:
+            # det_pool erst NACH dem Einsammeln schliessen: die ausstehende
+            # Analyse verteilt ihre Streifen noch darueber.
             executor.shutdown(wait=False)
             if shatter_flag is not None and shatter_flag.value:
                 # Shatter-Dump liegt bereits — nur als bereit markieren,
@@ -801,6 +958,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 dump_req_val.value = 2
         except Exception:
             pass
+        if det_pool is not None:
+            det_pool.shutdown(wait=False)
         shm.close()
         ev_shm.close()
         dump_shm.close()

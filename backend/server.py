@@ -61,6 +61,10 @@ STREAM_DIAG_INTERVAL_S = 2.0
 # reagiert die Regelung traege auf Lastwechsel.
 BW_FENSTER_S = 0.2
 
+# Film-Protokollversion (Bits 4-7 des Flag-Bytes in MSG_FILM_START).
+# 2 = viertes u8-Array `injiziert` fuer den LOD-Vorrang.
+FILM_PROTO_VERSION = 2
+
 HEADER = struct.Struct("<IId")   # typ, N/pad, dtYears
 MSG_FULL = 0
 MSG_STEP = 1
@@ -69,7 +73,8 @@ MSG_FILM_START = 3   # u32 typ | u32 N | f64 rasterTage | f64 t0Tage | FULL-Arra
 MSG_FILM_STOP = 4    # nur Header
 MSG_FILM_SUB = 7     # u32 typ | u32 pad | f64 tTage | f64 rateTageProSek |
 #                      f64 cx | f64 cy | f64 halbW | f64 halbH (Welt-AE;
-#                      halbW<=0 = Auto-Box ueber alle Koerper)
+#                      halbW<=0 = Auto-Box ueber alle Koerper) |
+#                      f64 lodBudget (Punkte/Sample, 0 = Automatik)
 #   Abo: Client meldet Playhead + Tempo (Start, Scrub, Tempo-Wechsel,
 #   1-Hz-Heartbeat). Der Server STREAMT daraufhin kontinuierlich kleine
 #   Frames (Push) und haelt den Client-Puffer ~5 s Playback voll —
@@ -82,6 +87,23 @@ DELTA_REC = np.dtype([("idx", "<u4"), ("pad", "<u4"), ("v", "<f8", (4,))])
 
 
 _SESSION_SEQ = [0]   # Round-Robin fuer die Erkennungskarten-Zuteilung
+
+
+def _index_hash(idx: np.ndarray) -> np.ndarray:
+    """Gleichverteilte Werte in [0,1) aus dem Original-Index.
+
+    Der Mischer (SplitMix64-Finalisierer) sorgt dafuer, dass benachbarte
+    Indizes voellig verschiedene Werte bekommen — ohne das legte eine
+    Auswahl "jeder n-te" in gleichmaessig erzeugten Wolken ein sichtbares
+    Raster an. Rein deterministisch: derselbe Koerper bekommt in jedem
+    Sample denselben Wert und bleibt dadurch stabil gestreamt."""
+    h = idx.astype(np.uint64)
+    h ^= h >> np.uint64(30)
+    h *= np.uint64(0xBF58476D1CE4E5B9)
+    h ^= h >> np.uint64(27)
+    h *= np.uint64(0x94D049BB133111EB)
+    h ^= h >> np.uint64(31)
+    return (h >> np.uint64(11)).astype(np.float64) / float(1 << 53)
 
 
 class FilmSession:
@@ -101,9 +123,19 @@ class FilmSession:
     # freie RAM (shared_memory liegt im tmpfs).
     MAX_BYTES = 8 << 30
 
+    # Erkennungskarten pro Session (--det-gpus). Die Bounce-Suche ist der
+    # Engpass und wird raeumlich auf sie aufgeteilt; mehr Karten helfen
+    # nur, solange welche frei sind (Physik hat Vorrang).
+    DET_GPUS = film_producer.DET_MAX
+
+    # Zeitanteils-Diagnose in Producer und Stream-Loop (--diag).
+    # Im Normalbetrieb aus: die Zeilen sind fuer die Engpass-Suche
+    # gebaut, nicht fuer den Alltag.
+    DIAG = False
+
     def __init__(self, t0_days: float, raster_days: float,
                  x, y, vx, vy, mass, real_r, visible, is_ast,
-                 is_star_bh, ast_bounce: bool = False):
+                 is_star_bh, injiziert, ast_bounce: bool = False):
         self.raster_days = max(0.1, raster_days)
         self.t0 = t0_days
         self.n = len(x)
@@ -143,6 +175,13 @@ class FilmSession:
         self._kill_t = np.where(
             np.array(visible, dtype=np.uint8) != 0, np.inf, -np.inf)
         self._is_ast = np.array(is_ast, dtype=np.uint8, copy=True) != 0
+        # Vorrang beim LOD-Budget: Koerper des geladenen Systems zuerst,
+        # nachtraeglich injizierte Wolken bekommen den Rest.
+        self._injiziert = np.array(injiziert, dtype=np.uint8, copy=True) != 0
+        # Punktbudget pro Sample; 0 = automatisch aus der gemessenen
+        # Bandbreite. Kommt live im Abo (MSG_FILM_SUB), wirkt daher ohne
+        # Filmneustart.
+        self.lod_budget = 0
         self.view = (0.0, 0.0, -1.0, -1.0)   # cx, cy, halbW, halbH (Auto)
         state = {k: np.array(v, copy=True) for k, v in
                  (("x", x), ("y", y), ("vx", vx), ("vy", vy),
@@ -158,7 +197,8 @@ class FilmSession:
                   self.running_val, state, self.raster_days, t0_days,
                   bool(ast_bounce),
                   self.shatter_flag, self.shatter_a, self.shatter_b,
-                  self.shatter_t, _SESSION_SEQ[0]),
+                  self.shatter_t, _SESSION_SEQ[0], self.DET_GPUS,
+                  self.DIAG),
             daemon=True)
         _SESSION_SEQ[0] += 1
         self.proc.start()
@@ -297,28 +337,13 @@ class FilmSession:
                 alive_i & (x >= x0) & (x <= x0 + spanx)
                 & (y >= y0) & (y <= y0 + spany))
             # Dichte-LOD: mehr sichtbare Punkte, als Bandbreite und
-            # Client-Dekodierung bei 20 Samples/s verkraften -> nur jeden
-            # stride-ten Asteroiden streamen (deterministisch ueber den
-            # ORIGINAL-Index: dieselben Koerper bleiben ueber Samples
-            # stabil gestreamt, die Interpolation reisst nicht). Massive
-            # Koerper werden nie ausgeduennt; nicht gestreamte versteckt
-            # der Client ueber die vorhandene _filmInView-Mechanik.
-            # Physik und Ereignisse bleiben exakt — reine Darstellung.
+            # Client-Dekodierung bei 20 Samples/s verkraften.
             # Obergrenze 120k: mehr Punkte pro Sample schafft der
             # Client-Dekodier-/Interpolations-Loop nicht bei 60 FPS.
-            lod_max = min(120_000,
-                          max(20000, int(self._bw * 0.7 / 20.0 / 8.0)))
-            # Hysterese: den Ausduennungsfaktor nur wechseln, wenn die
-            # Punktzahl deutlich aus dem Zielband laeuft — sonst pendelt
-            # er bei wandernden Wolken zwischen zwei Stufen und die
-            # Dichte springt sichtbar hin und her.
-            stride = getattr(self, "_lod_stride", 1)
-            n_mit_altem = len(sel) / stride
-            if n_mit_altem > lod_max * 1.15 or n_mit_altem < lod_max * 0.5:
-                stride = max(1, int(np.ceil(len(sel) / lod_max)))
-                self._lod_stride = stride
-            if stride > 1:
-                sel = sel[(sel % stride == 0) | ~self._is_ast[sel]]
+            # lod_budget != 0 = vom Nutzer gesetzt (Regler), sonst Auto.
+            lod_max = self.lod_budget or min(
+                120_000, max(20000, int(self._bw * 0.7 / 20.0 / 8.0)))
+            sel = self._lod_auswahl(sel, x, y, box, lod_max)
             qx = np.clip((x[sel] - x0) / spanx * 65535.0,
                          0, 65535).astype("<u2")
             qy = np.clip((y[sel] - y0) / spany * 65535.0,
@@ -333,6 +358,114 @@ class FilmSession:
                            box[0], box[1], box[2], box[3])
         return head + meta + times.tobytes() + \
             b"".join(blocks) + b"".join(ev_parts)
+
+    # Zellen je Achse fuer die Dichteschaetzung. Die Auto-Box umspannt
+    # ALLE Koerper — auch weit hinausgeschleuderte —, der sichtbare
+    # Ausschnitt ist davon oft nur ein Bruchteil. Ein grobes Gitter legt
+    # dort entsprechend grosse Zellen an, deren Dichtesprung man als
+    # Rechteck sieht. 512 statt 128 viertelt die Kantenlaenge; die Kosten
+    # bleiben klein (bincount ueber 512x512 Zellen, unabhaengig von n).
+    LOD_ZELLEN = 512
+    # Dichte-Kontrast. behalten ~ anzahl^GAMMA je Zelle:
+    #   1,0 = wie frueher (dichte Zellen behalten proportional alles,
+    #         duenne Strukturen fallen unter die Sichtbarkeitsschwelle)
+    #   0,0 = alle Zellen gleich viele Punkte (Dichteunterschiede
+    #         verschwinden voellig — die Szene sieht ueberall gleich aus)
+    # 0,5 (Wurzel) laesst dichte Gebiete deutlich dichter erscheinen und
+    # haelt duenne trotzdem sichtbar: eine Zelle mit 10.000 Koerpern zeigt
+    # gegenueber einer mit 100 noch das 10-fache statt des 100-fachen.
+    LOD_GAMMA = 0.5
+
+    def _lod_auswahl(self, sel, x, y, box, budget):
+        """Punkte fuers Sample auswaehlen, wenn `sel` das Budget sprengt.
+
+        Rangfolge:
+          1. Massive Koerper (Sonne, Planeten, Rogues, Sterne, SL) —
+             immer vollstaendig. Es sind wenige, und ohne sie ist die
+             Szene unlesbar.
+          2. Asteroiden des geladenen Systems (Guertel, Szenario).
+          3. Nachtraeglich injizierte Wolken — bekommen den Rest.
+
+        Innerhalb einer Stufe wird DICHTEABHAENGIG geduennt (siehe
+        LOD_GAMMA), nicht gleichmaessig: eine feste Rate ueber alle
+        Koerper loescht duenne Strukturen (der Guertel hat nur ein paar
+        hundert Objekte auf riesigem Ring), waehrend kompakte Wolken auch
+        stark geduennt noch dicht wirken.
+
+        Sprengt schon Stufe 2 das Budget, wird auch dort geduennt — das
+        ist die normale Wirkung der Rangfolge unter knappem Budget, kein
+        Sonderfall (Szenarien mit sehr vielen vorbelegten Koerpern)."""
+        if len(sel) <= budget:
+            return sel
+        ast = self._is_ast[sel]
+        massiv = sel[~ast]
+        rest = budget - len(massiv)
+        if rest <= 0:
+            return sel[~ast]
+        a_sel = sel[ast]
+        inj = self._injiziert[a_sel]
+        teile = [massiv]
+        for kandidaten in (a_sel[~inj], a_sel[inj]):
+            if rest <= 0 or not len(kandidaten):
+                continue
+            behalten = self._dichte_filter(kandidaten, x, y, box, rest)
+            teile.append(behalten)
+            rest -= len(behalten)
+        return np.sort(np.concatenate(teile))
+
+    def _dichte_filter(self, idx, x, y, box, budget):
+        """Aus `idx` hoechstens `budget` Indizes waehlen, dichte Gebiete
+        staerker duennend als duenne (behalten ~ anzahl^LOD_GAMMA).
+
+        Die Auswahl laeuft je Zelle ueber den ORIGINAL-Index
+        (`idx % schritt == 0`) und ist damit ueber Samples hinweg stabil:
+        dieselben Koerper bleiben gestreamt, die Client-Interpolation
+        reisst nicht."""
+        if len(idx) <= budget:
+            return idx
+        x0, y0, spanx, spany = box
+        k = self.LOD_ZELLEN
+        cx = np.clip(((x[idx] - x0) / spanx * k).astype(np.int32), 0, k - 1)
+        cy = np.clip(((y[idx] - y0) / spany * k).astype(np.int32), 0, k - 1)
+        zelle = cy * k + cx
+        anzahl = np.bincount(zelle, minlength=k * k)
+        belegt = anzahl > 0
+        gewicht = np.zeros(k * k)
+        gewicht[belegt] = anzahl[belegt] ** self.LOD_GAMMA
+        # Skalierung so waehlen, dass die Summe der behaltenen Punkte das
+        # Budget trifft. min(anzahl, s*gewicht) ist monoton in s, also per
+        # Bisektion loesbar — geschlossen ginge es nur ohne die Deckelung
+        # auf die tatsaechliche Zellbelegung.
+        #
+        # Das Budget ist damit ein ZIELWERT, keine harte Schranke: die
+        # Hash-Auswahl trifft die Zellvorgabe im Erwartungswert, die
+        # tatsaechliche Zahl streut um rund sqrt(budget) (bei 20.000 also
+        # etwa 140 Punkte, 0,7%). Ein exakter Deckel braeuchte eine
+        # Teilsortierung der Trefferliste — Aufwand ohne Wirkung, denn
+        # das Budget selbst stammt aus einer Bandbreitenschaetzung.
+        lo, hi = 0.0, float(budget)
+        for _ in range(40):
+            s = 0.5 * (lo + hi)
+            if np.minimum(anzahl, s * gewicht).sum() > budget:
+                hi = s
+            else:
+                lo = s
+        ziel = np.minimum(anzahl, lo * gewicht)
+        # Behalte-Rate je Zelle, STUFENLOS. Ein ganzzahliger Schritt je
+        # Zelle (jeder n-te Index) kann nur die Raten 1, 1/2, 1/3 ...
+        # treffen; zwei Nachbarzellen landen dann auf 1/3 und 1/4 und
+        # unterscheiden sich sichtbar um ein Drittel — mit harter Kante
+        # entlang der Zellgrenze. Genau das erzeugte rechteckige
+        # Block-Artefakte im Bild.
+        rate = np.zeros(k * k)
+        np.divide(ziel, anzahl, out=rate, where=belegt)
+        # Auswahl ueber einen HASH des Original-Index statt ueber den
+        # Index selbst: liefert eine stufenlose Rate und bricht zugleich
+        # die Regelmaessigkeit auf (jeder n-te Index legte in gleichmaessig
+        # erzeugten Wolken sichtbare Raster an). Deterministisch, also
+        # ueber Samples hinweg stabil — dieselben Koerper bleiben
+        # gestreamt und die Client-Interpolation reisst nicht.
+        return idx[_index_hash(idx) < rate[zelle]]
 
     async def stream(self, ws) -> None:
         """Kontinuierlicher Sample-Push: haelt den Client-Puffer ~5 s
@@ -370,7 +503,8 @@ class FilmSession:
                 # laut (extrapoliertem) Playhead genug Vorrat, "head" =
                 # Producer noch nicht so weit, "-" = es wird gesendet.
                 now_s = time.monotonic()
-                if now_s - self._diag_s >= STREAM_DIAG_INTERVAL_S:
+                if FilmSession.DIAG and \
+                        now_s - self._diag_s >= STREAM_DIAG_INTERVAL_S:
                     self._diag_s = now_s
                     if sent_t - ph > target:
                         grund = "puffer"
@@ -539,10 +673,14 @@ def parse_film_start(buf: bytes):
     off += n
     is_star_bh = np.frombuffer(buf, np.uint8, n, off)
     off += n
+    # Nachtraeglich injiziert (Wolken): steuert nur den Vorrang beim
+    # Dichte-LOD des Streams, nicht die Physik.
+    injiziert = np.frombuffer(buf, np.uint8, n, off)
+    off += n
     ast_bounce = False
     if off + 1 == len(buf):               # Flag-Byte: Bits 4-7 Version
         flags = buf[off]
-        if flags >> 4 != 1:
+        if flags >> 4 != FILM_PROTO_VERSION:
             raise ValueError(
                 "Film-Protokollversion veraltet — Seite neu laden "
                 "(Strg+F5)")
@@ -551,7 +689,7 @@ def parse_film_start(buf: bytes):
     if off != len(buf):
         raise ValueError(f"Protokollfehler: {len(buf)} Bytes, erwartet {off}")
     return (raster_days, t0_days, arrays, visible, is_ast, is_star_bh,
-            ast_bounce)
+            injiziert, ast_bounce)
 
 
 def parse_full(buf: bytes):
@@ -634,13 +772,13 @@ async def handle(ws):
                 typ, _n, dt_years = HEADER.unpack_from(message, 0)
                 if typ == MSG_FILM_START:
                     raster_days, t0_days, (x, y, vx, vy, mass, real_r), \
-                        visible, is_ast, is_star_bh, ast_bounce = \
+                        visible, is_ast, is_star_bh, injiziert, ast_bounce = \
                         parse_film_start(message)
                     if film:
                         film.stop()
                     film = FilmSession(t0_days, raster_days, x, y, vx, vy,
                                        mass, real_r, visible, is_ast,
-                                       is_star_bh, ast_bounce)
+                                       is_star_bh, injiziert, ast_bounce)
                     fulls += 1
                     log.info("Film gestartet: N=%d, Raster %.2f Tage",
                              len(x), film.raster_days)
@@ -658,9 +796,11 @@ async def handle(ws):
                 if typ == MSG_FILM_SUB:
                     if film is None:
                         raise ValueError("kein Film aktiv")
-                    rate, vcx, vcy, vhw, vhh = struct.unpack_from(
-                        "<ddddd", message, HEADER.size)
+                    rate, vcx, vcy, vhw, vhh, budget = struct.unpack_from(
+                        "<dddddd", message, HEADER.size)
                     film.view = (vcx, vcy, vhw, vhh)
+                    # 0 = Automatik (aus gemessener Bandbreite)
+                    film.lod_budget = max(0, int(budget))
                     film.resubscribe(dt_years, rate, jump=bool(_n))
                     if film.stream_task is None:
                         film.stream_task = asyncio.create_task(
@@ -705,6 +845,15 @@ async def main() -> None:
                          "nicht durch den freien RAM.")
     ap.add_argument("--device", type=int, default=None,
                     help="CUDA-Device-Index (Default: beste f64-GPU)")
+    ap.add_argument("--det-gpus", type=int, default=FilmSession.DET_GPUS,
+                    metavar="N",
+                    help="Erkennungskarten pro Film-Session. Die "
+                         "Bounce-Suche wird raeumlich auf sie aufgeteilt; "
+                         "genutzt werden nur GPUs, die die Physik frei "
+                         "laesst.")
+    ap.add_argument("--diag", action="store_true",
+                    help="Zeitanteile von Producer und Stream-Loop "
+                         "mitloggen (Engpass-Suche, kostet etwas Tempo)")
     ap.add_argument("--idle-exit", type=int, default=0, metavar="SEK",
                     help="Selbst beenden nach SEK ohne Client (fuer "
                          "systemd socket activation); 0 = nie")
@@ -715,7 +864,10 @@ async def main() -> None:
     global _device
     _device = args.device if args.device is not None else pick_device()
     FilmSession.MAX_BYTES = int(args.ring_gib * (1 << 30))
-    log.info("Film-Ringpuffer: %.1f GiB", args.ring_gib)
+    FilmSession.DET_GPUS = max(1, args.det_gpus)
+    FilmSession.DIAG = args.diag
+    log.info("Film-Ringpuffer: %.1f GiB, Erkennungskarten: %d",
+             args.ring_gib, FilmSession.DET_GPUS)
 
     # systemd socket activation: LISTEN_FDS=1 -> der lauschende Socket
     # kommt als fd 3 herein; ohne systemd binden wir selbst.

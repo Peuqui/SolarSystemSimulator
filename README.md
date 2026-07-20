@@ -86,9 +86,19 @@ entkoppelt:
   folgen** an der Produktionskante.
 - Übertragen werden nur Positionen als **Integer-Bildschirmkoordinaten**
   (server-seitiges View-Culling, u16-Quantisierung); Masse/Sichtbarkeit
-  laufen als kompakte Ereignisse. Bei knapper Bandbreite dünnt der Server
-  die Punktdichte adaptiv aus (**LOD**) — die Physik bleibt exakt, nur die
-  Darstellung wird ausgedünnt.
+  laufen als kompakte Ereignisse.
+- **Dichte-LOD**: Reicht das Punktbudget nicht für alle Körper, gilt eine
+  Rangfolge — massive Körper (Sonne, Planeten, Rogues, Sterne, Schwarze
+  Löcher) werden **nie** ausgedünnt, danach kommen die Asteroiden des
+  geladenen Systems, den Rest bekommen nachträglich injizierte Wolken.
+  Innerhalb jeder Stufe wird **dichteabhängig** gedünnt (behalten ~
+  Anzahl^0,5 je Gitterzelle): ein Gürtel aus wenigen hundert Objekten
+  verschwindet dadurch nicht neben einer Wolke aus hunderttausenden,
+  während dichte Gebiete sichtbar dichter bleiben. Die Auswahl läuft über
+  einen Hash des Körperindex — stufenlos, ohne Rasterartefakte, und über
+  Samples hinweg stabil. Das Budget ist per Regler einstellbar
+  (Auto … „Alle"). **Physik und Kollisionen laufen immer für alle
+  Körper** — ausgedünnt wird nur die Darstellung.
 - Kollisions-Ereignisse (Merge, Kill, Bounce, Zerbersten) tragen ihren
   **exakten Ort** und werden zeitrichtig als Explosionen abgespielt.
 - Beim Verlassen des Films oder Engine-Wechsel wird der exakte
@@ -118,8 +128,18 @@ und den Film-Modus frei.
 - **Hierarchische Zeitschritte**: nur sonnennahe Körper („Taucher")
   laufen in privaten Feinschleifen, der Rest im groben Raster — statt dass
   ein einziger Sonnenstürzer die Rate aller Körper drückt.
-- **Kollisions-/Bounce-Erkennung pipelined** auf einer eigenen GPU
+- **Kollisions-/Bounce-Erkennung pipelined** auf eigenen GPUs
   (f32-Vorfilter + exakte f64-Nachprüfung), überlappt mit der Physik.
+  Die Bounce-Suche ist der Engpass (75–93 % der Batchzeit) und wird
+  **räumlich auf bis zu zwei Karten aufgeteilt**: jede prüft einen
+  x-Streifen plus einen Halo und behält nur Paare, deren linkerer Partner
+  ihr gehört — lückenlos, überschneidungsfrei, ohne Datenaustausch
+  zwischen den Karten. Ob sich das lohnt, hängt an der **Kandidatenzahl
+  pro Sample**, nicht an der Körperzahl: dieselben 250 k Asteroiden
+  ergeben als dichter Klumpen über 10⁹ zu prüfende Paare, als
+  ausgebildeter Gürtel unter 10⁶. Der Producer schaltet die zweite Karte
+  deshalb **pro Batch** zu und ab (Schwellen mit Hysterese, gemessener
+  Gewinn bis 1,7×) — ohne Filmneustart.
 - **Server-Lebenszyklus vom Browser gesteuert**: Auswahl der CUDA-Engine
   startet den Server on-demand (optional per systemd socket activation),
   Abwahl beendet ihn nach kurzer Leerlauffrist — GPUs sind im Ruhezustand
@@ -138,9 +158,24 @@ python3 -m venv ../venv
 
 Danach im Browser die Engine **„CUDA-Backend (nativ, f64)"** wählen; das
 Frontend verbindet sich per WebSocket (lokal `127.0.0.1:8765`, remote über
-einen Reverse-Proxy). Tests: `python test_kernel.py` (Physik gegen
-NumPy-Referenz + Benchmarks) und `python test_film_golden.py`
-(Kollisionskette Ende-zu-Ende).
+einen Reverse-Proxy).
+
+Nützliche Schalter: `--ring-gib` (Größe des Film-Ringpuffers, bestimmt die
+navigierbare Vergangenheit), `--det-gpus` (Erkennungskarten pro Session),
+`--diag` (Zeitanteile von Producer und Stream-Loop mitloggen — für die
+Engpass-Suche, im Normalbetrieb aus).
+
+Tests und Messwerkzeuge (Standalone-Skripte, kein pytest):
+
+```bash
+cd backend
+../venv/bin/python test_kernel.py             # Kernel gegen NumPy, 1/2/3 GPUs
+../venv/bin/python test_film_golden.py        # Kollisionskette Ende-zu-Ende
+../venv/bin/python test_erkennung_streifen.py # Streifen == eine Karte
+../venv/bin/python test_lod_dichte.py         # Rangfolge + Dichte-Auswahl
+../venv/bin/python bench_erkennung.py         # Umschaltschwelle der 2. Karte
+../venv/bin/python bench_film.py --szene knoedel --det-gpus 1 2
+```
 
 ## Bedienung
 
@@ -227,6 +262,11 @@ Körper führt kein Weg am CUDA-Backend vorbei.
 - **Keine Build-Pipeline, kein npm, keine Bibliotheken** — die Sim-Engine
   lädt nichts nach. Nur der Footer holt optional GoatCounter (privacy-
   friendly Pageview-Zähler) und den GitHub-Stars-Wert.
+- **Netz-Worker im Film-Modus**: WebSocket-Empfang und Frame-Zerlegung
+  laufen in einem eigenen Worker, die Nutzlast wird transferiert statt
+  kopiert. Sonst blockiert der Renderloop des Hauptthreads das Leeren des
+  Sockets, das TCP-Empfangsfenster kollabiert und die Leitung wird nicht
+  ausgelastet.
 - **`localStorage`** für gespeicherte Konfigurationen und UI-Settings.
 
 ### Backend (optional, `backend/`)
@@ -240,7 +280,11 @@ Körper führt kein Weg am CUDA-Backend vorbei.
   beantwortet Puffer-Anfragen aus dem Shared Memory in Mikrosekunden — die
   Physik-GPU verhungert nie am GIL.
 - Tests: `test_kernel.py` (Kernel gegen NumPy-Referenz, 1/2/3-GPU +
-  Benchmarks), `test_film_golden.py` (Kollisionskette Ende-zu-Ende).
+  Benchmarks), `test_film_golden.py` (Kollisionskette Ende-zu-Ende),
+  `test_erkennung_streifen.py` (die räumlich aufgeteilte Bounce-Suche
+  liefert exakt dieselben Treffer wie eine einzelne Karte),
+  `test_lod_dichte.py` (Rangfolge und dichteabhängige Punktauswahl).
+  Messwerkzeuge: `bench_erkennung.py`, `bench_film.py`.
 
 ## Stargazers über die Zeit
 
