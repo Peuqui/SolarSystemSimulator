@@ -3332,7 +3332,10 @@ function draw() {
     for (let i = collisionFlashes.length - 1; i >= 0; i--) {
       const f = collisionFlashes[i];
       const t = (now - f.t) / COLLISION_FLASH_MS;   // 0..1
-      if (t >= 1) { collisionFlashes.splice(i, 1); continue; }
+      // Negiert geprueft, damit auch ein korrupter Zeitstempel (NaN)
+      // den Flash entfernt — sonst waere (t >= 1) fuer immer false und
+      // die Explosion bliebe stehen, ohne je zu verblassen.
+      if (!(t < 1)) { collisionFlashes.splice(i, 1); continue; }
       // An ein Objekt geheftete Flashes wandern mit dessen Live-Position mit
       // (bei entferntem Body friert die letzte Position ein — kein Crash).
       if (f.track) { f.x = f.track.x; f.y = f.track.y; }
@@ -4249,6 +4252,7 @@ function filmStart() {
   filmRefs = src.slice();
   filmEvents = [];
   _filmEventsApplied = 0;
+  collisionFlashes.length = 0;       // Flashes der alten Session verwerfen
   _filmCollBase = totalCollisions;   // Neustart: bisherige Zaehlung behalten
   _filmBaseVis = new Uint8Array(N);
   _filmBaseMass = new Float64Array(N);
@@ -4485,16 +4489,11 @@ function filmApplyEvents(t) {
       const imBild = _filmInView && _filmInView[ev.a] === 1 &&
                      _filmInView[ev.b] === 1;
       if (ha && hb && imBild) _markBouncePair(ha, hb);
-      if (ha && hb && flashes < 8 &&
-          collisionFlashes.length < 64) {
-        collisionFlashes.push({
-          x: ev.x, y: ev.y,          // exakter Ort vom Producer
-          scale: Math.max(ha.realR || 0, hb.realR || 0),
-          t: performance.now(),
-          asteroid: true,
-          track: ha,                       // schwererer, wie im Live-Pfad
-        });
-        flashes++;
+      if (ha && hb && imBild && flashes < 8) {
+        // exakter Ort vom Producer; track = schwererer (wie im Live-Pfad)
+        if (spawnCollisionFlash(ev.x, ev.y,
+                                Math.max(ha.realR || 0, hb.realR || 0),
+                                true, ha, ha)) flashes++;
       }
       changed = true;
       continue;
@@ -4515,21 +4514,24 @@ function filmApplyEvents(t) {
     // Engines. Gedeckelt auf 8 pro Frame, damit Scrub-Vorspulen (viele
     // Ereignisse auf einmal) den Canvas nicht mit Blitzen flutet.
     const loser = filmRefs[ev.b];
-    if (loser && flashes < 8 && collisionFlashes.length < 64) {
+    // NUR fuer Koerper, die auch gestreamt werden: View-Culling und
+    // Dichte-LOD uebertragen nur einen Teil der Asteroiden, die Physik
+    // rechnet aber mit allen. Ohne diesen Filter blitzten Kollisionen
+    // nicht dargestellter Asteroiden als "Geisterkollisionen" im Leeren
+    // (remote mit LOD-Untergrenze ist nur jeder n-te Koerper im Bild).
+    // Der Zaehler zaehlt weiterhin JEDES Ereignis.
+    if (loser && _filmInView && _filmInView[ev.b] === 1 && flashes < 8) {
       // Position: exakter Ereignis-Ort vom Producer — aus dem Stream
       // ist er nicht rekonstruierbar (Opfer fehlt im Folge-Sample).
       // Skala wie live: realR. Deckel 64 lebende Flashes (Gradient-
       // Kreise sind teuer). track nur bei aktuell gestreamtem
       // Ueberlebenden, sonst folgte der Flash einer stale Position.
-      collisionFlashes.push({
-        x: ev.x, y: ev.y,
-        scale: Math.max(loser.realR || 0, surv ? surv.realR : 0),
-        t: performance.now(),
-        asteroid: loser.isAsteroid,
-        track: (surv && _filmInView && _filmInView[ev.a] === 1)
-                 ? surv : null,
-      });
-      flashes++;
+      const trk = (surv && _filmInView && _filmInView[ev.a] === 1)
+                    ? surv : null;
+      if (spawnCollisionFlash(
+            ev.x, ev.y,
+            Math.max(loser.realR || 0, surv ? surv.realR : 0),
+            loser.isAsteroid, trk, trk || surv)) flashes++;
     }
     changed = true;
   }
@@ -4564,10 +4566,8 @@ function filmTick(dtDays, slowFactor, nowMs) {
     simTime = sp.t;
     const A = filmRefs[sp.a], B = filmRefs[sp.b];
     if (A && B && live.has(A) && live.has(B) && A.visible && B.visible) {
-      collisionFlashes.push({
-        x: A.x, y: A.y, scale: Math.max(A.realR, B.realR),
-        t: performance.now(), asteroid: false, track: null,
-      });
+      spawnCollisionFlash(A.x, A.y, Math.max(A.realR, B.realR),
+                          false, null, A);
       shatter(A, B);
       totalCollisions++;
       const cc = document.getElementById('collision-count');
@@ -5158,6 +5158,25 @@ let fragmentCounter = 0;
 // gravitativ abgelenkt wurde oder wirklich getroffen hat.
 const collisionFlashes = [];
 const COLLISION_FLASH_MS = DEFAULTS.collFlashMs;
+// Pro Koerper nur alle FLASH_COOLDOWN_MS eine neue Explosion. Ohne das
+// erzeugt eine einstuerzende Wolke eine LUECKENLOSE Kette von Flashes am
+// selben Koerper (gemessen: 5000 Merges, alle mit der Sonne als
+// Ueberlebendem) — weil jeder Flash an sein Objekt geheftet ist, sieht
+// das aus wie ein permanenter Fleck, der mitwandert und nie verblasst.
+// Mit Cooldown bleiben einzelne, sichtbar abklingende Einschlaege uebrig.
+const FLASH_COOLDOWN_MS = 400;
+function spawnCollisionFlash(x, y, scale, asteroid, track, cooldownBody) {
+  const now = performance.now();
+  const cb = cooldownBody || track;
+  if (cb) {
+    if (now - (cb._lastFlashMs || 0) < FLASH_COOLDOWN_MS) return false;
+    cb._lastFlashMs = now;
+  }
+  // Deckel: die Gradient-Kreise sind teuer (FPS-Schutz bei Event-Stuermen)
+  if (collisionFlashes.length >= 64) return false;
+  collisionFlashes.push({ x, y, scale, t: now, asteroid, track });
+  return true;
+}
 let totalCollisions = 0;
 let perturberCounter = 0;   // monoton — eindeutige Stoermassen-Namen
 
@@ -5592,12 +5611,9 @@ function _tryCollide(a, b, dtFrame) {
   // Bodies neue Beschleunigungen — das spart bei dichten Wolken
   // hunderte O(N²)-Aufrufe pro Sekunde.
   const heavyChange = (path === 'merge' || path === 'shatter');
-  collisionFlashes.push({
-    x: flashX, y: flashY, scale: flashScale,
-    t: performance.now(),
-    asteroid: aIsAst || bIsAst,
-    track: flashTrack,   // folgt der Live-Position; null bei shatter
-  });
+  // folgt der Live-Position; null bei shatter. Cooldown pro Ziel-Koerper.
+  spawnCollisionFlash(flashX, flashY, flashScale, aIsAst || bIsAst,
+                      flashTrack, flashTrack || b);
   totalCollisions++;
   const countEl = document.getElementById('collision-count');
   if (countEl) countEl.textContent = totalCollisions;
@@ -6382,6 +6398,9 @@ function applyEngine(mode, persist) {
   useGPU    = (mode === 'gpu');
   useHybrid = (mode === 'hybrid');
   useCuda   = (mode === 'cuda');
+  // Explosionen gehoeren zur bisherigen Engine-Session — beim Wechsel
+  // verwerfen, damit keine verwaisten Flashes stehenbleiben.
+  collisionFlashes.length = 0;
   // Nach Engine-Wechsel kennt das Backend den aktuellen Zustand nicht —
   // der naechste CUDA-Frame muss ein FULL-Frame sein.
   if (useCuda) _cudaStateStale = true;
