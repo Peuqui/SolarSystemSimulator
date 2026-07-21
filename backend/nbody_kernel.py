@@ -307,15 +307,18 @@ extern "C" __global__ void frame_kernel(
             }
             // (kein sync noetig: Phase A liest hot[i] im selben Thread)
 
+            // Massiv-Positionen am ANFANG des dtH-Segments. Bezugspunkt der
+            // linearen Interpolation in der Feinschleife der heissen Astis,
+            // die einmal monoton ueber das ganze dtH laeuft (siehe unten).
+            if (tid == 0) {
+                for (int j = 0; j < M; j++) {
+                    mx0[j] = mx[j]; my0[j] = my[j];
+                }
+            }
+            grid.sync();
+
             for (int w = 0; w < 3; w++) {
                 const double dt = wDts[w] * dtH;
-                // Segment-Anfang der Massiven fuer die Interpolation
-                if (tid == 0) {
-                    for (int j = 0; j < M; j++) {
-                        mx0[j] = mx[j]; my0[j] = my[j];
-                    }
-                }
-                grid.sync();
                 // Phase A: Positionen — nur RUHIGE Astis + Massive
                 for (int i = tid; i < nAst; i += stride) {
                     if (!aVis[i] || hot[i]) continue;
@@ -401,100 +404,105 @@ extern "C" __global__ void frame_kernel(
                     }
                 }
                 sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+            }
 
-                // ---- Private Feinschleife der HEISSEN Astis ueber das
-                // Segment [0, dt] (dt kann negativ sein: Yoshida-w0).
-                // Massiv-Positionen linear interpoliert, kein Sync.
-                for (int i = tid; i < nAst; i += stride) {
-                    if (!aVis[i] || !hot[i]) continue;
-                    double px = ax[i], py = ay[i];
-                    double pvx = avx[i], pvy = avy[i];
-                    const double sgn = dt >= 0.0 ? 1.0 : -1.0;
-                    const double span = fabs(dt);
-                    double tau = 0.0;
-                    int guardF = 0;
-                    while (tau < span - 1e-15 && guardF++ < 8000) {
-                        // Feines dt aus tEnc gegen interpolierte Massive
-                        const double al = tau / span;
-                        double dtF = maxSubDt;
+            // ---- Private Feinschleife der HEISSEN Astis: EINMAL monoton
+            // ueber das GANZE Segment [0, dtH]. Frueher lief sie je
+            // Yoshida-Teilschritt (w1, w0<0, w1) — die Zwischenzustaende
+            // eines Kompositionsintegrators gehoeren zu KEINER physikalischen
+            // Zeit (1,35x vor, 1,70x zurueck, 1,35x vor) und taugten damit
+            // nicht als Bahnpunkte. Monoton sind es echte Bahnpunkte, die als
+            // Zwischenbilder (Sub-Samples) ausgegeben werden koennen.
+            // Massiv-Positionen linear ueber dtH interpoliert, kein Sync.
+            for (int i = tid; i < nAst; i += stride) {
+                if (!aVis[i] || !hot[i]) continue;
+                double px = ax[i], py = ay[i];
+                double pvx = avx[i], pvy = avy[i];
+                const double sgn = dtH >= 0.0 ? 1.0 : -1.0;
+                const double span = fabs(dtH);
+                double tau = 0.0;
+                int guardF = 0;
+                while (tau < span - 1e-15 && guardF++ < 8000) {
+                    // Feines dt aus tEnc gegen interpolierte Massive
+                    const double al = tau / span;
+                    double dtF = maxSubDt;
+                    for (int kk = 0; kk < M; kk++) {
+                        if (!s_mv[kk]) continue;
+                        const double mxi = mx0[kk] +
+                            (mx[kk] - mx0[kk]) * al;
+                        const double myi = my0[kk] +
+                            (my[kk] - my0[kk]) * al;
+                        const double dx = mxi - px, dy = myi - py;
+                        double dist = sqrt(dx * dx + dy * dy);
+                        if (dist < 1e-12) dist = 1e-12;
+                        const double dvx = mvx[kk] - pvx;
+                        const double dvy = mvy[kk] - pvy;
+                        const double vrel =
+                            sqrt(dvx * dvx + dvy * dvy);
+                        if (vrel > 1e-9) {
+                            const double tE = dist / vrel / 20.0;
+                            if (tE < dtF) dtF = tE;
+                        }
+                    }
+                    if (dtF < maxSubDt / 1000.0)
+                        dtF = maxSubDt / 1000.0;
+                    if (dtF > span - tau) dtF = span - tau;
+                    // Yoshida (3 Verlets) mit interpolierten Massiven
+                    double tSub = tau;
+                    for (int wf = 0; wf < 3; wf++) {
+                        const double df = wDts[wf] * dtF * sgn;
+                        const double a0 = tSub / span;
+                        double acx = 0.0, acy = 0.0;
                         for (int kk = 0; kk < M; kk++) {
                             if (!s_mv[kk]) continue;
                             const double mxi = mx0[kk] +
-                                (mx[kk] - mx0[kk]) * al;
+                                (mx[kk] - mx0[kk]) * a0;
                             const double myi = my0[kk] +
-                                (my[kk] - my0[kk]) * al;
+                                (my[kk] - my0[kk]) * a0;
                             const double dx = mxi - px, dy = myi - py;
-                            double dist = sqrt(dx * dx + dy * dy);
-                            if (dist < 1e-12) dist = 1e-12;
-                            const double dvx = mvx[kk] - pvx;
-                            const double dvy = mvy[kk] - pvy;
-                            const double vrel =
-                                sqrt(dvx * dvx + dvy * dvy);
-                            if (vrel > 1e-9) {
-                                const double tE = dist / vrel / 20.0;
-                                if (tE < dtF) dtF = tE;
-                            }
+                            const double r2 = dx * dx + dy * dy + soft;
+                            const double f = G / (r2 * sqrt(r2));
+                            acx += f * s_mm[kk] * dx;
+                            acy += f * s_mm[kk] * dy;
                         }
-                        if (dtF < maxSubDt / 1000.0)
-                            dtF = maxSubDt / 1000.0;
-                        if (dtF > span - tau) dtF = span - tau;
-                        // Yoshida (3 Verlets) mit interpolierten Massiven
-                        double tSub = tau;
-                        for (int wf = 0; wf < 3; wf++) {
-                            const double df = wDts[wf] * dtF * sgn;
-                            const double a0 = tSub / span;
-                            double acx = 0.0, acy = 0.0;
-                            for (int kk = 0; kk < M; kk++) {
-                                if (!s_mv[kk]) continue;
-                                const double mxi = mx0[kk] +
-                                    (mx[kk] - mx0[kk]) * a0;
-                                const double myi = my0[kk] +
-                                    (my[kk] - my0[kk]) * a0;
-                                const double dx = mxi - px, dy = myi - py;
-                                const double r2 = dx * dx + dy * dy + soft;
-                                const double f = G / (r2 * sqrt(r2));
-                                acx += f * s_mm[kk] * dx;
-                                acy += f * s_mm[kk] * dy;
-                            }
-                            px += pvx * df + 0.5 * acx * df * df;
-                            py += pvy * df + 0.5 * acy * df * df;
-                            tSub += wDts[wf] * dtF;
-                            const double a1 = tSub / span;
-                            double ncx = 0.0, ncy = 0.0;
-                            for (int kk = 0; kk < M; kk++) {
-                                if (!s_mv[kk]) continue;
-                                const double mxi = mx0[kk] +
-                                    (mx[kk] - mx0[kk]) * a1;
-                                const double myi = my0[kk] +
-                                    (my[kk] - my0[kk]) * a1;
-                                const double dx = mxi - px, dy = myi - py;
-                                const double r2 = dx * dx + dy * dy + soft;
-                                const double f = G / (r2 * sqrt(r2));
-                                ncx += f * s_mm[kk] * dx;
-                                ncy += f * s_mm[kk] * dy;
-                            }
-                            pvx += 0.5 * (acx + ncx) * df;
-                            pvy += 0.5 * (acy + ncy) * df;
+                        px += pvx * df + 0.5 * acx * df * df;
+                        py += pvy * df + 0.5 * acy * df * df;
+                        tSub += wDts[wf] * dtF;
+                        const double a1 = tSub / span;
+                        double ncx = 0.0, ncy = 0.0;
+                        for (int kk = 0; kk < M; kk++) {
+                            if (!s_mv[kk]) continue;
+                            const double mxi = mx0[kk] +
+                                (mx[kk] - mx0[kk]) * a1;
+                            const double myi = my0[kk] +
+                                (my[kk] - my0[kk]) * a1;
+                            const double dx = mxi - px, dy = myi - py;
+                            const double r2 = dx * dx + dy * dy + soft;
+                            const double f = G / (r2 * sqrt(r2));
+                            ncx += f * s_mm[kk] * dx;
+                            ncy += f * s_mm[kk] * dy;
                         }
-                        tau += dtF;
+                        pvx += 0.5 * (acx + ncx) * df;
+                        pvy += 0.5 * (acy + ncy) * df;
                     }
-                    ax[i] = px; ay[i] = py;
-                    avx[i] = pvx; avy[i] = pvy;
-                    // Beschleunigung am Segment-Ende fuer die naechste
-                    // grobe Phase A (falls der Asti wieder ruhig wird)
-                    double acx = 0.0, acy = 0.0;
-                    for (int kk = 0; kk < M; kk++) {
-                        if (!s_mv[kk]) continue;
-                        const double dx = mx[kk] - px, dy = my[kk] - py;
-                        const double r2 = dx * dx + dy * dy + soft;
-                        const double f = G / (r2 * sqrt(r2));
-                        acx += f * s_mm[kk] * dx;
-                        acy += f * s_mm[kk] * dy;
-                    }
-                    aAccX[i] = acx; aAccY[i] = acy;
+                    tau += dtF;
                 }
-                grid.sync();
+                ax[i] = px; ay[i] = py;
+                avx[i] = pvx; avy[i] = pvy;
+                // Beschleunigung am Segment-Ende fuer die naechste
+                // grobe Phase A (falls der Asti wieder ruhig wird)
+                double acx = 0.0, acy = 0.0;
+                for (int kk = 0; kk < M; kk++) {
+                    if (!s_mv[kk]) continue;
+                    const double dx = mx[kk] - px, dy = my[kk] - py;
+                    const double r2 = dx * dx + dy * dy + soft;
+                    const double f = G / (r2 * sqrt(r2));
+                    acx += f * s_mm[kk] * dx;
+                    acy += f * s_mm[kk] * dy;
+                }
+                aAccX[i] = acx; aAccY[i] = acy;
             }
+            grid.sync();
         }
 
         // ---- Snapshot dieses Rasters: kompakt f32, Shard-Reihenfolge ----
