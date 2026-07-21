@@ -510,6 +510,7 @@ input[type=range] {
       <option value="Alpha Centauri" data-i18n="sc.alphacen">Alpha Centauri</option>
       <option value="Kepler-16" data-i18n="sc.kepler16">Kepler-16</option>
       <option value="Kepler-47 (Doppelstern, 3 Planeten)" data-i18n="sc.kepler47">Kepler-47 (Doppelstern, 3 Planeten)</option>
+      <option value="Galaxienhaufen (Filamente)" data-i18n="sc.cluster">Galaxienhaufen (Filamente)</option>
     </select>
     <div style="display:flex; gap:4px; margin-top:6px;">
       <button id="btn-save-cfg" data-i18n="btn.save" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Speichern</button>
@@ -743,6 +744,7 @@ input[type=range] {
       <option value="Alpha Centauri" data-i18n="sc.alphacen">Alpha Centauri</option>
       <option value="Kepler-16" data-i18n="sc.kepler16">Kepler-16</option>
       <option value="Kepler-47 (Doppelstern, 3 Planeten)" data-i18n="sc.kepler47">Kepler-47 (Doppelstern, 3 Planeten)</option>
+      <option value="Galaxienhaufen (Filamente)" data-i18n="sc.cluster">Galaxienhaufen (Filamente)</option>
     </select>
     <div style="display:flex; gap:4px; margin-top:6px;">
       <button id="mob-btn-save-cfg" data-i18n="btn.save" style="flex:1; font-size:12px;">Speichern</button>
@@ -949,6 +951,7 @@ const I18N = {
     'sc.alphacen': 'Alpha Centauri',
     'sc.kepler16': 'Kepler-16',
     'sc.kepler47': 'Kepler-47 (Doppelstern, 3 Planeten)',
+    'sc.cluster': 'Galaxienhaufen (Filamente)',
     // Buttons
     'btn.save': 'Speichern',
     'btn.export': 'Export',
@@ -1224,6 +1227,7 @@ const I18N = {
     'sc.alphacen': 'Alpha Centauri',
     'sc.kepler16': 'Kepler-16',
     'sc.kepler47': 'Kepler-47 (binary star, 3 planets)',
+    'sc.cluster': 'Galaxy cluster (filaments)',
     'btn.save': 'Save',
     'btn.export': 'Export',
     'btn.import': 'Import',
@@ -1813,6 +1817,110 @@ function buildSolarSystemWithBelts() {
   if (BELT_KB_COUNT > 0) addBelt('KB', BELT_KB_COUNT, 30, 50, 0.2, 0.04, '#9fc6dc');
 }
 
+// Galaxienhaufen mit kosmischen Filamenten.
+//
+// Physikalisch ist das der Fall, der zu dieser Engine passt: wenige
+// schwere Koerper, die einander WIRKLICH einzeln spueren, plus sehr viele
+// masselose Testteilchen, die das Feld sichtbar machen. (Eine Spiral-
+// galaxie waere das Gegenteil — dort traegt die verteilte Scheibenmasse
+// das Feld, das zentrale Schwarze Loch stellt nur 0,004 % davon.)
+//
+// Die Testteilchen stroemen entlang der Gravitationsgradienten aus den
+// Leerraeumen zu den Massen und spannen dabei Brücken zwischen ihnen —
+// derselbe Mechanismus, der im Universum das kosmische Netz aus Knoten,
+// Filamenten und Voids erzeugt. Was fehlt, ist die Expansion des Raums:
+// ohne sie kollabiert der Haufen am Ende, statt sich zu stabilisieren.
+const CLUSTER_GALAXIEN = 56;     // < M_MAX (64) im CUDA-Kernel
+const CLUSTER_TRACER = 150000;
+const CLUSTER_R = 60000;         // AE, Radius des Anfangsgebiets
+
+function buildGalaxyCluster() {
+  const massePro = 1e8;                       // M☉ je "Galaxie"
+  const gesamt = massePro * CLUSTER_GALAXIEN;
+  const vVir = Math.sqrt(G_AU * gesamt / CLUSTER_R);
+  // Kreisbahngeschwindigkeit im Feld der Wolke. INNEN waechst die
+  // eingeschlossene Masse wie r^2 (Flaechenverteilung), also v ~ sqrt(r);
+  // AUSSEN wirkt die Wolke wie eine Punktmasse, also Kepler v ~ 1/sqrt(r).
+  // Ohne diese Fallunterscheidung bekommen die Teilchen im Zentrum
+  // absurde Geschwindigkeiten und schiessen sofort davon.
+  const vCirc = (r) => {
+    const rr = Math.max(r, 1);
+    return vVir * (rr < CLUSTER_R ? Math.sqrt(rr / CLUSTER_R)
+                                  : Math.sqrt(CLUSTER_R / rr));
+  };
+  // Anteil der Kreisbahngeschwindigkeit. Unter 1 heisst: die Wolke faellt
+  // zusammen, statt fertig zu kreisen — der Kollaps ERZEUGT die Struktur.
+  // 0,7 ergibt ein Virialverhaeltnis 2T/|U| von rund 0,23: gebunden,
+  // deutlich unterkuehlt, aber mit genug Drehimpuls, dass nicht alles
+  // radial in einen Punkt stuerzt.
+  const KALT = 0.7;
+
+  // Keime: die Galaxien sitzen in Gruppen, nicht gleichverteilt. Eine
+  // anisotrope Anfangsverteilung ist die Voraussetzung fuer Filamente —
+  // aus einer perfekt gleichmaessigen Wolke entsteht nur ein Klumpen.
+  const keime = [];
+  for (let i = 0; i < 7; i++) {
+    const a = Math.random() * 2 * Math.PI;
+    const r = CLUSTER_R * (0.25 + 0.65 * Math.random());
+    keime.push([r * Math.cos(a), r * Math.sin(a)]);
+  }
+  const farben = ['#ffd9a0', '#cfe0ff', '#ffc0c0', '#d8ffd0',
+                  '#e8d0ff', '#fff0c0', '#c0f0ff'];
+  const gx = [], gy = [];
+  const R_GAL = 500;                 // Beruehrungsradius in AE
+  for (let i = 0; i < CLUSTER_GALAXIEN; i++) {
+    const [kx, ky] = keime[i % keime.length];
+    const streu = CLUSTER_R * 0.18;
+    let x = 0, y = 0;
+    // Mindestabstand einhalten: naeher als der doppelte
+    // Beruehrungsradius wuerden zwei Galaxien im ersten Schritt
+    // verschmelzen, statt einander zu umkreisen.
+    for (let versuch = 0; versuch < 40; versuch++) {
+      x = kx + (Math.random() * 2 - 1) * streu;
+      y = ky + (Math.random() * 2 - 1) * streu;
+      let frei = true;
+      for (let j = 0; j < gx.length; j++) {
+        if (Math.hypot(x - gx[j], y - gy[j]) < 6 * R_GAL) { frei = false; break; }
+      }
+      if (frei) break;
+    }
+    gx.push(x); gy.push(y);
+    const r = Math.hypot(x, y) || 1;
+    const vc = KALT * vCirc(r);
+    pushBody({
+      name: 'G' + (i + 1), mass: massePro,
+      color: farben[i % farben.length],
+      x, y,
+      vx: -y / r * vc + (Math.random() * 2 - 1) * 0.2 * vc,
+      vy:  x / r * vc + (Math.random() * 2 - 1) * 0.2 * vc,
+      // Nahe Begegnungen verschmelzen (Galaxienverschmelzung) — bei
+      // mittleren Abstaenden von einigen tausend AE nur bei Treffern.
+      rkm: R_GAL * AU / 1000,
+      isStar: true,
+    });
+  }
+
+  // Testteilchen: gleichmaessig in der Flaeche (r ~ sqrt(zufall)), bis
+  // etwas ausserhalb der Galaxien, damit sie von aussen einfallen und
+  // dabei die Braecken zwischen den Massen nachzeichnen.
+  const rMax = CLUSTER_R * 1.35;
+  for (let i = 0; i < CLUSTER_TRACER; i++) {
+    const a = Math.random() * 2 * Math.PI;
+    const r = Math.max(rMax * Math.sqrt(Math.random()), 1);
+    const x = r * Math.cos(a), y = r * Math.sin(a);
+    const vc = KALT * vCirc(r);
+    pushBody({
+      name: 'S' + (i + 1), mass: 0,
+      color: '#9fb8e0',
+      x, y,
+      vx: -y / r * vc + (Math.random() * 2 - 1) * 0.15 * vc,
+      vy:  x / r * vc + (Math.random() * 2 - 1) * 0.15 * vc,
+      rkm: 1,
+      isAsteroid: true,
+    });
+  }
+}
+
 function buildEmpty() { /* leer — Koerper per Klick setzen (Bau-Modus) */ }
 
 function buildTrappist() {
@@ -2044,6 +2152,9 @@ const SCENARIOS = {
   'Alpha Centauri':        { build: buildAlphaCentauri, zoom: 0.15, zoomLog: 6.55, dt: 5,   slow: 0 },
   'Kepler-16':             { build: buildKepler16,      zoom: 8,    zoomLog: 30,   dt: 0.5, slow: 0 },
   'Kepler-47 (Doppelstern, 3 Planeten)': { build: buildKepler47, zoom: 6, zoomLog: 30, dt: 0.1, slow: 0 },
+  // Braucht das CUDA-Backend: 150k Koerper sind fuer die Browser-Engines
+  // zu viel. zoom passt das Anfangsgebiet (~160.000 AE breit) ins Bild.
+  'Galaxienhaufen (Filamente)': { build: buildGalaxyCluster, zoom: 0.0001, zoomLog: 2.3, dt: 5, slow: 0 },
 };
 
 // Liefert den Szenario-Zoom passend zum aktiven Modus (linear vs. log).
@@ -2310,6 +2421,7 @@ const SCENARIO_I18N_KEY = {
   'Alpha Centauri': 'sc.alphacen',
   'Kepler-16': 'sc.kepler16',
   'Kepler-47 (Doppelstern, 3 Planeten)': 'sc.kepler47',
+  'Galaxienhaufen (Filamente)': 'sc.cluster',
 };
 
 // Szenario-Auswahl neu befuellen: Presets + gespeicherte Konfigurationen.
