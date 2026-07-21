@@ -4778,6 +4778,7 @@ function filmStart() {
   // Beschleunigungs-Berechnung der quintischen Hermite: einmal pro
   // Session sammeln, sie werden nie ausgeduennt und sind in jedem Sample.
   _filmMassive = null;
+  _filmBahnCache = null;
   filmEvents = [];
   _filmEventsApplied = 0;
   collisionFlashes.length = 0;       // Flashes der alten Session verwerfen
@@ -5034,16 +5035,20 @@ function _filmVPos(sample, n) {
   return sample._vpos;
 }
 
-// Bahn eines schnellen Koerpers ueber die Zeit dt (Jahre) integrieren —
-// Velocity-Verlet mit der Gravitation der Massiven. dt<0 = rueckwaerts.
+const _filmIntA = [0, 0], _filmIntA2 = [0, 0];
+
+// Bahn eines schnellen Koerpers integrieren (Velocity-Verlet mit der
+// Gravitation der Massiven, dt<0 = rueckwaerts) und an m+1
+// gleichabstaendigen Stellen in pts ablegen (pts[0..1]=Start,
+// pts[2m..]=Ende; n MUSS Vielfaches von m sein).
+//
 // Loest das "vorne herum"-Artefakt am Perihel: Interpolation raet eine
 // Kurve durch zwei Punkte und schneidet bei >180 Grad/Sample die falsche
 // Seite ab; die Integration FOLGT der echten Bahn (dieselbe Physik wie
 // der Producer), also hintenrum. mass = flaches [G*M, x, y, ...] der
 // Quellen (fest auf ihrer Sample-Position — sie wandern in einem Raster
-// vernachlaessigbar). Schreibt das Ergebnis nach out[0], out[1].
-function _filmIntegrate(px, py, vx, vy, dt, n, mass, out) {
-  const h = dt / n;
+// vernachlaessigbar).
+function _filmTrace(px, py, vx, vy, dt, nMax, m, mass, pts) {
   const accel = (x, y, o) => {
     let ax = 0, ay = 0;
     for (let mi = 0; mi < mass.length; mi += 3) {
@@ -5056,19 +5061,82 @@ function _filmIntegrate(px, py, vx, vy, dt, n, mass, out) {
   };
   const a = _filmIntA, a2 = _filmIntA2;
   accel(px, py, a);
-  for (let s = 0; s < n; s++) {
-    const nx = px + vx * h + 0.5 * a[0] * h * h;
-    const ny = py + vy * h + 0.5 * a[1] * h * h;
-    accel(nx, ny, a2);
-    vx += 0.5 * (a[0] + a2[0]) * h;
-    vy += 0.5 * (a[1] + a2[1]) * h;
-    px = nx; py = ny;
-    a[0] = a2[0]; a[1] = a2[1];
+  pts[0] = px; pts[1] = py;
+  // Adaptive Schrittweite wie der Producer (nbody_kernel: dtH=dist/vrel/20).
+  // Nahe einer massiven Quelle wird der Schritt beliebig fein — der Koerper
+  // schwingt sauber ums Perihel statt bei r->0 mit festem Schritt
+  // wegkatapultiert zu werden (Trampolin/Schockwelle). sgn traegt die
+  // Zeitrichtung (dt<0 = rueckwaerts); snap = signierte Snapshot-Weite.
+  const sgn = dt < 0 ? -1 : 1;
+  const snap = dt / m, snapMag = Math.abs(snap);
+  const hMin = Math.abs(dt) / nMax;   // Sicherungs-Untergrenze (Terminierung)
+  for (let k = 1; k <= m; k++) {
+    let restMag = snapMag;
+    while (restMag > 1e-30) {
+      let hMag = snapMag;
+      const speed = Math.hypot(vx, vy);
+      if (speed > 1e-9) {
+        for (let mi = 0; mi < mass.length; mi += 3) {
+          const dx = mass[mi + 1] - px, dy = mass[mi + 2] - py;
+          const t = Math.sqrt(dx * dx + dy * dy) / speed / 20;
+          if (t < hMag) hMag = t;
+        }
+      }
+      if (hMag < hMin) hMag = hMin;
+      if (hMag > restMag) hMag = restMag;
+      const h = sgn * hMag;
+      const nx = px + vx * h + 0.5 * a[0] * h * h;
+      const ny = py + vy * h + 0.5 * a[1] * h * h;
+      accel(nx, ny, a2);
+      vx += 0.5 * (a[0] + a2[0]) * h;
+      vy += 0.5 * (a[1] + a2[1]) * h;
+      px = nx; py = ny; a[0] = a2[0]; a[1] = a2[1];
+      restMag -= hMag;
+    }
+    pts[2 * k] = px; pts[2 * k + 1] = py;
   }
-  out[0] = px; out[1] = py;
 }
-const _filmIntA = [0, 0], _filmIntA2 = [0, 0];
-const _filmFwd = [0, 0], _filmBwd = [0, 0];
+
+// Kleinster Perihel-Abstand (AU) der Kepler-Bahn (px,py,vx,vy) ueber alle
+// Quellen in mass (flaches [G*M, x, y, ...]). Zweikoerper je Quelle:
+// q = h^2/mu / (1 + e), e = sqrt(1 + 2 E h^2 / mu^2). Rein aus Position und
+// Geschwindigkeit — verraet radiale Stuerze (q -> 0) vor der Integration.
+function _filmPerihel(px, py, vx, vy, mass) {
+  const v2 = vx * vx + vy * vy;
+  let qMin = Infinity;
+  for (let mi = 0; mi < mass.length; mi += 3) {
+    const mu = mass[mi], dx = px - mass[mi + 1], dy = py - mass[mi + 2];
+    const r = Math.sqrt(dx * dx + dy * dy);
+    if (r < 1e-9) return 0;
+    const E = 0.5 * v2 - mu / r;
+    const h = dx * vy - dy * vx;
+    const e = Math.sqrt(Math.max(0, 1 + 2 * E * h * h / (mu * mu)));
+    const q = (h * h / mu) / (1 + e);
+    if (q < qMin) qMin = q;
+  }
+  return qMin;
+}
+
+// Bahn-Cache der schnellen Koerper fuers aktuelle Sample-Intervall. Die
+// Bahn wird EINMAL pro Intervall (adaptives Substepping, Producer-Physik)
+// integriert — pro Frame waere das unbezahlbar — und pro Frame nur linear
+// zwischen den Stuetzpunkten ausgewertet. Behebt Stocken (nicht mehr pro
+// Frame) und Perihel-Artefakte (adaptiv: kein Katapult an der Singularitaet).
+const FILM_BAHN_M = 32;     // Bahn-Aufloesung (Stuetzpunkte je Intervall)
+const FILM_BAHN_N = 4096;   // Substep-Obergrenze je Integration (Sicherung)
+// Perihel-Guard: Koerper, deren Kepler-Bahn einer Quelle NAEHER als dies
+// kommt (AU), werden NICHT integriert, sondern positions-interpoliert.
+// Grund: ein fast-radialer Sturz/Durchgang hat ein winziges Perihel — die
+// Integration braucht dort extrem viele adaptive Substeps (Cache-Rebuild
+// dauert 100 ms..2 s -> periodisches Stocken/Pumpen), und die
+// Austrittsrichtung ist so sensibel, dass der bidirektionale Blend im
+// Betrieb kippt. Die beschraenkte Sehne/Catmull ist dort billig UND ruhig.
+// Moderate/tangentiale Vorbeifluege (groesseres Perihel) werden weiter
+// integriert und behalten den Scheibenwischer-Fix.
+const FILM_PERI_MIN = 0.02;
+let _filmBahnCache = null;  // { s0, s1, bahnen: Map(ki -> Float32Array) }
+const _filmTraceF = new Float32Array(2 * (FILM_BAHN_M + 1));
+const _filmTraceB = new Float32Array(2 * (FILM_BAHN_M + 1));
 
 // Indizes der massiven Koerper (nicht-Asteroiden mit Masse) — die
 // Gravitationsquellen fuer die Beschleunigung der schnellen Koerper.
@@ -5137,7 +5205,7 @@ function filmApply(t) {
   const v0pos = (hermite && s0.vidx) ? _filmVPos(s0, nRef) : null;
   const v1pos = (hermite && s1.vidx) ? _filmVPos(s1, nRef) : null;
   // Fuer die schnellen Koerper (mit v-Block) wird die echte Bahn
-  // integriert (siehe _filmIntegrate). Dafuer die Gravitationsquellen
+  // integriert (siehe _filmTrace). Dafuer die Gravitationsquellen
   // sammeln — massive Koerper mit Position in s0 und s1, je [G*Masse,x,y].
   // Nur wenn es ueberhaupt schnelle Koerper in beiden Samples gibt.
   const hatSchnelle = hermite && s0.vidx && s0.vidx.length &&
@@ -5152,6 +5220,38 @@ function filmApply(t) {
       const gm = G_AU * filmRefs[mk].mass;
       mass0.push(gm, s0wx[q0], s0wy[q0]);
       mass1.push(gm, s1wx[q1], s1wy[q1]);
+    }
+    // Bahn-Cache fuers Intervall: fuer jeden schnellen Koerper die echte
+    // Bahn EINMAL adaptiv integrieren (bidirektional, s0->s1 geblendet) und
+    // M+1 Stuetzpunkte ablegen. Pro Frame wird nur zwischen den Stuetz-
+    // punkten interpoliert — behebt Stocken (nicht mehr pro Frame
+    // integrieren) und Scheibenwischer/Perihel-Loch (adaptiv, kein Katapult).
+    if (!_filmBahnCache || _filmBahnCache.s0 !== s0 ||
+        _filmBahnCache.s1 !== s1) {
+      const bahnen = new Map();
+      for (let vi = 0; vi < s0.vidx.length; vi++) {
+        const ki = s0.vidx[vi];
+        const p0 = p0map[ki], p1 = p1map[ki], vq1 = v1pos[ki];
+        if (p0 < 0 || p1 < 0 || vq1 < 0) continue;
+        // Perihel-Guard: radiale Sonnenstuermer nicht integrieren (teuer +
+        // Blend kippt) — sie fallen auf die Positions-Interpolation zurueck.
+        if (_filmPerihel(s0wx[p0], s0wy[p0], s0.vx[vi], s0.vy[vi],
+                         mass0) < FILM_PERI_MIN) continue;
+        _filmTrace(s0wx[p0], s0wy[p0], s0.vx[vi], s0.vy[vi],
+                   spanY, FILM_BAHN_N, FILM_BAHN_M, mass0, _filmTraceF);
+        _filmTrace(s1wx[p1], s1wy[p1], s1.vx[vq1], s1.vy[vq1],
+                   -spanY, FILM_BAHN_N, FILM_BAHN_M, mass1, _filmTraceB);
+        const bahn = new Float32Array(2 * (FILM_BAHN_M + 1));
+        for (let mm = 0; mm <= FILM_BAHN_M; mm++) {
+          const ff = mm / FILM_BAHN_M, bm = FILM_BAHN_M - mm;
+          bahn[2 * mm] = (1 - ff) * _filmTraceF[2 * mm] +
+                         ff * _filmTraceB[2 * bm];
+          bahn[2 * mm + 1] = (1 - ff) * _filmTraceF[2 * mm + 1] +
+                             ff * _filmTraceB[2 * bm + 1];
+        }
+        bahnen.set(ki, bahn);
+      }
+      _filmBahnCache = { s0, s1, bahnen };
     }
   }
   const iPrev = i - 1, iNext = j + 1;
@@ -5236,35 +5336,18 @@ function filmApply(t) {
     const vp1 = v1pos ? v1pos[ki] : -1;
     const mp = hatPrev ? sPrev._pos[ki] : -1;
     const mn = hatNext ? sNext._pos[ki] : -1;
-    if (vp0 >= 0 && vp1 >= 0) {
-      // Echte Bahn integrieren statt interpolieren: vorwaerts von s0 bis
-      // zum Playhead, rueckwaerts von s1, dann blenden. Beide folgen der
-      // Physik (gehen hintenrum am Perihel); der Blend trifft s0 (f=0) und
-      // s1 (f=1) exakt und glaettet den Integrationsfehler dazwischen.
-      //
-      // Substep-Zahl ADAPTIV nach dem Bahnwinkel pro Sample (~ |v|*dt/r,
-      // r = Abstand zur naechsten Masse): der Blend-Fehler in der
-      // Intervall-Mitte skaliert mit 1/N^2 und wird bei grossen Winkeln
-      // (Perihel) als Kerbe sichtbar. Konstante Winkelaufloesung von
-      // ~3,75 Grad/Substep haelt die Kerbe klein, ohne ueberall teuer zu
-      // rechnen — nur die wenigen extremen Durchgaenge bekommen hohes N.
-      let r2min = Infinity;
-      for (let mi = 0; mi < mass0.length; mi += 3) {
-        const dx = mass0[mi + 1] - x0, dy = mass0[mi + 2] - y0;
-        const d = dx * dx + dy * dy;
-        if (d < r2min) r2min = d;
-      }
-      const vabs = Math.hypot(s0.vx[vp0], s0.vy[vp0]);
-      const winkel = vabs * spanY / Math.max(Math.sqrt(r2min), 1e-4);
-      const N = Math.max(16, Math.min(96, Math.round(winkel / 0.0654)));
-      const nf = Math.max(1, Math.round(f * N));
-      const nb = Math.max(1, Math.round((1 - f) * N));
-      _filmIntegrate(x0, y0, s0.vx[vp0], s0.vy[vp0],
-                     f * spanY, nf, mass0, _filmFwd);
-      _filmIntegrate(p2x, p2y, s1.vx[vp1], s1.vy[vp1],
-                     -(1 - f) * spanY, nb, mass1, _filmBwd);
-      bx = (1 - f) * _filmFwd[0] + f * _filmBwd[0];
-      by = (1 - f) * _filmFwd[1] + f * _filmBwd[1];
+    const bahn = (vp0 >= 0 && vp1 >= 0 && _filmBahnCache)
+      ? _filmBahnCache.bahnen.get(ki) : null;
+    if (bahn) {
+      // Gecachte echte Bahn (einmal pro Intervall mit hohem N integriert):
+      // pro Frame nur linear zwischen den Stuetzpunkten auswerten. Die
+      // Bahn folgt der Physik (hintenrum am Perihel), das hohe N haelt den
+      // Blend-Fehler winzig (kein Scheibenwischer/Perihel-Loch mehr).
+      const fm = f * FILM_BAHN_M;
+      const si = Math.min(FILM_BAHN_M - 1, fm | 0);
+      const st = fm - si;
+      bx = bahn[2 * si] * (1 - st) + bahn[2 * si + 2] * st;
+      by = bahn[2 * si + 1] * (1 - st) + bahn[2 * si + 3] * st;
     } else if (mp >= 0) {
       const p0x = sPwx[mp];
       const p0y = sPwy[mp];
