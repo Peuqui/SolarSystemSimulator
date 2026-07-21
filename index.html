@@ -601,6 +601,10 @@ input[type=range] {
     <span data-i18n="lbl.film-lod">Punkte im Bild</span> <span class="val" id="film-lod-val">Auto</span>
     <input type="range" autocomplete="off" id="film-lod" min="3.9" max="6.8" step="0.1" value="3.9">
   </label>
+  <label data-i18n-title="tt.film-sub" id="lbl-film-sub" style="display:none; margin-left:20px;">
+    <span data-i18n="lbl.film-sub">Bahnstuetzpunkte</span> <span class="val" id="film-sub-val">8</span>
+    <input type="range" autocomplete="off" id="film-sub" min="0" max="5" step="1" value="3">
+  </label>
   <label data-i18n-title="tt.film-interp" id="lbl-film-interp" style="display:none; margin-left:20px;">
     <input type="checkbox" id="chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span>
   </label>
@@ -1027,6 +1031,9 @@ const I18N = {
     'tt.film': 'Compute und Darstellung entkoppelt: die GPU rechnet mit maximalem Durchsatz voraus (Ringpuffer), der Browser spielt die Timeline wie ein Video ab — scrubben, zurückspulen, live folgen. Kollisionen verschmelzen serverseitig (immer Merge, kein Zerbersten/Abprallen).',
     'lbl.film-raster': 'Sample-Raster (Tage)',
     'tt.film-raster': 'Sim-Zeit-Abstand der aufgezeichneten Samples. Fein = weiche Zeitlupe, mehr Speicher; grob = längerer Rückspulpuffer.',
+    'lbl.film-sub': 'Bahnstützpunkte',
+    'lbl.film-sub-aus': 'Aus',
+    'tt.film-sub': 'Wie viele Zwischenpunkte die GPU je Sample-Raster für eng begegnende Asteroiden mitrechnet. Sie liegen auf der ECHTEN Bahn — dazwischen genügt eine Gerade, und ein Perihel-Durchgang wird gemessen statt geraten. Nur diese Körper bekommen sie (bei anderen ist die Bahn im Raster ohnehin fast gerade); alle übrigen laufen weiter über Catmull-Rom. Mehr Stützpunkte = genauer, kosten aber Bandbreite und Ringspeicher. Aus = wie früher, reine Kurveninterpolation. Wirkt erst nach einem Film-Neustart (die Ringgröße hängt daran).',
     'tt.film-live': 'Zur Live-Kante springen und folgen',
     'film.buffer': 'Puffer',
     'tt.hybrid-near': 'Nur im Hybrid: Asteroiden, die einem schweren Körper zu nahe/schnell begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen f64-adaptiv im Worker statt grob auf der GPU. Präzise, kostet aber Tempo, wenn sehr viele Asteroiden gleichzeitig nahe sind. Aus = alle Asteroiden grob auf der GPU (schnell).',
@@ -1044,7 +1051,7 @@ const I18N = {
     'tt.fab-clear-pert': 'Alle Rogues löschen',
     'tt.fab-clear-clouds': 'Alle Wolken löschen',
     'tt.collisions': 'Zähler echter Kollisions-Ereignisse (Berührung Planet × Planet oder Planet × Asteroid)',
-    'tt.bodycount': 'Anzahl sichtbarer Körper gesamt, dann nach Typ: 🕳️ schwarze Löcher, ☀️ Sonnen, 🪐 feste Körper, 🪨 Asteroiden. Typen ohne Vorkommen werden ausgeblendet.',
+    'tt.bodycount': 'Anzahl sichtbarer Körper gesamt, dann nach Typ: 🕳️ schwarze Löcher, ☀️ Sonnen, 🪐 feste Körper, 🪨 Asteroiden. Typen ohne Vorkommen werden ausgeblendet. Im Film-Modus zeigt 👁 zusätzlich, wie viele Körper gerade übertragen werden: der Server cullt auf den Bildausschnitt und dünnt per Dichte-LOD aus (Regler „Punkte im Bild“), die Physik rechnet aber immer mit ALLEN. Eine große Lücke zwischen beiden Zahlen heißt: stark ausgedünnt, nicht wenig Material.',
     'badge.collisions': 'Kollisionen',
     'lbl.ast-ast': 'Asteroid × Asteroid Kollisionen',
     'tt.ast-ast': 'Prüft auch Asteroid × Asteroid auf direkte Kollisionen. Bei vielen Bodies (>2000) merklich teurer pro Frame; default aus.',
@@ -1291,6 +1298,9 @@ const I18N = {
     'tt.film': 'Compute and display decoupled: the GPU simulates ahead at full throughput (ring buffer), the browser plays the timeline like a video — scrub, rewind, follow live. Collisions merge server-side (always merge, no shattering/bouncing).',
     'lbl.film-raster': 'Sample interval (days)',
     'tt.film-raster': 'Sim-time spacing of recorded samples. Fine = smooth slow-motion, more memory; coarse = longer rewind buffer.',
+    'lbl.film-sub': 'Trajectory waypoints',
+    'lbl.film-sub-aus': 'Off',
+    'tt.film-sub': 'How many intermediate points the GPU records per sample interval for closely encountering asteroids. They sit on the REAL trajectory — a straight line between them is enough, and a perihelion passage is measured instead of guessed. Only those bodies get them (for the rest the path within one interval is nearly straight anyway); everything else keeps using Catmull-Rom. More waypoints = more accurate, but cost bandwidth and ring memory. Off = as before, pure curve interpolation. Takes effect after a film restart (the ring size depends on it).',
     'tt.film-live': 'Jump to the live edge and follow',
     'film.buffer': 'buffer',
     'tt.hybrid-near': 'Hybrid only: asteroids whose encounter with a massive body is too close/fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the worker instead of coarsely on the GPU. Precise, but costs speed when very many asteroids are close at once. Off = all asteroids run coarsely on the GPU (fast).',
@@ -1308,7 +1318,7 @@ const I18N = {
     'tt.fab-clear-pert': 'Clear all rogues',
     'tt.fab-clear-clouds': 'Clear all clouds',
     'tt.collisions': 'Counter of real collision events (contact planet × planet or planet × asteroid)',
-    'tt.bodycount': 'Total visible bodies, then by type: 🕳️ black holes, ☀️ suns, 🪐 solid bodies, 🪨 asteroids. Types with none are hidden.',
+    'tt.bodycount': 'Total visible bodies, then by type: 🕳️ black holes, ☀️ suns, 🪐 solid bodies, 🪨 asteroids. Types with none are hidden. In film mode 👁 additionally shows how many bodies are currently being transmitted: the server culls to the viewport and thins by density LOD (slider “Points on screen”), while physics always runs for ALL of them. A large gap between the two numbers means heavy thinning, not little material.',
     'badge.collisions': 'Collisions',
     'lbl.ast-ast': 'Asteroid × asteroid collisions',
     'tt.ast-ast': 'Also tests asteroid × asteroid for direct collisions. Noticeably more expensive per frame with many bodies (>2000); default off.',
@@ -4141,7 +4151,7 @@ function _cudaSetVisible(visible) {
   for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda',
                     'lbl-film-mode', 'mob-lbl-film-mode', 'lbl-film-raster',
                     'lbl-film-speed', 'mob-lbl-film-speed',
-                    'lbl-film-lod', 'mob-lbl-film-lod',
+                    'lbl-film-lod', 'mob-lbl-film-lod', 'lbl-film-sub',
                     'lbl-film-interp', 'mob-lbl-film-interp']) {
     const el = document.getElementById(id);
     if (el) el.style.display = visible ? '' : 'none';
@@ -4161,7 +4171,7 @@ function _filmControlsAktiv() {
   const aktiv = typeof useCuda !== 'undefined' && useCuda && cudaReady;
   for (const id of ['chk-film', 'mob-chk-film',
                     'film-raster', 'film-speed', 'mob-film-speed',
-                    'film-lod', 'mob-film-lod',
+                    'film-lod', 'mob-film-lod', 'film-sub',
                     'chk-film-interp', 'mob-chk-film-interp']) {
     const el = document.getElementById(id);
     if (!el) continue;
@@ -4186,14 +4196,17 @@ function _filmControlsAktiv() {
 const NET_WORKER_SRC = `
 let ws = null;
 
-// v3-Frame zerlegen: u32 status | u32 N | u32 count | u32 evCount |
-// f64 tail, head, boxX0, boxY0, boxSpanX, boxSpanY, logFlag |
+// Film-Frame zerlegen: u32 status | u32 N | u32 count | u32 evCount |
+// f64 tail, head, boxX0, boxY0, boxSpanX, boxSpanY, logFlag, mSub |
 // count x f64 zeiten |
 // count x ( u32 visCount | u32 idx[] | u16 qx[] | u16 qy[] |
-//           u32 vCount | u32 vidx[] | f32 vx[] | f32 vy[] | pad4 ) |
+//           u32 subCount | u32 subIdx[] | u16 sqx[subCount*mSub] |
+//           u16 sqy[subCount*mSub] | pad4 ) |
 // evCount x Ereignis(32 B).
-// Der v-Block traegt die Geschwindigkeit NUR der schnellen sonnennahen
-// Koerper (Hermite-Interpolation gegen das Perihel-Pumpen).
+// Der Sub-Block traegt die auf der GPU GEMESSENEN Zwischenbilder der
+// heissen (eng begegnenden) Asteroiden: mSub Stuetzpunkte je Raster,
+// gleichmaessig auf j*raster/mSub. Fuer sie interpoliert der Client
+// linear entlang der echten Bahn, statt eine Tangente zu schaetzen.
 function zerlegeFilm(buf) {
   const hdr = new Uint32Array(buf, 0, 4);
   const count = hdr[2], evCount = hdr[3];
@@ -4204,21 +4217,26 @@ function zerlegeFilm(buf) {
                 sx: dv.getFloat64(48, true), sy: dv.getFloat64(56, true) };
   // logFlag (7. Meta-f64): 1 = Positionen log-polar kodiert.
   const log = dv.getFloat64(64, true) !== 0;
-  const times = new Float64Array(buf, 72, count);
+  // mSub (8. Meta-f64): Stuetzpunkte je Koerper im Sub-Block. 0 = keiner
+  // — der Server laesst ihn weg, sobald er groeber als raster-dicht
+  // streamt (dann decken die Stuetzpunkte das Intervall nicht ab).
+  const mSub = dv.getFloat64(72, true) | 0;
+  const times = new Float64Array(buf, 80, count);
   const samples = [];
-  let off = 72 + 8 * count;
+  let off = 80 + 8 * count;
   for (let i = 0; i < count; i++) {
     const visCount = dv.getUint32(off, true);
     const idx = new Uint32Array(buf, off + 4, visCount);
     const qx = new Uint16Array(buf, off + 4 + 4 * visCount, visCount);
     const qy = new Uint16Array(buf, off + 4 + 6 * visCount, visCount);
-    let voff = off + 4 + 8 * visCount;
-    const vCount = dv.getUint32(voff, true);
-    const vidx = new Uint32Array(buf, voff + 4, vCount);
-    const vx = new Float32Array(buf, voff + 4 + 4 * vCount, vCount);
-    const vy = new Float32Array(buf, voff + 4 + 8 * vCount, vCount);
-    samples.push({ idx, qx, qy, vidx, vx, vy, box, log });
-    const blockLen = 4 + 8 * visCount + 4 + 12 * vCount;
+    const soff = off + 4 + 8 * visCount;
+    const subCount = dv.getUint32(soff, true);
+    const p = subCount * mSub;
+    const subIdx = new Uint32Array(buf, soff + 4, subCount);
+    const sqx = new Uint16Array(buf, soff + 4 + 4 * subCount, p);
+    const sqy = new Uint16Array(buf, soff + 4 + 4 * subCount + 2 * p, p);
+    samples.push({ idx, qx, qy, subIdx, sqx, sqy, mSub, box, log });
+    const blockLen = 4 + 8 * visCount + 4 + 4 * subCount + 4 * p;
     off += blockLen + ((4 - (blockLen % 4)) % 4);
   }
   const evs = [];
@@ -4710,6 +4728,15 @@ function filmRasterDays() {
   return Math.pow(10, parseFloat(document.getElementById('film-raster').value));
 }
 
+// Bahnstuetzpunkte je Raster (0 = aus). Der Regler laeuft in
+// Zweierpotenzen, weil nur die Groessenordnung zaehlt: 8 Stuetzpunkte
+// druecken den Sehnenfehler bereits unter die Sichtbarkeitsschwelle,
+// zwischen 8 und 9 ist kein Unterschied zu sehen.
+function filmSubSamples() {
+  const v = parseInt(document.getElementById('film-sub').value, 10);
+  return v <= 0 ? 0 : Math.pow(2, v);
+}
+
 let _filmStartWartet = false;
 
 function filmStart() {
@@ -4736,7 +4763,7 @@ function filmStart() {
   // ein UI-Toggle (Planeten aus-/einblenden), kein Todesmerkmal.
   const src = bodies.filter(b => b.visible || !b.isAsteroid);
   const N = src.length;
-  const buf = new ArrayBuffer(24 + N * (6 * 8 + 4) + 1);
+  const buf = new ArrayBuffer(24 + N * (6 * 8 + 4) + 2);
   const dv = new DataView(buf);
   dv.setUint32(0, 3, true);                    // MSG_FILM_START
   dv.setUint32(4, N, true);
@@ -4771,19 +4798,17 @@ function filmStart() {
   // N (isAst) + N (isStarBH) + N (injiziert). (Ein frueherer
   // 49N-Tippfehler ueberschrieb isAst[0] — die SONNE wurde zum
   // Asteroiden erklaert und der Waechter killte alle Astis sofort.)
-  // Bits 4-7: Film-Protokollversion (3 — Sample 16 B/Koerper x|y|vx|vy
-  // plus selektiver v-Block je Frame fuer die Hermite-Interpolation).
+  // Bits 4-7: Film-Protokollversion (4 — Sample 8 B/Koerper x|y plus
+  // Sub-Block je Frame: gemessene Zwischenbilder der heissen Asteroiden).
   // Ein Server mit anderem Format lehnt ab, statt dass ein alter Tab
   // Muell dekodiert. Bit 0: Asteroid-x-Asteroid-Bounce (UI-Toggle).
   new Uint8Array(buf, 24 + 52 * N, 1)[0] =
-    (3 << 4) | (astAstCollisions ? 1 : 0);
+    (4 << 4) | (astAstCollisions ? 1 : 0);
+  // Bahnstuetzpunkte je Raster: bestimmt die Ring-Slotgroesse und muss
+  // deshalb beim START feststehen (der Regler loest einen Neustart aus).
+  new Uint8Array(buf, 24 + 52 * N + 1, 1)[0] = filmSubSamples();
   cudaSocket.send(buf);
   filmRefs = src.slice();
-  // Massive Koerper (Sonne, Planeten, Sterne, SL) fuer die
-  // Beschleunigungs-Berechnung der quintischen Hermite: einmal pro
-  // Session sammeln, sie werden nie ausgeduennt und sind in jedem Sample.
-  _filmMassive = null;
-  _filmBahnCache = null;
   filmEvents = [];
   _filmEventsApplied = 0;
   collisionFlashes.length = 0;       // Flashes der alten Session verwerfen
@@ -4792,11 +4817,13 @@ function filmStart() {
   _filmBaseMass = new Float64Array(N);
   _filmEvVis = new Uint8Array(N);
   _filmInView = new Uint8Array(N);
+  _filmImStream = new Uint8Array(N);
   for (let i = 0; i < N; i++) {
     _filmBaseVis[i] = src[i].visible ? 1 : 0;
     _filmBaseMass[i] = src[i].mass;
     _filmEvVis[i] = _filmBaseVis[i];
     _filmInView[i] = 1;
+    _filmImStream[i] = 1;
   }
   filmActive = true;
   filmQueue = null;
@@ -4934,21 +4961,25 @@ function filmSub(tDays, jump) {
   const buf = new ArrayBuffer(64);
   const dv = new DataView(buf);
   dv.setUint32(0, 7, true);                    // MSG_FILM_SUB v4
-  dv.setUint32(4, jump ? 1 : 0, true);         // 1 = Sprung (Scrub/LIVE)
+  // Bit 0 = Sprung (Scrub/LIVE), Bit 1 = Positionen log-polar kodieren
+  dv.setUint32(4, (jump ? 1 : 0) | (useLogZoom ? 2 : 0), true);
   dv.setFloat64(8, tDays, true);
   dv.setFloat64(16, _filmRate, true);
-  if (useLogZoom) {
-    dv.setFloat64(24, 0, true);
-    dv.setFloat64(32, 0, true);
-    dv.setFloat64(40, -1, true);
-    dv.setFloat64(48, -1, true);
-  } else {
-    const skala = cam.zoom * 80;               // px pro AE
-    dv.setFloat64(24, cam.cx, true);
-    dv.setFloat64(32, cam.cy, true);
-    dv.setFloat64(40, (W / 2) / skala, true);
-    dv.setFloat64(48, (H / 2) / skala, true);
-  }
+  // Sichtfenster IMMER melden, auch im Log-Zoom. cam.cx/cy sind dort
+  // bereits Log-Raum-Koordinaten (siehe worldToScreen), der Ausschnitt
+  // laesst sich also unveraendert schicken.
+  //
+  // Frueher forderte der Log-Zoom hier eine Auto-Box ueber ALLE Koerper
+  // an. Die u16-Aufloesung der Uebertragung haengt aber an der Breite
+  // dieser Box: ein einziger ausgeworfener Asteroid auf 500 AE spannte
+  // sie so weit, dass im Zentrum nur noch ein Raster von ~2e-4 AE blieb
+  // — bei nahem Zoom mehr als zehn Pixel. Die Koerper schnappten darauf
+  // zusammen, dazwischen blieb es leer.
+  const skala = cam.zoom * 80;                 // px pro AE (bzw. Log-AE)
+  dv.setFloat64(24, cam.cx, true);
+  dv.setFloat64(32, cam.cy, true);
+  dv.setFloat64(40, (W / 2) / skala, true);
+  dv.setFloat64(48, (H / 2) / skala, true);
   // Punktbudget mitschicken statt beim Filmstart festzunageln: der
   // Regler wirkt dadurch sofort, ohne den Film neu zu starten.
   dv.setFloat64(56, filmLodBudget, true);      // 0 = Automatik
@@ -4988,6 +5019,12 @@ let _filmShatterPending = null;    // { a, b, t, x, y, vx, vy } (status=7)
 let _filmCollBase = 0;             // Zaehlerstand vor der aktuellen Session
 let _filmVtx = null;               // GL-Direktpfad: [x,y,r,g,b] aus filmApply
 let _filmVtxCount = -1;            // Punkte darin; -1 = Pfad inaktiv
+// Koerper im zuletzt angewandten Sample — also das, was der Server nach
+// Culling und Dichte-LOD tatsaechlich schickt. Der Unterschied zur
+// Gesamtzahl ist die Ausduennung: ohne diese Anzeige ist nicht zu sehen,
+// ob eine duenn wirkende Wolke wenige Koerper hat oder nur wenige davon
+// uebertragen werden.
+let _filmStreamN = 0;
 
 let _filmLastSubMs = 0;
 let _filmMetaTail = 0;       // Server-Puffergrenzen (aus jedem Push-Frame)
@@ -4998,6 +5035,13 @@ let _filmBaseVis = null;     // Baseline fuer Rueckspulen ueber Ereignisse
 let _filmBaseMass = null;
 let _filmEvVis = null;       // Ereignis-Sichtbarkeit (Kills angewendet)
 let _filmInView = null;      // im aktuellen Sample enthalten (Culling)
+// Vom Server GESTREAMT, unabhaengig davon, ob auch im Folge-Sample.
+// Getrennt von _filmInView, weil genau die sterbenden Koerper dort
+// fehlen: der Server nimmt ein Opfer nach seinem Kill aus dem Stream,
+// also war jede Kollision "nicht im Bild" und blitzte nie. Fuer das
+// ZEICHNEN bleibt _filmInView richtig (ohne Folge-Sample gibt es keine
+// aktuelle Position), fuer die EREIGNIS-Anzeige zaehlt dieses hier.
+let _filmImStream = null;
 
 // Lazy gebaute Index->Position-Abbildung eines Samples (Original-Index
 // des Koerpers -> Stelle in idx/qx/qy, oder -1). Einmal pro Sample gebaut
@@ -5017,14 +5061,11 @@ function _filmPos(sample, n) {
 // Aufloesung im gestauchten Zentrum fein — kein Schachbrettraster bei
 // nahem Zoom. Einmal pro Sample, danach nutzen filmApply und die
 // Integration direkt Weltkoordinaten.
-function _filmWelt(sample) {
-  if (sample.wx) return sample;
-  const n = sample.idx.length;
-  const wx = new Float32Array(n), wy = new Float32Array(n);
-  const b = sample.box, fx = b.sx / 65535, fy = b.sy / 65535;
-  if (sample.log) {
+function _filmEntpacke(qx, qy, box, log, wx, wy) {
+  const n = qx.length, fx = box.sx / 65535, fy = box.sy / 65535;
+  if (log) {
     for (let m = 0; m < n; m++) {
-      const xl = b.x0 + sample.qx[m] * fx, yl = b.y0 + sample.qy[m] * fy;
+      const xl = box.x0 + qx[m] * fx, yl = box.y0 + qy[m] * fy;
       const rl = Math.hypot(xl, yl);
       if (rl > 1e-12) {
         const sc = (Math.exp(rl * _LOG_33) - 1) / rl;
@@ -5033,142 +5074,46 @@ function _filmWelt(sample) {
     }
   } else {
     for (let m = 0; m < n; m++) {
-      wx[m] = b.x0 + sample.qx[m] * fx;
-      wy[m] = b.y0 + sample.qy[m] * fy;
+      wx[m] = box.x0 + qx[m] * fx;
+      wy[m] = box.y0 + qy[m] * fy;
     }
   }
-  sample.wx = wx; sample.wy = wy;
+}
+
+function _filmWelt(sample) {
+  if (sample.wx) return sample;
+  const n = sample.idx.length;
+  sample.wx = new Float32Array(n);
+  sample.wy = new Float32Array(n);
+  _filmEntpacke(sample.qx, sample.qy, sample.box, sample.log,
+                sample.wx, sample.wy);
   return sample;
 }
 
-// Wie _filmPos, aber fuer den v-Block: Original-Index -> Stelle in
-// vx/vy (oder -1). Nur die schnellen sonnennahen Koerper haben v.
-function _filmVPos(sample, n) {
-  if (!sample._vpos) {
-    sample._vpos = new Int32Array(n).fill(-1);
-    for (let m = 0; m < sample.vidx.length; m++) {
-      sample._vpos[sample.vidx[m]] = m;
-    }
-  }
-  return sample._vpos;
+// Weltkoordinaten der Sub-Stuetzpunkte — GETRENNT von _filmWelt und nur
+// fuer das Zielsample eines Intervalls aufgerufen. In filmApply laufen
+// vier Samples durch _filmWelt (prev, s0, s1, next), die Stuetzpunkte
+// braucht aber nur s1; mitzuentpacken kostete das Vierfache.
+function _filmSubWelt(sample) {
+  if (sample.swx) return sample;
+  const p = sample.sqx.length;
+  sample.swx = new Float32Array(p);
+  sample.swy = new Float32Array(p);
+  _filmEntpacke(sample.sqx, sample.sqy, sample.box, sample.log,
+                sample.swx, sample.swy);
+  return sample;
 }
 
-const _filmIntA = [0, 0], _filmIntA2 = [0, 0];
-
-// Bahn eines schnellen Koerpers integrieren (Velocity-Verlet mit der
-// Gravitation der Massiven, dt<0 = rueckwaerts) und an m+1
-// gleichabstaendigen Stellen in pts ablegen (pts[0..1]=Start,
-// pts[2m..]=Ende; n MUSS Vielfaches von m sein).
-//
-// Loest das "vorne herum"-Artefakt am Perihel: Interpolation raet eine
-// Kurve durch zwei Punkte und schneidet bei >180 Grad/Sample die falsche
-// Seite ab; die Integration FOLGT der echten Bahn (dieselbe Physik wie
-// der Producer), also hintenrum. mass = flaches [G*M, x, y, ...] der
-// Quellen (fest auf ihrer Sample-Position — sie wandern in einem Raster
-// vernachlaessigbar).
-function _filmTrace(px, py, vx, vy, dt, nMax, m, mass, pts) {
-  const accel = (x, y, o) => {
-    let ax = 0, ay = 0;
-    for (let mi = 0; mi < mass.length; mi += 3) {
-      const gm = mass[mi], dx = mass[mi + 1] - x, dy = mass[mi + 2] - y;
-      const r2 = dx * dx + dy * dy + 1e-6;
-      const inv = gm / (r2 * Math.sqrt(r2));
-      ax += inv * dx; ay += inv * dy;
-    }
-    o[0] = ax; o[1] = ay;
-  };
-  const a = _filmIntA, a2 = _filmIntA2;
-  accel(px, py, a);
-  pts[0] = px; pts[1] = py;
-  // Adaptive Schrittweite wie der Producer (nbody_kernel: dtH=dist/vrel/20).
-  // Nahe einer massiven Quelle wird der Schritt beliebig fein — der Koerper
-  // schwingt sauber ums Perihel statt bei r->0 mit festem Schritt
-  // wegkatapultiert zu werden (Trampolin/Schockwelle). sgn traegt die
-  // Zeitrichtung (dt<0 = rueckwaerts); snap = signierte Snapshot-Weite.
-  const sgn = dt < 0 ? -1 : 1;
-  const snap = dt / m, snapMag = Math.abs(snap);
-  const hMin = Math.abs(dt) / nMax;   // Sicherungs-Untergrenze (Terminierung)
-  for (let k = 1; k <= m; k++) {
-    let restMag = snapMag;
-    while (restMag > 1e-30) {
-      let hMag = snapMag;
-      const speed = Math.hypot(vx, vy);
-      if (speed > 1e-9) {
-        for (let mi = 0; mi < mass.length; mi += 3) {
-          const dx = mass[mi + 1] - px, dy = mass[mi + 2] - py;
-          const t = Math.sqrt(dx * dx + dy * dy) / speed / 20;
-          if (t < hMag) hMag = t;
-        }
-      }
-      if (hMag < hMin) hMag = hMin;
-      if (hMag > restMag) hMag = restMag;
-      const h = sgn * hMag;
-      const nx = px + vx * h + 0.5 * a[0] * h * h;
-      const ny = py + vy * h + 0.5 * a[1] * h * h;
-      accel(nx, ny, a2);
-      vx += 0.5 * (a[0] + a2[0]) * h;
-      vy += 0.5 * (a[1] + a2[1]) * h;
-      px = nx; py = ny; a[0] = a2[0]; a[1] = a2[1];
-      restMag -= hMag;
-    }
-    pts[2 * k] = px; pts[2 * k + 1] = py;
-  }
-}
-
-// Kleinster Perihel-Abstand (AU) der Kepler-Bahn (px,py,vx,vy) ueber alle
-// Quellen in mass (flaches [G*M, x, y, ...]). Zweikoerper je Quelle:
-// q = h^2/mu / (1 + e), e = sqrt(1 + 2 E h^2 / mu^2). Rein aus Position und
-// Geschwindigkeit — verraet radiale Stuerze (q -> 0) vor der Integration.
-function _filmPerihel(px, py, vx, vy, mass) {
-  const v2 = vx * vx + vy * vy;
-  let qMin = Infinity;
-  for (let mi = 0; mi < mass.length; mi += 3) {
-    const mu = mass[mi], dx = px - mass[mi + 1], dy = py - mass[mi + 2];
-    const r = Math.sqrt(dx * dx + dy * dy);
-    if (r < 1e-9) return 0;
-    const E = 0.5 * v2 - mu / r;
-    const h = dx * vy - dy * vx;
-    const e = Math.sqrt(Math.max(0, 1 + 2 * E * h * h / (mu * mu)));
-    const q = (h * h / mu) / (1 + e);
-    if (q < qMin) qMin = q;
-  }
-  return qMin;
-}
-
-// Bahn-Cache der schnellen Koerper fuers aktuelle Sample-Intervall. Die
-// Bahn wird EINMAL pro Intervall (adaptives Substepping, Producer-Physik)
-// integriert — pro Frame waere das unbezahlbar — und pro Frame nur linear
-// zwischen den Stuetzpunkten ausgewertet. Behebt Stocken (nicht mehr pro
-// Frame) und Perihel-Artefakte (adaptiv: kein Katapult an der Singularitaet).
-const FILM_BAHN_M = 32;     // Bahn-Aufloesung (Stuetzpunkte je Intervall)
-const FILM_BAHN_N = 4096;   // Substep-Obergrenze je Integration (Sicherung)
-// Perihel-Guard: Koerper, deren Kepler-Bahn einer Quelle NAEHER als dies
-// kommt (AU), werden NICHT integriert, sondern positions-interpoliert.
-// Grund: ein fast-radialer Sturz/Durchgang hat ein winziges Perihel — die
-// Integration braucht dort extrem viele adaptive Substeps (Cache-Rebuild
-// dauert 100 ms..2 s -> periodisches Stocken/Pumpen), und die
-// Austrittsrichtung ist so sensibel, dass der bidirektionale Blend im
-// Betrieb kippt. Die beschraenkte Sehne/Catmull ist dort billig UND ruhig.
-// Moderate/tangentiale Vorbeifluege (groesseres Perihel) werden weiter
-// integriert und behalten den Scheibenwischer-Fix.
-const FILM_PERI_MIN = 0.02;
-let _filmBahnCache = null;  // { s0, s1, bahnen: Map(ki -> Float32Array) }
-const _filmTraceF = new Float32Array(2 * (FILM_BAHN_M + 1));
-const _filmTraceB = new Float32Array(2 * (FILM_BAHN_M + 1));
-
-// Indizes der massiven Koerper (nicht-Asteroiden mit Masse) — die
-// Gravitationsquellen fuer die Beschleunigung der schnellen Koerper.
-// Lazy pro Film-Session gebaut; sie werden nie ausgeduennt.
-let _filmMassive = null;
-function _filmMassiveIdx() {
-  if (!_filmMassive) {
-    _filmMassive = [];
-    for (let k = 0; k < filmRefs.length; k++) {
-      const b = filmRefs[k];
-      if (b && !b.isAsteroid && b.mass > 0) _filmMassive.push(k);
+// Wie _filmPos, aber fuer den Sub-Block: Original-Index -> Zeile in
+// swx/swy (oder -1). Nur die heissen Asteroiden haben Stuetzpunkte.
+function _filmSubPos(sample, n) {
+  if (!sample._subpos) {
+    sample._subpos = new Int32Array(n).fill(-1);
+    for (let m = 0; m < sample.subIdx.length; m++) {
+      sample._subpos[sample.subIdx[m]] = m;
     }
   }
-  return _filmMassive;
+  return sample._subpos;
 }
 
 function filmApply(t) {
@@ -5190,96 +5135,59 @@ function filmApply(t) {
   _filmPos(s1, nRef);
   _filmWelt(s0); _filmWelt(s1);
   const s0wx = s0.wx, s0wy = s0.wy, s1wx = s1.wx, s1wy = s1.wy;
-  // Glatte Interpolation statt Sehne: eine Kurve DURCH die Sample-Punkte
-  // trifft eine gekruemmte Bahn viel besser als die gerade Verbindung.
-  // Das behebt das Pumpen in Sonnennaehe, wo ein Koerper zwischen zwei
-  // Samples einen grossen Bogen fliegt und die Sehne ihn abschneidet.
+  // ZWEI Interpolationsstufen (frueher fuenf):
   //
-  // Drei Stufen, je nach verfuegbaren Nachbar-Samples — beim Live-Folgen
-  // haelt der Playhead bewusst ein Sample Reserve (siehe filmTick,
-  // `spitze`), damit die erste Stufe fast immer greift:
-  //   1. Catmull-Rom (i-1..i+2): C1-glatt, hoechste Genauigkeit. Braucht
-  //      ein Sample VORAUS — durch die Reserve fast immer vorhanden.
-  //   2. Kausale Parabel (i-1..i+1): nur Vergangenheit, faengt den Fall
-  //      ab, dass der Puffer doch bis zur Spitze leerlief.
-  //   3. Sehne (i..i+1): letzter Rueckfall, wenn kein Vergangenheits-
-  //      Sample da ist (direkt nach dem Filmstart).
-  // Alle drei biegen zur Bahn, der Uebergang bleibt weich (kein Zuckeln
-  // wie beim harten Wechsel glatt/Sehne). Die Gewichte haengen nur von f
-  // und den Zeitabstaenden ab (zeitparametrisiert gegen ungleiche
-  // Sample-Abstaende), sind also pro Frame konstant.
+  //   1. Sub-Stuetzpunkte — die auf der GPU GEMESSENEN Zwischenbilder der
+  //      heissen Asteroiden. Dazwischen genuegt eine Sehne: bei mSub = 8
+  //      liegt der Sehnenfehler selbst bei r = 0,05 AU unter 6e-5 AU,
+  //      also unter der Sichtbarkeitsschwelle (~1e-4 AU bei nahem Zoom).
+  //   2. Catmull-Rom durch vier Sample-Punkte fuer alle uebrigen. Sie
+  //      bleibt noetig, weil der Server bei hohem Abspieltempo Samples
+  //      ueberspringt (bis ~50 Tage Abstand) und dann keine
+  //      Stuetzpunkte mitschickt — die decken immer genau ein Raster ab.
+  //      Randfall (kein Nachbar-Sample) ist die Sehne.
+  //
+  // Das GPU-Kriterium "heiss" (dist/vrel/20 < dtH) greift ab r ~ 0,3 AU
+  // — genau dort wird auch die Sehne sichtbar. Beide skalieren mit der
+  // Bahnkruemmung, ein Zusatzkriterium braucht es also nicht.
   const f2 = f * f, f3 = f2 * f;
-  // Hermite-Basis (Tangenten-Interpolation) — von Stufe 0 (echte v) UND
-  // Stufe 1 (Catmull-Rom, geschaetzte v) genutzt.
   const H00 = 2 * f3 - 3 * f2 + 1, H01 = -2 * f3 + 3 * f2;
   const H10 = f3 - 2 * f2 + f,     H11 = f3 - f2;
-  // Stufe 0: Hermite mit ECHTER Geschwindigkeit (v-Block des Streams).
-  // Hoechste Genauigkeit — behebt das Perihel-Pumpen, das auch
-  // Catmull-Rom (aus Nachbarn geschaetzte Tangente) nicht ganz faengt.
-  // Nur die schnellen sonnennahen Koerper tragen v; der Rest laeuft ueber
-  // die Stufen darunter.
-  const spanY = span / 365.25;   // Sim-Tage -> Jahre (v ist AU/Jahr)
-  const hermite = filmInterp && span > 0;
-  const v0pos = (hermite && s0.vidx) ? _filmVPos(s0, nRef) : null;
-  const v1pos = (hermite && s1.vidx) ? _filmVPos(s1, nRef) : null;
-  // Fuer die schnellen Koerper (mit v-Block) wird die echte Bahn
-  // integriert (siehe _filmTrace). Dafuer die Gravitationsquellen
-  // sammeln — massive Koerper mit Position in s0 und s1, je [G*Masse,x,y].
-  // Nur wenn es ueberhaupt schnelle Koerper in beiden Samples gibt.
-  const hatSchnelle = hermite && s0.vidx && s0.vidx.length &&
-                      s1.vidx && s1.vidx.length;
-  let mass0 = null, mass1 = null;
-  if (hatSchnelle) {
-    const p0map = _filmPos(s0, nRef), p1map = _filmPos(s1, nRef);
-    mass0 = []; mass1 = [];
-    for (const mk of _filmMassiveIdx()) {
-      const q0 = p0map[mk], q1 = p1map[mk];
-      if (q0 < 0 || q1 < 0) continue;
-      const gm = G_AU * filmRefs[mk].mass;
-      mass0.push(gm, s0wx[q0], s0wy[q0]);
-      mass1.push(gm, s1wx[q1], s1wy[q1]);
-    }
-    // Bahn-Cache fuers Intervall: fuer jeden schnellen Koerper die echte
-    // Bahn EINMAL adaptiv integrieren (bidirektional, s0->s1 geblendet) und
-    // M+1 Stuetzpunkte ablegen. Pro Frame wird nur zwischen den Stuetz-
-    // punkten interpoliert — behebt Stocken (nicht mehr pro Frame
-    // integrieren) und Scheibenwischer/Perihel-Loch (adaptiv, kein Katapult).
-    if (!_filmBahnCache || _filmBahnCache.s0 !== s0 ||
-        _filmBahnCache.s1 !== s1) {
-      const bahnen = new Map();
-      for (let vi = 0; vi < s0.vidx.length; vi++) {
-        const ki = s0.vidx[vi];
-        const p0 = p0map[ki], p1 = p1map[ki], vq1 = v1pos[ki];
-        if (p0 < 0 || p1 < 0 || vq1 < 0) continue;
-        // Perihel-Guard: radiale Sonnenstuermer nicht integrieren (teuer +
-        // Blend kippt) — sie fallen auf die Positions-Interpolation zurueck.
-        if (_filmPerihel(s0wx[p0], s0wy[p0], s0.vx[vi], s0.vy[vi],
-                         mass0) < FILM_PERI_MIN) continue;
-        _filmTrace(s0wx[p0], s0wy[p0], s0.vx[vi], s0.vy[vi],
-                   spanY, FILM_BAHN_N, FILM_BAHN_M, mass0, _filmTraceF);
-        _filmTrace(s1wx[p1], s1wy[p1], s1.vx[vq1], s1.vy[vq1],
-                   -spanY, FILM_BAHN_N, FILM_BAHN_M, mass1, _filmTraceB);
-        const bahn = new Float32Array(2 * (FILM_BAHN_M + 1));
-        for (let mm = 0; mm <= FILM_BAHN_M; mm++) {
-          const ff = mm / FILM_BAHN_M, bm = FILM_BAHN_M - mm;
-          bahn[2 * mm] = (1 - ff) * _filmTraceF[2 * mm] +
-                         ff * _filmTraceB[2 * bm];
-          bahn[2 * mm + 1] = (1 - ff) * _filmTraceF[2 * mm + 1] +
-                             ff * _filmTraceB[2 * bm + 1];
-        }
-        bahnen.set(ki, bahn);
-      }
-      _filmBahnCache = { s0, s1, bahnen };
-    }
-  }
+  // Die Stuetzpunkte spannen das GANZE Intervall s0 -> s1, egal wie grob
+  // gestreamt wird (der Server zieht sie aus allen ueberdeckten Rastern,
+  // siehe _sub_kette). Verankert sind sie beim Vorgaenger-Sample im
+  // selben Frame; das erste Sample eines Frames traegt deshalb nie einen
+  // Block, und eine Zusatzpruefung auf den Abstand braucht es nicht.
+  const subOk = filmInterp && span > 0 && s1.mSub > 0 &&
+                s1.subIdx.length > 0;
+  const subPos = subOk ? _filmSubPos(_filmSubWelt(s1), nRef) : null;
+  const mSub = subOk ? s1.mSub : 0;
+  const swx = subOk ? s1.swx : null, swy = subOk ? s1.swy : null;
+  // Die Kette ist [P(s0), sub_0 ... sub_{mSub-1}], gleichabstaendig ueber
+  // das Intervall — sub_{mSub-1} ist die Sample-Position selbst. Segment
+  // und lokaler Parameter haengen nur von f ab, also einmal pro Frame.
+  const subU = f * mSub;
+  const subSeg = Math.min(mSub - 1, subU | 0);
+  const subT = subU - subSeg;
   const iPrev = i - 1, iNext = j + 1;
+  // Catmull-Rom braucht ein Sample davor UND eines danach. An der
+  // LIVE-KANTE fehlt das vorausliegende regelmaessig — der Playhead haelt
+  // zwar ein Sample Reserve (filmTick, `spitze`), nach einem Filmstart
+  // oder Neustart ist der Puffer aber erst einmal leer. Dort greift die
+  // kausale Parabel (nur Vergangenheit): sie biegt zur Bahn, waehrend die
+  // Sehne den Bogen abschneidet. Genau die Koerper, um die es geht —
+  // sonnennah, stark gekruemmt —, verlieren dabei am meisten, und wer
+  // NEBEN einem Koerper mit Stuetzpunkten liegt, laeuft sichtbar
+  // auseinander. Deshalb bleibt sie als Zwischenstufe erhalten.
   const hatPrev = filmInterp && span > 0 && iPrev >= 0;
   const hatNext = hatPrev && iNext < q.times.length;
-  // Sehne (Stufe 3)
+  // Sehne (Randfall: kein Vergangenheits-Sample, direkt nach dem Start)
   const cL1 = 1 - f, cL2 = f;
-  // Parabel (Stufe 2): Lagrange durch (t0,P0),(t1,P1),(t2,P2)
+  // Parabel: Lagrange durch (t0,P0),(t1,P1),(t2,P2)
   let cP0 = 0, cP1 = cL1, cP2 = cL2;
-  // Catmull-Rom (Stufe 1): Hermite mit zentralen Differenzen als Tangenten
+  // Catmull-Rom: Hermite mit zentralen Differenzen als Tangenten. Die
+  // Gewichte sind zeitparametrisiert (ungleiche Sample-Abstaende) und
+  // haengen nur von f ab, also pro Frame konstant.
   let cC0 = 0, cC1 = cL1, cC2 = cL2, cC3 = 0;
   let sPrev = null, sNext = null, sPwx, sPwy, sNwx, sNwy;
   if (hatPrev) {
@@ -5301,6 +5209,7 @@ function filmApply(t) {
     cC0 = -a; cC1 = H00 - bb; cC2 = H01 + a; cC3 = bb;
   }
   _filmInView.fill(0);
+  _filmImStream.fill(0);
   // GL-Direktpfad: das Vertex-Array [x,y,r,g,b] wird HIER im Dekodier-
   // Loop gepackt — renderAsteroidsGL laedt es nur noch hoch, statt pro
   // Frame nochmal ueber alle Koerper-Objekte zu laufen (7 Property-
@@ -5329,6 +5238,9 @@ function filmApply(t) {
     const ki = s0.idx[m];
     const b = filmRefs[ki];
     if (!b) continue;
+    // VOR dem Folge-Sample-Test: der Koerper wird gestreamt, auch wenn
+    // er gleich stirbt. Nur so kann seine Kollision blitzen.
+    _filmImStream[ki] = 1;
     const x0 = s0wx[m];
     const y0 = s0wy[m];
     const m1 = s1._pos[ki];
@@ -5345,37 +5257,25 @@ function filmApply(t) {
     const p2x = s1wx[m1];
     const p2y = s1wy[m1];
     let bx, by;
-    // Stufe je Koerper. Stufe 0: Hermite mit echter Geschwindigkeit, wenn
-    // der Koerper in BEIDEN Bracketing-Samples ein v traegt (schnell +
-    // durchgehend dargestellt). Sonst die positions-basierten Stufen:
-    // Catmull-Rom, Parabel, Sehne. Alle biegen zur Bahn — der Downgrade
-    // ist sanft, auch wenn ein Koerper das v-Kriterium wechselt.
-    const vp0 = v0pos ? v0pos[ki] : -1;
-    const vp1 = v1pos ? v1pos[ki] : -1;
+    const sp = subPos ? subPos[ki] : -1;
     const mp = hatPrev ? sPrev._pos[ki] : -1;
     const mn = hatNext ? sNext._pos[ki] : -1;
-    const bahn = (vp0 >= 0 && vp1 >= 0 && _filmBahnCache)
-      ? _filmBahnCache.bahnen.get(ki) : null;
-    if (bahn) {
-      // Gecachte echte Bahn (einmal pro Intervall mit hohem N integriert):
-      // pro Frame nur linear zwischen den Stuetzpunkten auswerten. Die
-      // Bahn folgt der Physik (hintenrum am Perihel), das hohe N haelt den
-      // Blend-Fehler winzig (kein Scheibenwischer/Perihel-Loch mehr).
-      const fm = f * FILM_BAHN_M;
-      const si = Math.min(FILM_BAHN_M - 1, fm | 0);
-      const st = fm - si;
-      bx = bahn[2 * si] * (1 - st) + bahn[2 * si + 2] * st;
-      by = bahn[2 * si + 1] * (1 - st) + bahn[2 * si + 3] * st;
+    if (sp >= 0) {
+      // Gemessene Bahn: zwischen den Stuetzpunkten die Sehne. Segment 0
+      // laeuft von der s0-Position zum ersten Stuetzpunkt, danach von
+      // Stuetzpunkt zu Stuetzpunkt.
+      const b0 = sp * mSub + subSeg;
+      const ax = subSeg === 0 ? x0 : swx[b0 - 1];
+      const ay = subSeg === 0 ? y0 : swy[b0 - 1];
+      bx = ax + (swx[b0] - ax) * subT;
+      by = ay + (swy[b0] - ay) * subT;
     } else if (mp >= 0) {
-      const p0x = sPwx[mp];
-      const p0y = sPwy[mp];
+      const p0x = sPwx[mp], p0y = sPwy[mp];
       if (mn >= 0) {
-        const p3x = sNwx[mn];
-        const p3y = sNwy[mn];
-        bx = cC0 * p0x + cC1 * x0 + cC2 * p2x + cC3 * p3x;   // Catmull-Rom
-        by = cC0 * p0y + cC1 * y0 + cC2 * p2y + cC3 * p3y;
+        bx = cC0 * p0x + cC1 * x0 + cC2 * p2x + cC3 * sNwx[mn];  // Catmull
+        by = cC0 * p0y + cC1 * y0 + cC2 * p2y + cC3 * sNwy[mn];
       } else {
-        bx = cP0 * p0x + cP1 * x0 + cP2 * p2x;               // Parabel
+        bx = cP0 * p0x + cP1 * x0 + cP2 * p2x;                   // Parabel
         by = cP0 * p0y + cP1 * y0 + cP2 * p2y;
       }
     } else {
@@ -5394,6 +5294,7 @@ function filmApply(t) {
     }
   }
   _filmVtxCount = vtx !== null ? (vo / 5) : -1;
+  _filmStreamN = s0.idx.length;
   filmApplyEvents(t);
   // visible wird NUR noch bei Ereignis-Aenderungen gesetzt (in
   // filmApplyEvents) — die fruehere Jeden-Frame-Schleife kostete bei
@@ -5446,8 +5347,8 @@ function filmApplyEvents(t) {
       // Dichte-LOD haben nicht gestreamte Koerper eingefrorene Alt-
       // Positionen und die Marker saessen irgendwo im Leeren. Der
       // Zaehler zaehlt unabhaengig davon jedes Ereignis.
-      const imBild = _filmInView && _filmInView[ev.a] === 1 &&
-                     _filmInView[ev.b] === 1;
+      const imBild = _filmImStream && _filmImStream[ev.a] === 1 &&
+                     _filmImStream[ev.b] === 1;
       if (ha && hb && imBild) _markBouncePair(ha, hb);
       if (ha && hb && imBild && flashes < MAX_FLASHES_PRO_BILD) {
         // exakter Ort vom Producer; track = schwererer (wie im Live-Pfad)
@@ -5480,7 +5381,8 @@ function filmApplyEvents(t) {
     // nicht dargestellter Asteroiden als "Geisterkollisionen" im Leeren
     // (remote mit LOD-Untergrenze ist nur jeder n-te Koerper im Bild).
     // Der Zaehler zaehlt weiterhin JEDES Ereignis.
-    if (loser && _filmInView && _filmInView[ev.b] === 1 && flashes < MAX_FLASHES_PRO_BILD) {
+    if (loser && _filmImStream && _filmImStream[ev.b] === 1 &&
+        flashes < MAX_FLASHES_PRO_BILD) {
       // Position: exakter Ereignis-Ort vom Producer — aus dem Stream
       // ist er nicht rekonstruierbar (Opfer fehlt im Folge-Sample).
       // Skala wie live: realR. Deckel 64 lebende Flashes (Gradient-
@@ -5682,8 +5584,10 @@ function filmTick(dtDays, slowFactor, nowMs) {
   simTime = filmPlayheadDays;
   // Heartbeat-Abo (1 Hz) — oder sofort bei deutlicher Kamerabewegung
   // (halber Viewport / Zoomfaktor 1,5): die Referenz-Box wandert mit.
+  // Auch im Log-Zoom: die Box folgt jetzt dem Sichtfenster, wandert die
+  // Kamera also aus ihr heraus, muss sie nachgezogen werden.
   let camMoved = false;
-  if (_filmSubCam && !useLogZoom) {
+  if (_filmSubCam) {
     const halbW = (W / 2) / (cam.zoom * 80);
     camMoved = Math.abs(cam.cx - _filmSubCam.cx) > halbW * 0.5 ||
                Math.abs(cam.cy - _filmSubCam.cy) > halbW * 0.5 ||
@@ -5850,6 +5754,20 @@ const FILM_LOD_ALLE = 1e9;
     filmHandoverStart('Neustart nach Raster-Wechsel');
     filmStop(true);          // am Playhead weiter, nicht am Producer-Kopf
   });
+});
+// Bahnstuetzpunkte: bestimmen die Ring-Slotgroesse, brauchen also
+// dieselbe Neustart-Behandlung wie das Raster.
+document.getElementById('film-sub').addEventListener('input', function() {
+  const m = filmSubSamples();
+  document.getElementById('film-sub-val').textContent =
+    m ? String(m) : t('lbl.film-sub-aus');
+});
+document.getElementById('film-sub').addEventListener('change', function() {
+  if (!filmActive) return;
+  filmApply(filmPlayheadDays);
+  _filmRestartPending = true;
+  filmHandoverStart('Neustart nach Stuetzpunkt-Wechsel');
+  filmStop(true);
 });
 
 // Zeitleisten-Anzeige aktualisieren (aus updateStats, ~1x/s)
@@ -8189,8 +8107,16 @@ function updateStats() {
       if (sunN)   parts.push('☀️ ' + sunN);     // Sonnen
       if (solidN) parts.push('\u{1FA90} ' + solidN);      // feste Koerper
       if (astN)   parts.push('\u{1FAA8} ' + astN);        // Asteroiden
+      // Im Film-Modus zusaetzlich, WIE VIELE davon uebertragen werden:
+      // Culling und Dichte-LOD schicken nur einen Teil, die Physik
+      // rechnet aber mit allen. Ohne die Zahl ist eine duenn wirkende
+      // Wolke nicht von einer stark ausgeduennten zu unterscheiden.
+      const gestreamt = (typeof filmActive !== 'undefined' && filmActive &&
+                         _filmStreamN > 0)
+        ? '&nbsp;|&nbsp;👁 ' + _filmStreamN.toLocaleString('de-DE') : '';
       bcEl.innerHTML = '<span>' + t('stats.bodies') + ': ' + activeCount + '</span>'
-        + (parts.length ? '&nbsp;|&nbsp;' + parts.join('&nbsp;|&nbsp;') : '');
+        + (parts.length ? '&nbsp;|&nbsp;' + parts.join('&nbsp;|&nbsp;') : '')
+        + gestreamt;
       bcEl.classList.add('show');
     } else {
       bcEl.classList.remove('show');

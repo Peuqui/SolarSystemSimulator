@@ -14,8 +14,9 @@ Sample k (absoluter Zaehler) liegt in Slot k % capacity und traegt die
 Sim-Zeit t0 + (k+1) * raster. Head/Playhead/Kollisionen laufen ueber
 multiprocessing-Values.
 
-Sample-Format (identisch zum Protokoll): [x|y|vx|vy|masse] als f32 in
-Originalreihenfolge + Sichtbarkeit u8 + Padding auf 4 Bytes.
+Slot-Format: [x|y] als f32 in Originalreihenfolge, danach der Sub-Block
+mit den Zwischenbildern der heissen Asteroiden (siehe slot_bytes).
+Masse und Sichtbarkeit laufen als Ereignisse im Event-Ring.
 """
 from __future__ import annotations
 
@@ -41,6 +42,82 @@ EV_BYTES = 32    # Ereignis: f64 tTage | u32 a (Ueberlebender/0xFFFFFFFF) |
 #                  Zaehler + Visual, niemand stirbt)
 
 BOUNCE_E = 0.6      # Restitution (wie BOUNCE_RESTITUTION im JS)
+
+# ---- Ring-Slot: Positionen + Zwischenbilder der heissen Asteroiden ----
+#
+# Ein Slot traegt x|y als f32 plus einen Sub-Block mit den Stuetzpunkten
+# der heissen Asteroiden (Nahbegegnung, stark gekruemmte Bahn). Die
+# Geschwindigkeit ist NICHT mehr dabei: sie diente allein der
+# Client-Interpolation, und dafuer sind die Stuetzpunkte selbst da — als
+# Messwert statt als Schaetzung. Das halbiert den Positionsteil und
+# bezahlt den Sub-Block fast von allein.
+#
+# Der Slot muss feste Groesse haben (Ring!), die Zahl der heissen Koerper
+# schwankt aber stark. Deshalb eine Obergrenze: hoechstens jeder
+# SUB_MAX_ANTEIL-te Koerper bekommt einen Platz. Ueberzaehlige fallen im
+# Client auf Catmull-Rom zurueck — dieselbe Qualitaet wie vor den
+# Sub-Samples, also kein Rueckschritt, nur kein Gewinn.
+SUB_MAX_ANTEIL = 32
+SUB_MAX_MIN = 2048      # Untergrenze fuer kleine Szenen
+# Stuetzpunkte je Raster fuer Aufrufer OHNE Client (Tests, Benchmarks).
+# Im Betrieb bestimmt der Regler "Bahnstuetzpunkte" den Wert; er kommt
+# im FILM_START-Paket und wird hier nie gelesen.
+SUB_SAMPLES_DEFAULT = 8
+# Obergrenze fuer die Stuetzpunkte je Raster. Sie deckelt den
+# VRAM-Puffer im Kernel und muss zu nbody_kernel.SUB_SAMPLES_MAX passen;
+# hier steht sie noch einmal, weil der Serverprozess nbody_kernel nicht
+# importieren darf (der Import legt einen CUDA-Kontext an — die GPU
+# gehoert dem Producer-Kindprozess).
+M_SUB_MAX = 32
+
+
+def sub_max_fuer(n: int) -> int:
+    return min(n, max(SUB_MAX_MIN, n // SUB_MAX_ANTEIL))
+
+
+def slot_bytes(n: int, m_sub: int, sub_max: int) -> int:
+    """Groesse eines Ring-Slots. SSOT fuer Producer und Server —
+    x|y f32 | u32 Anzahl | u32 Indizes | f32 Stuetzpunkte [nh][mSub][2]."""
+    return 8 * n + 4 + sub_max * (4 + 8 * m_sub)
+
+
+def schreibe_slot(buf, basis: int, n: int, sub_max: int,
+                  out_i, sub_i) -> bool:
+    """Ein Ring-Sample ablegen: Positionen + Sub-Block. Gibt True zurueck,
+    wenn mehr heisse Koerper anfielen als Plaetze da sind.
+
+    `out_i` ist die Kernel-Ausgabe [x|y|vx|vy] (4n) — nur der Positions-
+    teil geht in den Ring. `sub_i` ist (idx, pos) aus
+    NBodyCuda._collect_sub: idx sind Originalindizes, pos ist
+    (mSub, 2, nh). Im Ring liegen die Stuetzpunkte KOERPERWEISE
+    (nh, mSub, 2), damit der Server die Bahn eines gestreamten Koerpers
+    am Stueck herausschneiden kann.
+
+    Die Indizes werden sortiert abgelegt: der Server schneidet sie per
+    searchsorted gegen seine LOD-Auswahl. Beim Ueberlauf bleiben dadurch
+    die NIEDRIGEN Indizes — das sind die Koerper des geladenen Systems,
+    nachtraeglich injizierte Wolken fallen zuerst heraus. Dieselbe
+    Rangfolge wie beim Dichte-LOD des Streams.
+    """
+    import struct
+    buf[basis:basis + 8 * n] = out_i[0:2 * n].tobytes()
+    off = basis + 8 * n
+    if sub_i is None or not sub_max:
+        buf[off:off + 4] = struct.pack("<I", 0)
+        return False
+    idx, pos = sub_i
+    ueberlauf = len(idx) > sub_max
+    ordnung = np.argsort(idx, kind="stable")[:sub_max]
+    nh = len(ordnung)
+    buf[off:off + 4] = struct.pack("<I", nh)
+    off += 4
+    buf[off:off + 4 * nh] = idx[ordnung].astype("<u4").tobytes()
+    off += 4 * sub_max                     # Indexfeld hat feste Laenge
+    if nh:
+        bahnen = np.ascontiguousarray(
+            pos[:, :, ordnung].transpose(2, 0, 1)).astype("<f4")
+        buf[off:off + bahnen.nbytes] = bahnen.tobytes()
+    return ueberlauf
 
 # Erkennungskarten pro Session. Die Bounce-Suche ist der Engpass (75-93%
 # der Batchzeit); sie skaliert raeumlich, weil Kollisionen lokal sind.
@@ -311,7 +388,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   ast_bounce: bool = False,
                   shatter_flag=None, shatter_a=None, shatter_b=None,
                   shatter_t=None, det_rank: int = 0,
-                  det_gpus: int = DET_MAX, diag: bool = False) -> None:
+                  det_gpus: int = DET_MAX, diag: bool = False,
+                  m_sub: int = 0, sub_max: int = 0) -> None:
     # CUDA-Kontexte erst IM Kindprozess anlegen (spawn-Kontext!)
     from multiprocessing import shared_memory
 
@@ -337,7 +415,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         np.asarray(state["isAst"], dtype=np.uint8)))
     phys_devs = pick_devices() if n_ast_total >= MULTI_GPU_AB \
         else pick_devices()[:1]
-    sim = NBodyCuda(phys_devs)
+    sim = NBodyCuda(phys_devs, m_sub=m_sub)
     # Kollisions-/Bounce-Erkennung auf die freien GPUs auslagern: sie
     # laeuft dann UEBERLAPPT mit dem naechsten Kernel-Step (Pipeline).
     # Preis: Erkennungs-Ergebnisse von Sample k werden erst vor Step k+2
@@ -425,13 +503,23 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
 
     import struct as _struct
 
+    sub_ueberlauf = [0]
+
     def emit_event(a: int, b: int, new_mass: float, kind: int,
-                   k_ev: int, ex: float, ey: float) -> None:
+                   k_ev: int, ex: float, ey: float,
+                   frac: float = 0.0) -> None:
         # Merge/Kill/Bounce als Ereignis in den Event-Ring — Samples selbst
         # tragen nur noch Positionen (reines Punkte-Streaming). k_ev ist
         # der Sample-Zaehler der ANALYSE (Pipeline: Anwendung 1 spaeter).
+        #
+        # `frac` verschiebt den Zeitpunkt INNERHALB des Rasters (negativ =
+        # davor, positiv = danach) — er kommt aus der Streckenpruefung der
+        # Erkennung. Ohne ihn faellt jedes Ereignis auf die Rastergrenze,
+        # und ein Koerper, der mit 50 AE/Jahr in den Stern stuerzt,
+        # verschwindet eine ganze Rasterweite zu frueh: bei 0,5 Tagen sind
+        # das 0,07 AE, das Fuenfzehnfache des Sternradius.
         i = ev_count_val.value % ev_cap
-        t_ev = t0_days + (k_ev + 1) * raster_days
+        t_ev = t0_days + (k_ev + 1 + frac) * raster_days
         ev_buf[i * EV_BYTES:(i + 1) * EV_BYTES] = _struct.pack(
             "<dIIfIff", t_ev, a & 0xFFFFFFFF, b, new_mass, kind,
             float(ex), float(ey))
@@ -461,6 +549,12 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             alive = g_vis_a != 0
 
             def seg_hit(p0x, p0y, p1x, p1y):
+                """Trifft die STRECKE p0->p1 die Kugel? Liefert zusaetzlich
+                tt in [0,1] — wo auf der Strecke der Punkt der groessten
+                Annaeherung liegt. Ohne tt waere nur bekannt, dass der
+                Treffer irgendwo in diesem Raster passiert; der Koerper
+                verschwaende dann eine ganze Rasterweite zu frueh, bei
+                einem Sonnensturz also bis zu 0,07 AE VOR dem Stern."""
                 ssx = (p1x - p0x)[None, :]
                 ssy = (p1y - p0y)[None, :]
                 seg2 = ssx * ssx + ssy * ssy
@@ -470,17 +564,22 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 tt = cp.clip(tt, 0.0, 1.0)
                 ddx = p0x[None, :] + tt * ssx - cx
                 ddy = p0y[None, :] + tt * ssy - cy
-                return ddx * ddx + ddy * ddy <= rsum2
+                return ddx * ddx + ddy * ddy <= rsum2, tt
 
             g_dt = cp.float32(dt_years)
-            hit2d = (seg_hit(px, py, gx, gy) |
-                     seg_hit(gx, gy, gx + gvx * g_dt, gy + gvy * g_dt)) \
-                & alive[None, :]
+            # Segment 1 endet auf DIESEM Sample, Segment 2 extrapoliert ins
+            # naechste. Der Bruchteil wird auf das Sample-Ende bezogen:
+            # negativ = vor diesem Sample, positiv = danach.
+            hit_a, tt_a = seg_hit(px, py, gx, gy)
+            hit_b, tt_b = seg_hit(gx, gy, gx + gvx * g_dt, gy + gvy * g_dt)
+            hit2d = (hit_a | hit_b) & alive[None, :]
+            frac2d = cp.where(hit_a, tt_a - cp.float32(1.0), tt_b)
             hit2d[cp.arange(len(gm)), gm] = False
             rows, cols = cp.nonzero(hit2d)
             if rows.size:
+                fr = cp.asnumpy(frac2d[rows, cols]).tolist()
                 hit_pairs = list(zip(cp.asnumpy(rows).tolist(),
-                                     cp.asnumpy(cols).tolist()))
+                                     cp.asnumpy(cols).tolist(), fr))
             mw = mass[m_alive]
             msum = float(mw.sum())
             if msum > 0:
@@ -496,7 +595,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 if ridx.size:
                     runaway_np = cp.asnumpy(ridx)
         prev_det = (gx.copy(), gy.copy())
-        pairs = [(int(m_alive[row]), int(j)) for row, j in hit_pairs]
+        pairs = [(int(m_alive[row]), int(j), float(fr))
+                 for row, j, fr in hit_pairs]
         return pairs, runaway_np
 
     def apply_merges(sample, pairs, runaway_np, k_ev):
@@ -509,7 +609,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         svx = sample[2 * n:3 * n]
         svy = sample[3 * n:4 * n]
         changed = False
-        for mi, j in pairs:
+        for mi, j, frac in pairs:
             # Zerbersten (wie _tryCollide im JS): Koerper x Koerper ohne
             # Stern/SL bei vImp >= 1,5 vEsc. Der Producer erkennt NUR:
             # Zustand einfrieren, f64-Dump, Selbst-Stopp — die Fragment-
@@ -528,7 +628,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 if v_imp >= 1.5 * v_esc:
                     shatter_a.value = int(mi)
                     shatter_b.value = int(j)
-                    shatter_t.value = t0_days + (k_ev + 1) * raster_days
+                    shatter_t.value = t0_days + (k_ev + 1 + frac) * raster_days
                     dump_state()
                     shatter_flag.value = 1
                     return
@@ -549,7 +649,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             mass[b] = 0.0
             vis[b] = 0
             real_r[a] = (real_r[a] ** 3 + real_r[b] ** 3) ** (1.0 / 3.0)
-            emit_event(a, b, float(m_ges), 0, k_ev, nx, ny)
+            emit_event(a, b, float(m_ges), 0, k_ev, nx, ny, frac)
             collisions += 1
             changed = True
         if runaway_np is not None:
@@ -926,17 +1026,24 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             # Erkennung laeuft UEBERLAPPT auf der Erkennungs-GPU, waehrend
             # die Physik-GPUs schon den naechsten Batch rechnen.
             future = executor.submit(analyze_batch_timed, outs, k)
-            # x|y|vx|vy je Koerper (16 Bytes). Die Geschwindigkeit dient
-            # der glatten Anzeige-Interpolation: der Client rechnet fuer
-            # schnelle sonnennahe Koerper Hermite (exakte Tangente) statt
-            # Catmull-Rom (aus Nachbarn geschaetzte Tangente), was das
-            # Pumpen am Perihel behebt. Masse/Sichtbarkeit laufen weiter
-            # als Ereignis. outs[i] ist bereits [x|y|vx|vy] (4n).
+            # x|y je Koerper plus die Stuetzpunkte der heissen Asteroiden
+            # (siehe schreibe_slot). Masse/Sichtbarkeit laufen weiter als
+            # Ereignis. outs[i] ist [x|y|vx|vy] (4n) — der v-Teil geht
+            # NICHT in den Ring: er diente nur der Client-Interpolation,
+            # und die stuetzt sich jetzt auf gemessene Zwischenbilder.
             _t = time.monotonic()
+            subs = st.get("sub")
             for i in range(K):
-                slot = (k + i) % capacity
-                buf[slot * sample_bytes:(slot + 1) * sample_bytes] = \
-                    outs[i][0:4 * n].tobytes()
+                voll = schreibe_slot(
+                    buf, ((k + i) % capacity) * sample_bytes, n, sub_max,
+                    outs[i], subs[i] if subs else None)
+                if voll:
+                    sub_ueberlauf[0] += 1
+                    if sub_ueberlauf[0] == 1:
+                        print("[film] mehr heisse asteroiden als "
+                              f"sub-plaetze ({len(subs[i][0])} > {sub_max})"
+                              " — ueberzaehlige interpoliert der client "
+                              "wie bisher", flush=True)
             diag_t_ring += time.monotonic() - _t
             k += K
             if ast_bounce and k % 500 == 0 and bounce_count:

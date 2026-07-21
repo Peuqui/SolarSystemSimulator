@@ -49,7 +49,7 @@ def _run(x, y, vx, vy, mass, real_r, is_ast, ast_bounce: bool,
         np.asarray(vx, float), np.asarray(vy, float),
         np.asarray(mass, float), np.asarray(real_r, float),
         vis, np.asarray(is_ast, np.uint8), star,
-        np.zeros(n, np.uint8), ast_bounce)
+        np.zeros(n, np.uint8), ast_bounce, film_producer.SUB_SAMPLES_DEFAULT)
     try:
         t0 = time.time()
         while (sess.head_val.value < samples

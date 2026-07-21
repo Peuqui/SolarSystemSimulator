@@ -65,16 +65,11 @@ BW_FENSTER_S = 0.2
 # 2 = viertes u8-Array `injiziert` fuer den LOD-Vorrang.
 # 3 = Sample = 16 B/Koerper (x|y|vx|vy) + selektiver v-Block je Frame
 #     (Hermite-Interpolation schneller sonnennaher Koerper).
-FILM_PROTO_VERSION = 3
+# 4 = Sample = 8 B/Koerper (x|y) + Sub-Block je Frame: GEMESSENE
+#     Zwischenbilder der heissen Asteroiden statt geschaetzter Tangenten.
+FILM_PROTO_VERSION = 4
 
-# Geschwindigkeitsschwelle (AU/Jahr, quadriert), ab der ein dargestellter
-# Koerper seine Geschwindigkeit fuer die Hermite-Interpolation mitbekommt.
-# Schnelle Koerper sind fast immer sonnennah (Kepler v ~ 1/sqrt(r)) und
-# haben stark gekruemmte Bahnen — genau dort schneidet die
-# Sehne/Catmull-Rom den Bogen ab. Der Wert ist bewusst moderat: an der
-# Grenze ist Catmull-Rom noch gut, der Client faellt dort sanft zurueck.
-# Kalibriert an einer Sonnentaucher-Szene (siehe bench, Schritt 4).
-FILM_V_SCHNELL2 = 100.0
+TAGE_PRO_JAHR = 365.25
 
 # Log-Zoom-Basis, identisch zum Client (logTransform in index.html):
 # r_log = log(1+r) / log(33). Im Log-Zoom werden die Positionen in DIESEM
@@ -89,7 +84,7 @@ MSG_FULL = 0
 MSG_STEP = 1
 MSG_DELTA = 2
 MSG_FILM_START = 3   # u32 typ | u32 N | f64 rasterTage | f64 t0Tage | FULL-Arrays
-MSG_FILM_STOP = 4    # nur Header
+MSG_FILM_STOP = 4    # u32 typ | u32 amPlayhead | f64 playheadTage
 MSG_FILM_SUB = 7     # u32 typ | u32 pad | f64 tTage | f64 rateTageProSek |
 #                      f64 cx | f64 cy | f64 halbW | f64 halbH (Welt-AE;
 #                      halbW<=0 = Auto-Box ueber alle Koerper) |
@@ -101,8 +96,19 @@ MSG_FILM_SUB = 7     # u32 typ | u32 pad | f64 tTage | f64 rateTageProSek |
 # Delta-Record: u32 idx | u32 pad | f64 x | f64 y | f64 vx | f64 vy
 DELTA_REC = np.dtype([("idx", "<u4"), ("pad", "<u4"), ("v", "<f8", (4,))])
 
-# Film-Antwort (Batch): u32 status=2 | u32 N | u32 count | u32 pad |
-#   f64 tail | f64 head | count x f64 zeiten | count x sample (4N f32)
+def _anzeige_koords(x, y, log_zoom: bool):
+    """Welt- zu Anzeige-Koordinaten. Im Log-Zoom radial gestaucht
+    (r_log = log(1+r)/log(33), identisch zum Client), sonst unveraendert.
+
+    SSOT fuer Box, Culling, LOD und Quantisierung — die Sub-Stuetzpunkte
+    MUESSEN dieselbe Transform durchlaufen wie die Sample-Positionen,
+    sonst sitzt die Bahn eines Koerpers neben seinem eigenen Punkt."""
+    if not log_zoom:
+        return x, y
+    r = np.hypot(x, y)
+    sk = np.where(r > 1e-9,
+                  np.log1p(r) / (FILM_LOG33 * np.maximum(r, 1e-30)), 0.0)
+    return x * sk, y * sk
 
 
 _SESSION_SEQ = [0]   # Round-Robin fuer die Erkennungskarten-Zuteilung
@@ -154,17 +160,21 @@ class FilmSession:
 
     def __init__(self, t0_days: float, raster_days: float,
                  x, y, vx, vy, mass, real_r, visible, is_ast,
-                 is_star_bh, injiziert, ast_bounce: bool = False):
+                 is_star_bh, injiziert, ast_bounce: bool, m_sub: int):
         self.raster_days = max(0.1, raster_days)
         self.t0 = t0_days
         self.n = len(x)
-        # Sample = x|y|vx|vy f32 (16 Bytes/Koerper). Die Geschwindigkeit
-        # dient der glatten Anzeige (Hermite-Interpolation schneller
-        # sonnennaher Koerper gegen das Perihel-Pumpen); Masse/Sichtbarkeit
-        # laufen als Ereignisse im Event-Ring. Der Ring haelt dadurch halb
-        # so viel Rueckspul-Historie wie beim reinen x|y-Streaming — bei
-        # Bedarf --ring-gib erhoehen.
-        self.sample_bytes = 16 * self.n
+        # Slot = x|y f32 + Sub-Block (Stuetzpunkte der heissen Asteroiden,
+        # 0 = aus). Die Geschwindigkeit liegt NICHT mehr im Ring: sie
+        # diente allein der Client-Interpolation, und dafuer sind die
+        # Stuetzpunkte da. Masse/Sichtbarkeit laufen als Ereignisse im
+        # Event-Ring. m_sub kommt vom Client-Regler und bestimmt die
+        # Slotgroesse — ein Wechsel braucht eine neue Session.
+        self.m_sub = min(film_producer.M_SUB_MAX, max(0, int(m_sub)))
+        self.sub_max = film_producer.sub_max_fuer(self.n) if self.m_sub \
+            else 0
+        self.sample_bytes = film_producer.slot_bytes(
+            self.n, self.m_sub, self.sub_max)
         self.capacity = max(2000, int(self.MAX_BYTES // self.sample_bytes))
         self.shm = shared_memory.SharedMemory(
             create=True, size=self.capacity * self.sample_bytes)
@@ -205,7 +215,13 @@ class FilmSession:
         # Bandbreite. Kommt live im Abo (MSG_FILM_SUB), wirkt daher ohne
         # Filmneustart.
         self.lod_budget = 0
-        self.view = (0.0, 0.0, -1.0, -1.0)   # cx, cy, halbW, halbH (Auto)
+        # cx, cy, halbW, halbH des Client-Sichtfensters. halbW <= 0 heisst
+        # "noch nichts gemeldet" — dann Auto-Box ueber alle Koerper.
+        self.view = (0.0, 0.0, -1.0, -1.0)
+        # Positionen log-polar kodieren (Anzeigeart des Clients). Getrennt
+        # von der Box-Wahl: der Log-Zoom bestimmt den KOORDINATENRAUM, das
+        # Sichtfenster den Ausschnitt darin.
+        self.log_zoom = False
         state = {k: np.array(v, copy=True) for k, v in
                  (("x", x), ("y", y), ("vx", vx), ("vy", vy),
                   ("mass", mass), ("realR", real_r),
@@ -221,7 +237,7 @@ class FilmSession:
                   bool(ast_bounce),
                   self.shatter_flag, self.shatter_a, self.shatter_b,
                   self.shatter_t, _SESSION_SEQ[0], self.DET_GPUS,
-                  self.DIAG),
+                  self.DIAG, self.m_sub, self.sub_max),
             daemon=True)
         _SESSION_SEQ[0] += 1
         self.proc.start()
@@ -248,32 +264,25 @@ class FilmSession:
         # Kompatibilitaet zur Warte-Schleife im Handler ("Puffer leer?")
         return self.head_val.value
 
-    def batch(self, t_days: float, spacing_days: float, count: int) -> bytes:
-        head_abs = self.head_val.value
-        if head_abs == 0:
-            raise ValueError("Puffer noch leer")
-        # Playhead an den Producer melden (Vorlauf-/Ueberschreib-Schutz)
-        self.playhead_val.value = t_days
-        step = max(1, int(round(spacing_days / self.raster_days)))
-        i0 = int((t_days - self.t0) / self.raster_days) - 1
-        i0 = max(self.tail_abs, min(i0, head_abs - 1))
-        # Nahe der Kante den Abstand aufs Raster kollabieren: lieber die
-        # real existierenden Samples dicht liefern als 1 Sample pro Batch
-        # (sonst steht der Playhead und springt pro Roundtrip).
-        avail = head_abs - i0
-        if avail < step * 8:
-            step = max(1, avail // 8)
-        idxs = list(range(i0, head_abs, step))[:max(2, min(count, 120))]
-        times = np.asarray(
-            [self.t0 + (i + 1) * self.raster_days for i in idxs], "<f8")
-        head = struct.pack("<IIII", 2, self.n, len(idxs),
-                           int(self.coll_val.value))
-        meta = struct.pack("<dd", self.tail, self.head)
-        s = self.sample_bytes
-        buf = self.shm.buf
-        parts = [bytes(buf[(i % self.capacity) * s:
-                           (i % self.capacity) * s + s]) for i in idxs]
-        return head + meta + times.tobytes() + b"".join(parts)
+    def slot_pos(self, i: int) -> np.ndarray:
+        """x|y des absoluten Samples i als f32-View auf den Ring (2n)."""
+        return np.frombuffer(self.shm.buf, "<f4", 2 * self.n,
+                             (i % self.capacity) * self.sample_bytes)
+
+    def slot_sub(self, i: int):
+        """Sub-Block des Samples i: (idx, bahnen) mit idx = Original-
+        indizes (aufsteigend) und bahnen = (nh, mSub, 2) f32. Leer, wenn
+        das Sample keine heissen Koerper hatte."""
+        if not self.m_sub:
+            return np.empty(0, np.uint32), np.empty((0, 0, 2), np.float32)
+        basis = (i % self.capacity) * self.sample_bytes + 8 * self.n
+        nh = int(np.frombuffer(self.shm.buf, "<u4", 1, basis)[0])
+        nh = min(nh, self.sub_max)
+        idx = np.frombuffer(self.shm.buf, "<u4", nh, basis + 4)
+        bahnen = np.frombuffer(
+            self.shm.buf, "<f4", nh * self.m_sub * 2,
+            basis + 4 + 4 * self.sub_max).reshape(nh, self.m_sub, 2)
+        return idx, bahnen
 
     # ---- Streaming (Push) ----
     sub_rate = 60.0          # Tage/s Playback-Tempo des Clients
@@ -281,10 +290,10 @@ class FilmSession:
     sent_abs = None          # aktuelle Stream-Position (absoluter Sample-Index)
     _bw = 4e6                # gemessene Leitungs-Bandbreite (Bytes/s, EWMA)
     # GEMESSENE Bytes pro gestreamtem Sample (EWMA). Die Drosselung darf
-    # NICHT mit sample_bytes (= 8 * n, die volle Ringgroesse) rechnen: ein
-    # Frame enthaelt nur die gecullten und per LOD-Stride ausgeduennten
-    # Koerper. Bei grossem N liegt sample_bytes um den Stride-Faktor
-    # daneben (bei stride=9 also 9x zu hoch) — der Server haelt seine
+    # NICHT mit sample_bytes (der volle Ring-Slot) rechnen: ein Frame
+    # enthaelt nur die gecullten und per Dichte-LOD ausgeduennten
+    # Koerper. Bei grossem N liegt sample_bytes um den LOD-Faktor
+    # daneben (bei einem Neuntel also 9x zu hoch) — der Server haelt seine
     # Frames dann fuer viel teurer als sie sind, liefert entsprechend
     # weniger Samples und der Client stockt, obwohl die Leitung leer ist.
     # None = noch nichts gemessen, dann konservativ sample_bytes.
@@ -328,40 +337,40 @@ class FilmSession:
         self.sent_ev = ev_from + ev_n
 
         cx, cy, hw, hh = self.view
-        s = self.sample_bytes
-        buf = self.shm.buf
+        m_sub = self.m_sub
         times = np.asarray(
             [self.t0 + (i + 1) * self.raster_days for i in idxs], "<f8")
         blocks = []
         box = None
-        for i in idxs:
-            raw = np.frombuffer(buf, "<f4", 4 * self.n,
-                                (i % self.capacity) * s)
+        log_zoom = self.log_zoom
+        # Auto-Box nur noch, solange der Client sein Sichtfenster nicht
+        # gemeldet hat (vor dem ersten Abo). Sie ueber ALLE Koerper zu
+        # spannen kostet Aufloesung: die u16-Schrittweite ist die
+        # Box-Breite / 65535, ein weit ausgeworfener Koerper verdirbt sie
+        # also fuer das Zentrum, wo der Nutzer hinschaut.
+        auto_box = hw <= 0 or hh <= 0
+        for nr, i in enumerate(idxs):
+            pos = self.slot_pos(i)
             t_i = self.t0 + (i + 1) * self.raster_days
-            alive_i = self._kill_t > t_i
-            x = raw[0:self.n]
-            y = raw[self.n:2 * self.n]
-            vx = raw[2 * self.n:3 * self.n]
-            vy = raw[3 * self.n:4 * self.n]
+            # Ein Raster ueber den Tod hinaus mitstreamen. Der Kill-
+            # Zeitpunkt liegt seit der Streckenpruefung MITTEN im Raster;
+            # ohne das Sample dahinter fehlt dem Client das Ziel, er
+            # bliebe auf der letzten Position stehen und der Koerper
+            # verschwaende sichtbar VOR dem Stern statt in ihm. Der
+            # Producer wendet den Merge erst ein Sample spaeter an, die
+            # Position ist hier also noch die echte Bahn.
+            alive_i = self._kill_t > t_i - self.raster_days
+            x = pos[0:self.n]
+            y = pos[self.n:2 * self.n]
             # Anzeige-Koordinaten fuer Box/Culling/LOD/Quantisierung: im
             # Log-Zoom (hw<=0, Auto-Box) der radial gestauchte Log-Raum,
-            # sonst die Weltkoordinaten. Die Geschwindigkeit bleibt Welt
-            # (der Client integriert damit); der Client dekodiert die
-            # Positionen per inverser Log-Transform zurueck.
-            log_zoom = hw <= 0 or hh <= 0
-            if log_zoom:
-                r = np.hypot(x, y)
-                sk = np.where(r > 1e-9,
-                              np.log1p(r) / (FILM_LOG33 * np.maximum(r, 1e-30)),
-                              0.0)
-                qxs = x * sk
-                qys = y * sk
-            else:
-                qxs = x
-                qys = y
+            # sonst die Weltkoordinaten. Der Client dekodiert sie per
+            # inverser Log-Transform zurueck.
+            qxs, qys = _anzeige_koords(x, y, log_zoom)
             if box is None:
-                if log_zoom:
-                    # Auto-Box im Log-Raum: gesamte Verteilung (+5% Rand)
+                if auto_box:
+                    # Noch kein Sichtfenster gemeldet: gesamte Verteilung
+                    # (+5% Rand). Nur Startwert bis zum ersten Abo.
                     bx0, bx1 = float(qxs.min()), float(qxs.max())
                     by0, by1 = float(qys.min()), float(qys.max())
                     mx = 0.05 * max(bx1 - bx0, 1e-6)
@@ -370,7 +379,10 @@ class FilmSession:
                            max(bx1 - bx0 + 2 * mx, 1e-6),
                            max(by1 - by0 + 2 * my, 1e-6))
                 else:
-                    # Referenz-Box = 2x Viewport um die Kamera (Welt)
+                    # Referenz-Box = 2x Viewport um die Kamera. Im
+                    # Log-Zoom sind cx/cy/hw/hh bereits Log-Koordinaten
+                    # (der Client rechnet in diesem Raum), die Box passt
+                    # also unveraendert.
                     box = (cx - 2 * hw, cy - 2 * hh,
                            max(4 * hw, 1e-6), max(4 * hh, 1e-6))
             x0, y0, spanx, spany = box
@@ -392,37 +404,99 @@ class FilmSession:
                          0, 65535).astype("<u2")
             qy = np.clip((qys[sel] - y0) / spany * 65535.0,
                          0, 65535).astype("<u2")
-            # Selektives Geschwindigkeits-Streaming: NUR schnelle
-            # dargestellte Koerper bekommen vx,vy fuer die
-            # Hermite-Interpolation. Schnelle Koerper sind fast immer
-            # sonnennah (Kepler: v ~ 1/sqrt(r)) und haben stark gekruemmte
-            # Bahnen — genau da schneidet die Sehne/Catmull-Rom den Bogen
-            # ab (Pumpen). Der Rest bleibt bei Position + Catmull-Rom.
-            # Absoluter Schwellwert (kein Zustand): deterministisch, also
-            # beim Rueckspulen identisch. Die Grenze liegt bei moderater
-            # Geschwindigkeit, wo Catmull-Rom ohnehin schon gut ist —
-            # Koerper, die um die Grenze wackeln, faellt der Client sanft
-            # auf Catmull-Rom zurueck (v fehlt an einem Intervall-Ende).
-            vsel = sel[vx[sel] ** 2 + vy[sel] ** 2 > FILM_V_SCHNELL2]
-            vblock = struct.pack("<I", len(vsel)) + \
-                vsel.astype("<u4").tobytes() + \
-                vx[vsel].astype("<f4").tobytes() + \
-                vy[vsel].astype("<f4").tobytes()
+            # Sub-Block: die GEMESSENEN Zwischenbilder der heissen
+            # Asteroiden, beschraenkt auf die tatsaechlich gestreamten
+            # Koerper. Fuer sie interpoliert der Client linear entlang der
+            # Stuetzpunkte statt eine Tangente zu schaetzen — genau die
+            # Koerper, bei denen die Sehne sonst den Bogen abschneidet.
+            #
+            # Das ERSTE Sample eines Frames bekommt keinen: die Kette
+            # beginnt beim Vorgaenger-Sample, und der liegt im vorigen
+            # Frame — nach einem Sprung womoeglich ganz woanders. So ist
+            # der Block immer sicher verankert und der Client braucht
+            # keine Zusatzpruefung.
+            sblock = struct.pack("<I", 0)
+            if m_sub and nr > 0:
+                ssel, bahn = self._sub_kette(idxs[nr - 1], i, sel)
+                if ssel is not None:
+                    bqx, bqy = _anzeige_koords(
+                        bahn[:, :, 0], bahn[:, :, 1], log_zoom)
+                    sblock = struct.pack("<I", len(ssel)) + \
+                        ssel.astype("<u4").tobytes() + \
+                        np.clip((bqx - x0) / spanx * 65535.0, 0, 65535
+                                ).astype("<u2").tobytes() + \
+                        np.clip((bqy - y0) / spany * 65535.0, 0, 65535
+                                ).astype("<u2").tobytes()
             block = struct.pack("<I", len(sel)) + \
                 sel.astype("<u4").tobytes() + qx.tobytes() + qy.tobytes() + \
-                vblock
+                sblock
             block += b"\x00" * ((-len(block)) % 4)
             blocks.append(block)
 
         head = struct.pack("<IIII", 4, self.n, len(idxs), ev_n)
-        # logFlag als 7. f64 im Meta: 1 = Positionen sind log-polar
-        # kodiert (der Client muss sie per inverser Log-Transform
-        # zuruecktransformieren), 0 = Weltkoordinaten.
-        meta = struct.pack("<ddddddd", self.tail, self.head,
+        # 7. f64 = logFlag: 1 = Positionen sind log-polar kodiert (der
+        # Client transformiert zurueck), 0 = Weltkoordinaten.
+        # 8. f64 = mSub: Stuetzpunkte je Koerper im Sub-Block, 0 = keiner.
+        meta = struct.pack("<dddddddd", self.tail, self.head,
                            box[0], box[1], box[2], box[3],
-                           1.0 if log_zoom else 0.0)
+                           1.0 if log_zoom else 0.0, float(m_sub))
         return head + meta + times.tobytes() + \
             b"".join(blocks) + b"".join(ev_parts)
+
+    def _sub_kette(self, vor: int, i: int, sel):
+        """mSub Stuetzpunkte ueber das gestreamte Intervall (t_vor, t_i].
+
+        Der Kernel legt seine Zwischenbilder je RASTER ab. Der Server
+        streamt aber nur selten raster-dicht: bei 60 Tage/s Abspieltempo
+        liegen 3 Sim-Tage zwischen zwei Samples (step 6), bei hohem Tempo
+        bis zu 50. Nur das letzte Raster mit Stuetzpunkten zu belegen
+        haette dem Client nichts genuetzt — er haette den Rest weiter mit
+        Sehne/Catmull ueberbrueckt, und genau dort schneidet die Sehne den
+        Bogen ab (die Koerper rutschen sonnenwaerts, vor der Sonne bildet
+        sich eine Luecke).
+
+        Deshalb wird die Kette ueber das GANZE Intervall gespannt: aus den
+        `step * mSub` Stuetzpunkten der ueberdeckten Ring-Slots werden
+        mSub gleichabstaendige gezogen, der letzte ist die Sample-Position.
+        Die Bandbreite je heissem Koerper bleibt damit konstant, egal wie
+        schnell abgespielt wird — nur die Stuetzpunkte werden gruober.
+
+        Angefasst werden nur die Slots, aus denen wirklich ein Punkt
+        stammt (hoechstens mSub Stueck, nicht step). Ein Koerper muss in
+        genau diesen heiss gewesen sein; war er zwischendurch kuehl, ist
+        seine Bahn dort ohnehin fast gerade.
+
+        Rueckgabe (idx, bahnen) mit bahnen (nh, mSub, 2), oder
+        (None, None), wenn kein Koerper durchgehend Stuetzpunkte hat.
+        """
+        ms = self.m_sub
+        schritt = i - vor
+        if schritt <= 0:
+            return None, None
+        # Kettenposition der mSub Ausgabepunkte, aequidistant und mit dem
+        # letzten genau auf dem Sample. Bei schritt == 1 sind das exakt
+        # die Stuetzpunkte des Rasters.
+        p = (np.arange(1, ms + 1) * (schritt * ms)) // ms - 1
+        slot_nr = vor + 1 + p // ms
+        punkt_nr = p % ms
+        daten = {}
+        gemeinsam = sel
+        for s in np.unique(slot_nr):
+            sidx, bahnen = self.slot_sub(int(s))
+            if len(sidx) == 0:
+                return None, None
+            daten[int(s)] = (sidx, bahnen)
+            stelle = np.searchsorted(sidx, gemeinsam)
+            stelle = np.minimum(stelle, len(sidx) - 1)
+            gemeinsam = gemeinsam[sidx[stelle] == gemeinsam]
+            if len(gemeinsam) == 0:
+                return None, None
+        aus = np.empty((len(gemeinsam), ms, 2), np.float32)
+        for j in range(ms):
+            sidx, bahnen = daten[int(slot_nr[j])]
+            aus[:, j, :] = bahnen[np.searchsorted(sidx, gemeinsam),
+                                  punkt_nr[j], :]
+        return gemeinsam, aus
 
     # Zellen je Achse fuer die Dichteschaetzung. Die Auto-Box umspannt
     # ALLE Koerper — auch weit hinausgeschleuderte —, der sichtbare
@@ -707,11 +781,20 @@ class FilmSession:
         eine MUTATION (Injektion, Edit, Loeschen) damit neu, springt die
         Darstellung um den gesamten Vorlauf in die Zukunft.
 
-        Fuer diesen Fall ist der Ring die richtige Quelle: er haelt
-        x|y|vx|vy jedes Samples vollstaendig, nur in f32. Der
-        Genauigkeitsverlust (~1e-5 AU) ist hier ohne Belang — eine
-        Injektion aendert die Szene ohnehin. Fuer die Engine-Uebergabe
-        bleibt es beim exakten f64-Dump.
+        Fuer diesen Fall ist der Ring die richtige Quelle. Er traegt nur
+        Positionen (f32); die Geschwindigkeit kommt aus dem ZENTRALEN
+        Differenzenquotienten der Nachbarsamples. Das ist etwas anderes
+        als die frueher verworfene Client-Schaetzung: die rechnete mit
+        u16-quantisierten Positionen und lag dadurch 10-20 % daneben.
+        Aus f32-Positionen ist der Fehler O(dt^2) — bei 0,5 Tagen Raster
+        rund 1e-6 relativ fuer einen Guertelasteroiden. Sonnennahe
+        Koerper mit stark gekruemmter Bahn sind schlechter gestellt, doch
+        gerade sie tragen Sub-Stuetzpunkte; genauer wird es erst noetig,
+        wenn das im Betrieb auffaellt.
+
+        Der Genauigkeitsverlust ist hier ohnehin ohne Belang — eine
+        Injektion aendert die Szene. Fuer die Engine-Uebergabe bleibt es
+        beim exakten f64-Dump.
 
         Die vorausgerechnete Zukunft wird mit der Session verworfen; der
         Client startet den Film ab diesem Zustand neu.
@@ -721,16 +804,62 @@ class FilmSession:
         Abspieltempo um Dutzende Sim-Tage daneben.
         """
         head_abs = self.head_val.value
-        if head_abs == 0:
+        # Der zentrale Differenzenquotient braucht beide Nachbarn; mit
+        # weniger als drei Samples im Ring gibt es keinen brauchbaren
+        # Zustand — dann traegt der f64-Dump (Vorlauf ist noch klein).
+        if head_abs - self.tail_abs < 3:
             return None
-        # Slot i traegt die Zeit t0 + (i+1)*raster (wie in batch/build_frame)
+        # Slot i traegt die Zeit t0 + (i+1)*raster (wie in build_frame)
         i = int(round((t_days - self.t0) / self.raster_days)) - 1
-        i = max(self.tail_abs, min(i, head_abs - 1))
-        raw = np.frombuffer(self.shm.buf, "<f4", 4 * self.n,
-                            (i % self.capacity) * self.sample_bytes)
+        i = max(self.tail_abs + 1, min(i, head_abs - 2))
+        pos = self.slot_pos(i)
+        dt_jahre = 2.0 * self.raster_days / TAGE_PRO_JAHR
+        v = (self.slot_pos(i + 1) - self.slot_pos(i - 1)) / dt_jahre
+        self._v_aus_stuetzpunkten(i, v)
         t_i = self.t0 + (i + 1) * self.raster_days
         return struct.pack("<IId", 5, self.n, t_i) + \
-            raw.astype("<f8").tobytes()
+            pos.astype("<f8").tobytes() + v.astype("<f8").tobytes()
+
+    def _v_aus_stuetzpunkten(self, i: int, v) -> None:
+        """Geschwindigkeit der HEISSEN Koerper in `v` nachbessern.
+
+        Der grobe Differenzenquotient ueber zwei Raster misst die SEHNE,
+        nicht den Bogen. Sonnennah legt ein Koerper pro Raster fast einen
+        halben Bogen zurueck, und dann ist die Sehne deutlich kuerzer:
+        gemessen bei r = 0,05 AE 9,6 % zu wenig (die Bahn faellt danach
+        von a = 0,050 auf 0,042 AE), bei r = 0,1 noch 1,3 %. Beim
+        Neustart nach einer Injektion sackt die Szene dadurch sonnenwaerts
+        zusammen — und weil der Fehler mit 1/r waechst, wird eine Wolke
+        dabei auseinandergezogen.
+
+        Genau diese Koerper tragen aber Stuetzpunkte. Der Differenzen-
+        quotient ueber den vorletzten Stuetzpunkt von Slot i und den
+        ersten von Slot i+1 spannt nur 2*raster/mSub — bei mSub = 8 also
+        ein Achtel der Strecke, der Fehler faellt quadratisch auf ein
+        Vierundsechzigstel. Koerper ohne Stuetzpunkte sind weit genug
+        draussen, dass der grobe Quotient genuegt (ab r = 0,3 AE unter
+        0,05 %).
+        """
+        ms = self.m_sub
+        if ms < 2:
+            return
+        sidx_i, bahn_i = self.slot_sub(i)
+        sidx_n, bahn_n = self.slot_sub(i + 1)
+        if len(sidx_i) == 0 or len(sidx_n) == 0:
+            return
+        stelle = np.minimum(np.searchsorted(sidx_n, sidx_i),
+                            len(sidx_n) - 1)
+        beide = sidx_n[stelle] == sidx_i
+        if not beide.any():
+            return
+        idx = sidx_i[beide].astype(np.int64)
+        # vorletzter Stuetzpunkt von i liegt bei t_i - raster/mSub,
+        # erster von i+1 bei t_i + raster/mSub
+        dt = 2.0 * (self.raster_days / ms) / TAGE_PRO_JAHR
+        vor = bahn_i[beide, ms - 2, :]
+        nach = bahn_n[stelle[beide], 0, :]
+        v[idx] = (nach[:, 0] - vor[:, 0]) / dt
+        v[self.n + idx] = (nach[:, 1] - vor[:, 1]) / dt
 
     async def dump_state(self, playhead_days: float | None = None) \
             -> bytes | None:
@@ -802,19 +931,18 @@ def parse_film_start(buf: bytes):
     # Dichte-LOD des Streams, nicht die Physik.
     injiziert = np.frombuffer(buf, np.uint8, n, off)
     off += n
-    ast_bounce = False
-    if off + 1 == len(buf):               # Flag-Byte: Bits 4-7 Version
-        flags = buf[off]
-        if flags >> 4 != FILM_PROTO_VERSION:
-            raise ValueError(
-                "Film-Protokollversion veraltet — Seite neu laden "
-                "(Strg+F5)")
-        ast_bounce = (flags & 1) != 0
-        off += 1
+    # Flag-Byte (Bits 4-7 Version, Bit 0 Asti-Bounce) + Bahnstuetzpunkte
+    flags = buf[off]
+    if flags >> 4 != FILM_PROTO_VERSION:
+        raise ValueError(
+            "Film-Protokollversion veraltet — Seite neu laden (Strg+F5)")
+    ast_bounce = (flags & 1) != 0
+    m_sub = buf[off + 1]
+    off += 2
     if off != len(buf):
         raise ValueError(f"Protokollfehler: {len(buf)} Bytes, erwartet {off}")
     return (raster_days, t0_days, arrays, visible, is_ast, is_star_bh,
-            injiziert, ast_bounce)
+            injiziert, ast_bounce, m_sub)
 
 
 def parse_full(buf: bytes):
@@ -897,16 +1025,20 @@ async def handle(ws):
                 typ, _n, dt_years = HEADER.unpack_from(message, 0)
                 if typ == MSG_FILM_START:
                     raster_days, t0_days, (x, y, vx, vy, mass, real_r), \
-                        visible, is_ast, is_star_bh, injiziert, ast_bounce = \
-                        parse_film_start(message)
+                        visible, is_ast, is_star_bh, injiziert, \
+                        ast_bounce, m_sub = parse_film_start(message)
                     if film:
                         film.stop()
                     film = FilmSession(t0_days, raster_days, x, y, vx, vy,
                                        mass, real_r, visible, is_ast,
-                                       is_star_bh, injiziert, ast_bounce)
+                                       is_star_bh, injiziert, ast_bounce,
+                                       m_sub)
                     fulls += 1
-                    log.info("Film gestartet: N=%d, Raster %.2f Tage",
-                             len(x), film.raster_days)
+                    log.info(
+                        "Film gestartet: N=%d, Raster %.2f Tage, "
+                        "mSub=%d (%d Sub-Plaetze, Slot %.1f KB)",
+                        len(x), film.raster_days, film.m_sub, film.sub_max,
+                        film.sample_bytes / 1024)
                     continue
                 if typ == MSG_FILM_STOP:
                     if film:
@@ -929,9 +1061,15 @@ async def handle(ws):
                     rate, vcx, vcy, vhw, vhh, budget = struct.unpack_from(
                         "<dddddd", message, HEADER.size)
                     film.view = (vcx, vcy, vhw, vhh)
+                    # Bit 1: Positionen log-polar kodieren. FRUEHER wurde
+                    # das an vhw <= 0 erkannt, was zugleich eine Auto-Box
+                    # ueber alle Koerper anforderte — beides ist jetzt
+                    # getrennt, die Box folgt auch im Log-Zoom dem
+                    # Sichtfenster (siehe build_frame).
+                    film.log_zoom = bool(_n & 2)
                     # 0 = Automatik (aus gemessener Bandbreite)
                     film.lod_budget = max(0, int(budget))
-                    film.resubscribe(dt_years, rate, jump=bool(_n))
+                    film.resubscribe(dt_years, rate, jump=bool(_n & 1))
                     if film.stream_task is None:
                         film.stream_task = asyncio.create_task(
                             film.stream(ws))

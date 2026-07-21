@@ -24,6 +24,7 @@ import time
 
 import numpy as np
 
+import film_producer
 import server
 
 
@@ -92,7 +93,8 @@ def messen(n_ast: int, det_gpus: int, raster: float,
     sess = server.FilmSession(0.0, raster, s["x"], s["y"], s["vx"], s["vy"],
                               s["mass"], s["real_r"], s["visible"],
                               s["is_ast"], s["is_star_bh"],
-                              np.zeros(n_ast + 1, np.uint8), ast_bounce=True)
+                              np.zeros(n_ast + 1, np.uint8), True,
+                              film_producer.SUB_SAMPLES_DEFAULT)
     try:
         # Aufwaermen: Kernel-Kompilierung, CuPy-Pool, erste Batches.
         ende = time.monotonic() + aufwaermen_s
