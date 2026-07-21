@@ -82,6 +82,11 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   pointer-events: none;
 }
 #film-stoerung {
+  /* #badge-row ist fuer Klicks durchlaessig (pointer-events: none), damit
+     man durch die Badges hindurch die Szene bedienen kann. Diese Meldung
+     laesst sich aber per Klick ausblenden — sie muss Klicks also wieder
+     annehmen, sonst passiert beim Draufklicken nichts. */
+  pointer-events: auto;
   background: rgba(170,20,20,0.95); color: #ffe0e0;
   border: 1px solid #ff6666;
   padding: 4px 10px; border-radius: 4px;
@@ -2190,7 +2195,24 @@ function rebuildBodyList() {
 }
 
 // Szenario laden: Koerper neu aufbauen + Koerper-Liste-UI neu erzeugen.
+// Laufenden Film beenden, BEVOR `bodies` ersetzt wird. Sonst zeigt
+// filmRefs weiter auf die alten Objekte: der Stream schreibt in sie,
+// die neue Szene bewegt sich nicht, und filmTick meldet die Mutation
+// als Handover an — der dann auf einen Zustand wartet, der zu nichts
+// mehr passt ("Zustandsuebergabe fehlgeschlagen").
+//
+// Kein Handover noetig: die neue Szene ersetzt die alte vollstaendig,
+// ein f64-Dump waere gegenstandslos.
+function filmVorSzenenwechselBeenden() {
+  if (typeof filmActive === 'undefined' || !filmActive) return;
+  _filmRestartPending = false;
+  _filmStartWartet = false;
+  _filmHandover = false;
+  filmStop();
+}
+
 function loadScenario(name) {
+  filmVorSzenenwechselBeenden();
   currentScenario = name;
   perturbers = [];
   perturberCounter = 0;
@@ -2291,16 +2313,7 @@ function captureState() {
 // Zustand wiederherstellen — ersetzt alle Koerper.
 function restoreState(state) {
   if (!state || !Array.isArray(state.bodies)) return false;
-  // Laufenden Film beenden, BEVOR bodies ersetzt wird: filmRefs zeigt
-  // sonst auf die alten Objekte, der Stream schreibt weiter in sie und
-  // die neue Szene bewegt sich nicht. Kein Handover noetig — der
-  // importierte Zustand ersetzt den alten vollstaendig, ein f64-Dump
-  // waere gegenstandslos.
-  if (typeof filmActive !== 'undefined' && filmActive) {
-    _filmRestartPending = false;
-    _filmStartWartet = false;
-    filmStop();
-  }
+  filmVorSzenenwechselBeenden();
   bodies = [];
   trails = {};
   for (const s of state.bodies) {
