@@ -1020,23 +1020,23 @@ const I18N = {
     'tt.cuda': 'Natives CUDA-Backend auf Mini (Tesla V100, f64): volle Präzision UND Geschwindigkeit. Erscheint nur, wenn der lokale Backend-Server läuft (backend/server.py).',
     'lbl.film': 'Film-Modus',
     'lbl.film-speed': 'Abspieltempo (Tage/s)',
-    'tt.film-speed': 'Wie schnell die vorgerechnete Timeline abgespielt wird, direkt in Sim-Tagen pro Sekunde. Reine Wiedergabegeschwindigkeit — die Physik ist bereits gerechnet, langsameres Abspielen kostet KEINE Genauigkeit. Vorher ergab sich das Tempo aus "Tage pro Schritt" mal 60 geteilt durch die Verlangsamung; zwei gegenläufige Regler hoben sich dabei auf. Liegt das Tempo über der Produktionsrate der GPU, klebt der Playhead an der Live-Kante und es stockt.',
+    'tt.film-speed': 'Wie viele Sim-Tage pro Sekunde abgespielt werden. Unabhängig davon, wie schnell die GPU rechnet — reicht der Vorrat nicht, wartet die Wiedergabe an der Rechenkante. Details: 💡 bei der Physik-Engine.',
     'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'lbl.film-lod': 'Punkte im Bild',
     'lbl.film-lod-auto': 'Auto',
-    'tt.film-lod': 'Wie viele Punkte der Server hoechstens pro Sample schickt. Auto richtet sich nach der gemessenen Bandbreite (Deckel 120.000). Das ist der EINZIGE Regler, der die Bildrate beeinflusst — ruckelt es, gehoere hier herunter. Reicht das Budget nicht fuer alle Koerper, gilt eine Rangfolge: massive Koerper (Sonne, Planeten, Rogues, Sterne, Schwarze Loecher) werden NIE ausgeduennt, danach kommen die Asteroiden des geladenen Systems, den Rest bekommen nachtraeglich injizierte Wolken. Innerhalb jeder Stufe werden dichte Gebiete staerker ausgeduennt als duenne, damit ein Guertel mit wenigen hundert Objekten nicht neben einer Wolke mit hunderttausenden verschwindet — dichte Gebiete bleiben trotzdem sichtbar dichter. Physik und Kollisionen laufen immer fuer ALLE Koerper.',
+    'tt.film-lod': 'Wie viele Punkte der Server höchstens pro Sample schickt. Der EINZIGE Regler, der die Bildrate beeinflusst — ruckelt es, hier herunter. Physik und Kollisionen laufen immer für ALLE Körper. Details: 💡 bei der Physik-Engine.',
     'lbl.film-interp': 'Zwischenbilder interpolieren',
-    'tt.film-interp': 'Zwischen zwei gestreamten Samples linear interpolieren — sorgt fuer fluessige Darstellung (sonst laeuft das Bild nur mit der Sample-Rate, je nach Tempo unter 10 Bilder/s). Preis: Bei stark gekruemmten Bahnen (naher Vorbeiflug an einem schweren Koerper) laeuft der Punkt auf der Sehne statt auf dem Bogen und springt beim naechsten Sample zurueck. Aus = nur berechnete Positionen, exakt aber ruckelig.',
+    'tt.film-interp': 'Zwischen zwei gestreamten Samples interpolieren — sorgt für flüssige Darstellung. Aus = nur berechnete Positionen, exakt aber ruckelig. Details: 💡 bei der Physik-Engine.',
     'tt.film': 'Compute und Darstellung entkoppelt: die GPU rechnet mit maximalem Durchsatz voraus (Ringpuffer), der Browser spielt die Timeline wie ein Video ab — scrubben, zurückspulen, live folgen. Kollisionen verschmelzen serverseitig (immer Merge, kein Zerbersten/Abprallen).',
     'lbl.film-raster': 'Sample-Raster (Tage)',
     'tt.film-raster': 'Sim-Zeit-Abstand der aufgezeichneten Samples. Fein = weiche Zeitlupe, mehr Speicher; grob = längerer Rückspulpuffer.',
     'lbl.film-sub': 'Bahnstützpunkte',
     'lbl.film-sub-aus': 'Aus',
-    'tt.film-sub': 'Wie viele Zwischenpunkte die GPU je Sample-Raster für eng begegnende Asteroiden mitrechnet. Sie liegen auf der ECHTEN Bahn — dazwischen genügt eine Gerade, und ein Perihel-Durchgang wird gemessen statt geraten. Nur diese Körper bekommen sie (bei anderen ist die Bahn im Raster ohnehin fast gerade); alle übrigen laufen weiter über Catmull-Rom. Mehr Stützpunkte = genauer, kosten aber Bandbreite und Ringspeicher. Aus = wie früher, reine Kurveninterpolation. Wirkt erst nach einem Film-Neustart (die Ringgröße hängt daran).',
+    'tt.film-sub': 'Zwischenpunkte auf der ECHTEN Bahn, die die GPU für eng begegnende Asteroiden mitrechnet — ein Perihel wird damit gemessen statt geraten. Mehr = genauer, kostet Bandbreite. Wirkt erst nach einem Film-Neustart. Details: 💡 bei der Physik-Engine.',
     'tt.film-live': 'Zur Live-Kante springen und folgen',
     'film.buffer': 'Puffer',
-    'tt.hybrid-near': 'Nur im Hybrid: Asteroiden, die einem schweren Körper zu nahe/schnell begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen f64-adaptiv im Worker statt grob auf der GPU. Präzise, kostet aber Tempo, wenn sehr viele Asteroiden gleichzeitig nahe sind. Aus = alle Asteroiden grob auf der GPU (schnell).',
+    'tt.hybrid-near': 'Nur im Hybrid: Asteroiden bei enger/schneller Begegnung f64-adaptiv im Worker statt grob auf der GPU. Präzise, kostet Tempo. Details: 💡 bei der Physik-Engine.',
     'tt.engine-help': 'Erklärung der Engine-Modi und Asteroiden-Optionen',
     'tt.time-help': 'Erklärung von Zeitschritt und Verlangsamung',
     'tt.angle': 'Kompass-Kurs: 0°=N, 90°=O, 180°=S, 270°=W',
@@ -1051,7 +1051,7 @@ const I18N = {
     'tt.fab-clear-pert': 'Alle Rogues löschen',
     'tt.fab-clear-clouds': 'Alle Wolken löschen',
     'tt.collisions': 'Zähler echter Kollisions-Ereignisse (Berührung Planet × Planet oder Planet × Asteroid)',
-    'tt.bodycount': 'Anzahl sichtbarer Körper gesamt, dann nach Typ: 🕳️ schwarze Löcher, ☀️ Sonnen, 🪐 feste Körper, 🪨 Asteroiden. Typen ohne Vorkommen werden ausgeblendet. Im Film-Modus zeigt 👁 zusätzlich, wie viele Körper gerade übertragen werden: der Server cullt auf den Bildausschnitt und dünnt per Dichte-LOD aus (Regler „Punkte im Bild“), die Physik rechnet aber immer mit ALLEN. Eine große Lücke zwischen beiden Zahlen heißt: stark ausgedünnt, nicht wenig Material.',
+    'tt.bodycount': 'Sichtbare Körper gesamt, dann nach Typ: 🕳️ schwarze Löcher, ☀️ Sonnen, 🪐 feste Körper, 🪨 Asteroiden. Im Film-Modus zeigt 👁, wie viele davon gerade übertragen werden — der Rest liegt außerhalb des Bildausschnitts oder wurde per LOD ausgedünnt.',
     'badge.collisions': 'Kollisionen',
     'lbl.ast-ast': 'Asteroid × Asteroid Kollisionen',
     'tt.ast-ast': 'Prüft auch Asteroid × Asteroid auf direkte Kollisionen. Bei vielen Bodies (>2000) merklich teurer pro Frame; default aus.',
@@ -1151,9 +1151,14 @@ const I18N = {
       'Rechenkante folgen. So bleiben Hunderttausende Körper flüssig, während die GPU ' +
       'im Hintergrund weiterrechnet. Kollisionen (verschmelzen, abprallen, zerbersten) ' +
       'erkennt der Server und spielt sie zeitrichtig als Explosionen ab. Die Regler ' +
-      'darunter — Sample-Raster, Abspieltempo, Punkte im Bild, Zwischenbilder — ' +
-      'steuern Aufzeichnungsdichte und Wiedergabe und sind nur mit aktivem ' +
-      'CUDA-Backend bedienbar.<br>' +
+      'darunter sind nur mit aktivem CUDA-Backend bedienbar:<br>' +
+      '<table>' +
+        '<tr><td>Sample-Raster</td><td>Sim-Zeit-Abstand der aufgezeichneten Positionen. Fein = weiche Zeitlupe und genauere Bahnen in Sonnennähe, kostet Ringspeicher (kürzerer Rückspulpuffer). Änderung startet den Film neu.</td></tr>' +
+        '<tr><td>Abspieltempo</td><td>Sim-Tage pro Sekunde, unabhängig von der Rechengeschwindigkeit. Ist der Vorrat aufgebraucht, wartet die Wiedergabe an der Rechenkante.</td></tr>' +
+        '<tr><td>Punkte im Bild</td><td>Der einzige Regler, der die Bildrate bestimmt. Auto richtet sich nach der gemessenen Bandbreite (Deckel 120.000). Reicht das Budget nicht, gilt eine Rangfolge: massive Körper werden NIE ausgedünnt, dann die Asteroiden des geladenen Systems, den Rest bekommen injizierte Wolken. Innerhalb jeder Stufe werden dichte Gebiete stärker ausgedünnt als dünne — ein Gürtel aus wenigen hundert Objekten verschwindet so nicht neben einer Wolke aus hunderttausenden, und dichte Gebiete bleiben trotzdem sichtbar dichter.</td></tr>' +
+        '<tr><td>Bahnstützpunkte</td><td>Zwischenpunkte, die die GPU für eng begegnende Asteroiden auf der ECHTEN Bahn mitrechnet. Dazwischen genügt eine Gerade, ein Perihel-Durchgang wird also gemessen statt geraten. Nur diese Körper bekommen sie — bei allen anderen ist die Bahn im Raster ohnehin fast gerade. Mehr Stützpunkte = genauer, kosten aber Bandbreite und Ringspeicher. Aus = reine Kurveninterpolation. Änderung startet den Film neu.</td></tr>' +
+        '<tr><td>Zwischenbilder interpolieren</td><td>Zwischen zwei gestreamten Samples interpolieren, damit die Darstellung flüssig bleibt (sonst läuft das Bild nur mit der Sample-Rate). Aus = ausschließlich berechnete Positionen: exakt, aber ruckelig.</td></tr>' +
+      '</table>' +
       '<h3>Enge Begegnungen präzise</h3>' +
       'Nur im Hybrid. Asteroiden, die einem schweren Körper zu nahe oder zu schnell ' +
       'begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen ' +
@@ -1287,23 +1292,23 @@ const I18N = {
     'tt.cuda': 'Native CUDA backend (Tesla V100, f64): full precision AND speed. Only appears when the local backend server is running (backend/server.py).',
     'lbl.film': 'Film mode',
     'lbl.film-speed': 'Playback speed (days/s)',
-    'tt.film-speed': 'How fast the precomputed timeline plays back, directly in sim days per second. Pure playback speed — the physics is already computed, so playing slower costs NO accuracy. Previously the speed derived from "days per step" times 60 divided by the slowdown factor; two opposing sliders could cancel each other out. If the speed exceeds the GPU production rate, the playhead sticks to the live edge and stutters.',
+    'tt.film-speed': 'How many sim days are played back per second. Independent of how fast the GPU computes — if the buffer runs dry, playback waits at the production edge. Details: 💡 next to the physics engine.',
     'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
     'lbl.film-lod': 'Points on screen',
     'lbl.film-lod-auto': 'Auto',
-    'tt.film-lod': 'How many points the server sends per sample at most. Auto follows the measured bandwidth (capped at 120,000). This is the ONLY slider affecting frame rate — turn it down if playback stutters. If the budget cannot cover every body, a priority applies: massive bodies (sun, planets, rogues, stars, black holes) are NEVER thinned, then come the asteroids of the loaded system, and injected clouds get whatever is left. Within each tier dense regions are thinned harder than sparse ones, so a belt of a few hundred objects does not vanish next to a cloud of hundreds of thousands — dense regions still read as visibly denser. Physics and collisions always run for ALL bodies.',
+    'tt.film-lod': 'How many points the server sends per sample at most. The ONLY slider affecting frame rate — turn it down if playback stutters. Physics and collisions always run for ALL bodies. Details: 💡 next to the physics engine.',
     'lbl.film-interp': 'Interpolate between samples',
-    'tt.film-interp': 'Linearly interpolate between two streamed samples — keeps playback smooth (otherwise the picture only advances at the sample rate, below 10 fps depending on speed). Cost: on sharply curved paths (close flyby of a massive body) the point travels along the chord instead of the arc and snaps back at the next sample. Off = computed positions only, exact but choppy.',
+    'tt.film-interp': 'Interpolate between two streamed samples — keeps playback smooth. Off = computed positions only, exact but choppy. Details: 💡 next to the physics engine.',
     'tt.film': 'Compute and display decoupled: the GPU simulates ahead at full throughput (ring buffer), the browser plays the timeline like a video — scrub, rewind, follow live. Collisions merge server-side (always merge, no shattering/bouncing).',
     'lbl.film-raster': 'Sample interval (days)',
     'tt.film-raster': 'Sim-time spacing of recorded samples. Fine = smooth slow-motion, more memory; coarse = longer rewind buffer.',
     'lbl.film-sub': 'Trajectory waypoints',
     'lbl.film-sub-aus': 'Off',
-    'tt.film-sub': 'How many intermediate points the GPU records per sample interval for closely encountering asteroids. They sit on the REAL trajectory — a straight line between them is enough, and a perihelion passage is measured instead of guessed. Only those bodies get them (for the rest the path within one interval is nearly straight anyway); everything else keeps using Catmull-Rom. More waypoints = more accurate, but cost bandwidth and ring memory. Off = as before, pure curve interpolation. Takes effect after a film restart (the ring size depends on it).',
+    'tt.film-sub': 'Waypoints on the REAL trajectory that the GPU records for closely encountering asteroids — a perihelion is measured rather than guessed. More = more accurate, costs bandwidth. Takes effect after a film restart. Details: 💡 next to the physics engine.',
     'tt.film-live': 'Jump to the live edge and follow',
     'film.buffer': 'buffer',
-    'tt.hybrid-near': 'Hybrid only: asteroids whose encounter with a massive body is too close/fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the worker instead of coarsely on the GPU. Precise, but costs speed when very many asteroids are close at once. Off = all asteroids run coarsely on the GPU (fast).',
+    'tt.hybrid-near': 'Hybrid only: asteroids in close/fast encounters run f64-adaptive in the worker instead of coarsely on the GPU. Precise, costs speed. Details: 💡 next to the physics engine.',
     'tt.engine-help': 'Explanation of the engine modes and asteroid options',
     'tt.time-help': 'Explanation of time step and slowdown',
     'tt.angle': 'Compass heading: 0°=N, 90°=E, 180°=S, 270°=W',
@@ -1318,7 +1323,7 @@ const I18N = {
     'tt.fab-clear-pert': 'Clear all rogues',
     'tt.fab-clear-clouds': 'Clear all clouds',
     'tt.collisions': 'Counter of real collision events (contact planet × planet or planet × asteroid)',
-    'tt.bodycount': 'Total visible bodies, then by type: 🕳️ black holes, ☀️ suns, 🪐 solid bodies, 🪨 asteroids. Types with none are hidden. In film mode 👁 additionally shows how many bodies are currently being transmitted: the server culls to the viewport and thins by density LOD (slider “Points on screen”), while physics always runs for ALL of them. A large gap between the two numbers means heavy thinning, not little material.',
+    'tt.bodycount': 'Total visible bodies, then by type: 🕳️ black holes, ☀️ suns, 🪐 solid bodies, 🪨 asteroids. In film mode 👁 shows how many are currently being transmitted — the rest are outside the viewport or thinned by LOD.',
     'badge.collisions': 'Collisions',
     'lbl.ast-ast': 'Asteroid × asteroid collisions',
     'tt.ast-ast': 'Also tests asteroid × asteroid for direct collisions. Noticeably more expensive per frame with many bodies (>2000); default off.',
@@ -1414,9 +1419,15 @@ const I18N = {
       'plays it back like a video — scrub, rewind, follow live at the compute edge. ' +
       'Hundreds of thousands of bodies stay smooth while the GPU keeps working in the ' +
       'background. Collisions (merge, bounce, shatter) are detected server-side and ' +
-      'replayed as explosions at the right time. The sliders below — sample interval, ' +
-      'playback speed, points on screen, interpolation — control recording density and ' +
-      'playback and are only active with the CUDA backend running.<br>' +
+      'replayed as explosions at the right time. The sliders below are only ' +
+      'active with the CUDA backend running:<br>' +
+      '<table>' +
+        '<tr><td>Sample interval</td><td>Sim-time spacing of the recorded positions. Fine = smooth slow motion and more accurate paths near the sun, but costs ring memory (shorter rewind buffer). Changing it restarts the film.</td></tr>' +
+        '<tr><td>Playback speed</td><td>Sim days per second, independent of compute speed. Once the buffer runs dry, playback waits at the production edge.</td></tr>' +
+        '<tr><td>Points on screen</td><td>The only slider that governs frame rate. Auto follows the measured bandwidth (capped at 120,000). If the budget cannot cover everything, a priority applies: massive bodies are NEVER thinned, then the asteroids of the loaded system, and injected clouds get the rest. Within each tier dense regions are thinned harder than sparse ones — a belt of a few hundred objects does not vanish next to a cloud of hundreds of thousands, while dense regions still read as visibly denser.</td></tr>' +
+        '<tr><td>Trajectory waypoints</td><td>Intermediate points the GPU records on the REAL path for closely encountering asteroids. A straight line between them is enough, so a perihelion passage is measured rather than guessed. Only those bodies get them — for everything else the path within one interval is nearly straight anyway. More waypoints = more accurate, but cost bandwidth and ring memory. Off = pure curve interpolation. Changing it restarts the film.</td></tr>' +
+        '<tr><td>Interpolate in-between frames</td><td>Interpolate between two streamed samples so playback stays smooth (otherwise the image advances only at the sample rate). Off = computed positions only: exact, but choppy.</td></tr>' +
+      '</table>' +
       '<h3>Precise close encounters</h3>' +
       'Hybrid only. Asteroids whose encounter with a massive body is too close or too ' +
       'fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the ' +
