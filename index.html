@@ -39,6 +39,32 @@ canvas { display: block; cursor: crosshair; width: 100%; height: 100%; }
 #sidebar h2 { color: #7af; font-size: 13px; margin: 7px 0 3px; border-bottom: 1px solid #333; padding-bottom: 2px; }
 #sidebar h2:first-child { margin-top: 0; }
 #sidebar label { display: block; font-size: 11px; margin-top: 3px; color: #999; }
+/* Koerperliste einklappbar: bei den selbstgravitierenden Szenarien stehen
+   hunderte Eintraege darin, die sonst die halbe Seitenleiste fuellen. */
+details.koerperliste { margin-top: 10px; }
+/* Als Zeile mit Rahmen und Pfeil-Knopf: ohne das ist einem summary nicht
+   anzusehen, dass es sich aufklappen laesst. */
+details.koerperliste > summary {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: #bbb; cursor: pointer; list-style: none;
+  background: #1a1a2e; border: 1px solid #333; border-radius: 3px;
+  padding: 5px 8px;
+  -webkit-user-select: none; user-select: none;
+}
+details.koerperliste > summary::-webkit-details-marker { display: none; }
+/* Pfeil als eigener Kasten, dreht sich beim Aufklappen. */
+details.koerperliste > summary::before {
+  content: '\25B6';
+  font-size: 9px; color: #7af;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+details.koerperliste[open] > summary::before { transform: rotate(90deg); }
+details.koerperliste > summary:hover {
+  background: #23233c; border-color: #4a5a7a; color: #fff;
+}
+details.koerperliste > #planet-checks,
+details.koerperliste > #mob-planet-checks { margin-top: 4px; }
 #sidebar input[type=range], #sidebar select {
   width: 100%; font-size: 13px; background: #1a1a2e; color: #ddd; border: 1px solid #333; padding: 3px;
   -webkit-appearance: none; appearance: none;
@@ -515,7 +541,9 @@ input[type=range] {
       <option value="Alpha Centauri" data-i18n="sc.alphacen">Alpha Centauri</option>
       <option value="Kepler-16" data-i18n="sc.kepler16">Kepler-16</option>
       <option value="Kepler-47 (Doppelstern, 3 Planeten)" data-i18n="sc.kepler47">Kepler-47 (Doppelstern, 3 Planeten)</option>
-      <option value="Galaxienhaufen (Filamente)" data-i18n="sc.cluster">Galaxienhaufen (Filamente)</option>
+      <option value="Galaxienhaufen (Kollaps)" data-i18n="sc.cluster-kollaps">Galaxienhaufen (Kollaps)</option>
+      <option value="Galaxienhaufen (Expansion)" data-i18n="sc.cluster">Galaxienhaufen (Expansion)</option>
+      <option value="Strukturbildung (selbstgravitierend)" data-i18n="sc.struktur">Strukturbildung (selbstgravitierend)</option>
     </select>
     <div style="display:flex; gap:4px; margin-top:6px;">
       <button id="btn-save-cfg" data-i18n="btn.save" style="flex:1; font-size:11px; padding:6px 3px; min-height:auto; min-width:auto;">Speichern</button>
@@ -541,7 +569,8 @@ input[type=range] {
 
   <h2 data-i18n="sec.view">&#x1F52D; Anzeige</h2>
   <label><span data-i18n="lbl.zoom">Zoom</span> <span class="val" id="zoom-val">0.35</span></label>
-  <input type="range" autocomplete="off"id="zoom-slider" min="0.001" max="500" step="0.001" value="0.35">
+  <!-- Skala (log10) setzt applyDefaults() aus ZOOM_MIN/ZOOM_MAX -->
+  <input type="range" autocomplete="off"id="zoom-slider">
   <label>
     <input type="checkbox" id="chk-trails" checked> <span data-i18n="lbl.trail-show">Bahnspuren anzeigen</span>
   </label>
@@ -620,8 +649,8 @@ input[type=range] {
   <label data-i18n-title="tt.ast-escape">
     <input type="checkbox" id="chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span>
   </label>
-  <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;">
-    <input type="checkbox" id="chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">Flüchtende markieren</span>
+  <label data-i18n-title="tt.mass-escape">
+    <input type="checkbox" id="chk-mass-escape" checked> <span data-i18n="lbl.mass-escape">Fluchterkennung schwere Körper</span>
   </label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
@@ -657,8 +686,10 @@ input[type=range] {
   <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:10px;" data-i18n="btn.clear-escaping" data-i18n-title="tt.clear-escaping">&#x1F5D1; Flüchtende entfernen</button>
   <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
-  <label data-i18n="sec.bodies" style="margin-top:10px;">Sichtbare Körper:</label>
-  <div id="planet-checks"></div>
+  <details class="koerperliste" id="bodies-details" open>
+    <summary><span data-i18n="sec.bodies">Sichtbare Körper:</span> <span id="planet-checks-count"></span></summary>
+    <div id="planet-checks"></div>
+  </details>
   <button id="btn-apply" style="width:100%; margin-top:8px;" data-i18n="btn.apply-changes">&#x2713; Änderungen übernehmen</button>
 
   <h2 data-i18n="sec.stats">&#x1F4CA; Statistik</h2>
@@ -669,7 +700,7 @@ input[type=range] {
 
 <div id="badge-row">
   <div id="perf-badge" data-i18n-title="tt.perfbadge"></div>
-  <div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><!-- &nbsp;|&nbsp; Bounces: <span id="bounce-count">0</span> --></div>
+  <div id="collision-badge" data-i18n-title="tt.collisions"><span data-i18n="badge.collisions">Kollisionen</span>: <span id="collision-count">0</span><span id="entwichen-part" style="display:none;">&nbsp;|&nbsp;<span data-i18n="badge.entwichen">Entwichen</span>: <span id="entwichen-count">0</span></span></div>
   <div id="body-count-badge" data-i18n-title="tt.bodycount"></div>
   <!-- Sichtbare Stoerungsmeldung: eine Konsolenwarnung sieht im Alltag
        niemand, und eine stille Pause ist von einem Aufhaenger nicht zu
@@ -749,7 +780,9 @@ input[type=range] {
       <option value="Alpha Centauri" data-i18n="sc.alphacen">Alpha Centauri</option>
       <option value="Kepler-16" data-i18n="sc.kepler16">Kepler-16</option>
       <option value="Kepler-47 (Doppelstern, 3 Planeten)" data-i18n="sc.kepler47">Kepler-47 (Doppelstern, 3 Planeten)</option>
-      <option value="Galaxienhaufen (Filamente)" data-i18n="sc.cluster">Galaxienhaufen (Filamente)</option>
+      <option value="Galaxienhaufen (Kollaps)" data-i18n="sc.cluster-kollaps">Galaxienhaufen (Kollaps)</option>
+      <option value="Galaxienhaufen (Expansion)" data-i18n="sc.cluster">Galaxienhaufen (Expansion)</option>
+      <option value="Strukturbildung (selbstgravitierend)" data-i18n="sc.struktur">Strukturbildung (selbstgravitierend)</option>
     </select>
     <div style="display:flex; gap:4px; margin-top:6px;">
       <button id="mob-btn-save-cfg" data-i18n="btn.save" style="flex:1; font-size:12px;">Speichern</button>
@@ -769,7 +802,8 @@ input[type=range] {
 
   <h2 data-i18n="sec.view">&#x1F52D; Anzeige</h2>
   <label><span data-i18n="lbl.zoom">Zoom</span> <span class="val" id="mob-zoom-val">0.35</span></label>
-  <input type="range" autocomplete="off"id="mob-zoom-slider" min="0.001" max="500" step="0.001" value="0.35">
+  <!-- Skala (log10) setzt applyDefaults() aus ZOOM_MIN/ZOOM_MAX -->
+  <input type="range" autocomplete="off"id="mob-zoom-slider">
   <label><input type="checkbox" id="mob-chk-trails" checked> <span data-i18n="lbl.trails">Bahnspuren</span></label>
   <label><span data-i18n="lbl.trail-len-body">Bahnspur-Länge</span> <span class="val" id="mob-trail-val">150</span></label>
   <input type="range" autocomplete="off"id="mob-trail-slider" min="0" max="3000" step="10" value="150">
@@ -798,7 +832,7 @@ input[type=range] {
   <label data-i18n-title="tt.film-interp" id="mob-lbl-film-interp" style="display:none; margin-left:20px;"><input type="checkbox" id="mob-chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span></label>
   <label data-i18n-title="tt.ast-ast"><input type="checkbox" id="mob-chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span></label>
   <label data-i18n-title="tt.ast-escape"><input type="checkbox" id="mob-chk-ast-escape"> <span data-i18n="lbl.ast-escape">Asteroiden-Fluchterkennung</span></label>
-  <label data-i18n-title="tt.ast-escape-mark" style="margin-left:20px;"><input type="checkbox" id="mob-chk-ast-escape-mark"> <span data-i18n="lbl.ast-escape-mark">Flüchtende markieren</span></label>
+  <label data-i18n-title="tt.mass-escape"><input type="checkbox" id="mob-chk-mass-escape" checked> <span data-i18n="lbl.mass-escape">Fluchterkennung schwere Körper</span></label>
 
   <h2 data-i18n="sec.inject">&#x1F30C; Inject</h2>
   <label><span data-i18n="lbl.inject-mass">Masse</span> <span class="val" id="mob-p-mass-val">1,0 M⊕</span></label>
@@ -833,8 +867,10 @@ input[type=range] {
   <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:10px;" data-i18n="btn.clear-escaping">&#x1F5D1; Flüchtende entfernen</button>
   <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
-  <label data-i18n="sec.bodies" style="margin-top:10px;">Sichtbare Körper:</label>
-  <div id="mob-planet-checks"></div>
+  <details class="koerperliste" id="mob-bodies-details" open>
+    <summary><span data-i18n="sec.bodies">Sichtbare Körper:</span> <span id="mob-planet-checks-count"></span></summary>
+    <div id="mob-planet-checks"></div>
+  </details>
   <button id="mob-btn-apply" style="width:100%; margin-top:8px;" data-i18n="btn.apply-changes">&#x2713; Änderungen übernehmen</button>
 
   <h2>&#x1F4CA; Statistik</h2>
@@ -878,7 +914,11 @@ const DEFAULTS = {
   useGPU: false,        // Physik via WebGPU
   astAstCollisions: false, // Asteroid x Asteroid Kollisionen
   astEscape: false,        // Asteroiden-Fluchterkennung (escapeScore berechnen -> aufraeumbar)
-  astEscapeMark: false,    // erkannte Flucht-Asteroiden auch markieren (↗)
+  // Ring + roter Name fuer Koerper auf Fluchtkurs. Gilt fuer ALLE Typen;
+  // bei Asteroiden zusaetzlich abhaengig von astEscape (ohne Erkennung
+  // gibt es kein unbound-Flag). Rein optisch — die Erkennung selbst
+  // laeuft weiter, Auto-Fit und Schwerpunkt haengen an ihr.
+  massEscape: true,
   hybridNearWorker: true,  // Hybrid: nahe Asteroiden auf den f64-Worker (praezise enge Begegnungen)
   // --- Inject (Rogue / Wolke benutzen teilweise dieselben Slider) ---
   injectMass: 3,        // log10(M⊕) — 3 → 1000 Erdmassen
@@ -892,6 +932,7 @@ const DEFAULTS = {
   filmLod: 3.9,         // Punkte-im-Bild-Regler: 3.9 = linker Anschlag (Auto)
   filmRaster: -0.3,     // Sample-Raster (log10 Tage) — 10^-0.3 ~ 0,5 Tage
   filmSpeed: 1.78,      // Abspieltempo (log10 Tage/s) — 10^1.78 ~ 60
+  filmSub: 3,           // Bahnstuetzpunkte (Reglerstufe; 0 = aus)
   // --- Guertel (Sonnensystem mit Guerteln) ---
   beltAB: 800,          // Anzahl Asteroidengürtel
   beltKB: 600,          // Anzahl Kuipergürtel
@@ -956,7 +997,9 @@ const I18N = {
     'sc.alphacen': 'Alpha Centauri',
     'sc.kepler16': 'Kepler-16',
     'sc.kepler47': 'Kepler-47 (Doppelstern, 3 Planeten)',
-    'sc.cluster': 'Galaxienhaufen (Filamente)',
+    'sc.cluster': 'Galaxienhaufen (Expansion)',
+    'sc.struktur': 'Strukturbildung (selbstgravitierend)',
+    'sc.cluster-kollaps': 'Galaxienhaufen (Kollaps)',
     // Buttons
     'btn.save': 'Speichern',
     'btn.export': 'Export',
@@ -1026,6 +1069,7 @@ const I18N = {
     'tt.gpu': 'Physik via WebGPU Compute Shader auf der lokalen iGPU/dGPU. Setzt browserseitige WebGPU-Unterstützung voraus.',
     'tt.hybrid': 'Hybrid: massive Körper (Planeten/Sterne/Choreografien) rechnen f64 im WebWorker (stabil für fragile Systeme), Asteroiden/Gürtel/Wolken als Testteilchen f32 auf der GPU (schnell). Braucht WebGPU.',
     'tt.cuda': 'Natives CUDA-Backend auf Mini (Tesla V100, f64): volle Präzision UND Geschwindigkeit. Erscheint nur, wenn der lokale Backend-Server läuft (backend/server.py).',
+    'tt.cuda-gesperrt': 'Für dieses Szenario nicht verfügbar: der CUDA-Kernel ist für wenige Massen und viele Testteilchen gebaut und rechnet Masse gegen Masse seriell auf einem einzigen Thread. Bei hunderten massiven Körpern wäre er weit langsamer als der WebWorker.',
     'lbl.film': 'Film-Modus',
     'lbl.film-speed': 'Abspieltempo (Tage/s)',
     'tt.film-speed': 'Wie viele Sim-Tage pro Sekunde abgespielt werden. Unabhängig davon, wie schnell die GPU rechnet — reicht der Vorrat nicht, wartet die Wiedergabe an der Rechenkante. Details: 💡 bei der Physik-Engine.',
@@ -1058,15 +1102,16 @@ const I18N = {
     'tt.recenter': 'Neu zentrieren',
     'tt.fab-clear-pert': 'Alle Rogues löschen',
     'tt.fab-clear-clouds': 'Alle Wolken löschen',
-    'tt.collisions': 'Zähler echter Kollisions-Ereignisse (Berührung Planet × Planet oder Planet × Asteroid)',
+    'tt.collisions': 'Zähler echter Kollisions-Ereignisse (Berührung Planet × Planet oder Planet × Asteroid). "Entwichen" zählt getrennt die Asteroiden, die das CUDA-Backend aus der Rechnung nimmt, weil sie schneller als das Dreifache der Fluchtgeschwindigkeit sind — das ist keine Kollision, sondern Aufräumen.',
     'tt.bodycount': 'Sichtbare Körper gesamt, dann nach Typ: 🕳️ schwarze Löcher, ☀️ Sonnen, 🪐 feste Körper, 🪨 Asteroiden. Im Film-Modus zeigt 👁, wie viele davon gerade übertragen werden — der Rest liegt außerhalb des Bildausschnitts oder wurde per LOD ausgedünnt.',
     'badge.collisions': 'Kollisionen',
+    'badge.entwichen': 'Entwichen',
     'lbl.ast-ast': 'Asteroid × Asteroid Kollisionen',
     'tt.ast-ast': 'Prüft auch Asteroid × Asteroid auf direkte Kollisionen. Bei vielen Bodies (>2000) merklich teurer pro Frame; default aus.',
-    'lbl.ast-escape': 'Asteroiden-Fluchterkennung',
-    'tt.ast-escape': 'Erkennt, ob Asteroiden auf Fluchtkurs sind (billiger Bahnenergie-Test). Macht hyperbolisch weggeschleuderte Asteroiden über »Flüchtende entfernen« aufräumbar. Bei sehr vielen Asteroiden etwas teurer pro Frame; default aus.',
-    'lbl.ast-escape-mark': 'Flüchtende markieren',
-    'tt.ast-escape-mark': 'Markiert erkannte Flucht-Asteroiden mit einem pulsierenden roten Ring (nur wenn Erkennung an). Bei dichten Wolken optisch unruhig.',
+    'lbl.ast-escape': 'Fluchterkennung Asteroiden',
+    'tt.ast-escape': 'Erkennt, ob Asteroiden auf Fluchtkurs sind (billiger Bahnenergie-Test) und weist sie mit rotem Ring aus. Erst dann räumt »Flüchtende entfernen« sie ab. Bei sehr vielen Asteroiden etwas teurer pro Frame; default aus.',
+    'lbl.mass-escape': 'Fluchterkennung schwere Körper',
+    'tt.mass-escape': 'Weist Sonnen, Planeten und Störmassen auf Fluchtkurs aus: pulsierender roter Ring, roter Name, und »Flüchtende entfernen« räumt sie ab. Aus = sie bleiben unmarkiert und der Mülleimer lässt sie in Ruhe. Der Bahnenergie-Test selbst läuft weiter — Kamera und Schwerpunkt lassen Flüchtende bewusst außen vor, sonst zöge ein einziger Ausreißer die Ansicht mit sich fort.',
     'tt.lock': 'Fokus aufheben',
     'tt.body-mass': 'Masse in Erdmassen',
     'tt.body-vel': 'Geschwindigkeit in km/s',
@@ -1180,12 +1225,17 @@ const I18N = {
       '<span style="color:#ff3030">leichter</span> rot). Sie verschmelzen oder ' +
       'zerbersten <b>nicht</b> und ziehen sich untereinander <b>nicht</b> gravitativ ' +
       'an — das passiert nur beim Treffer auf Planet oder Stern.<br>' +
-      '<h3>Asteroiden-Fluchterkennung</h3>' +
-      'Erkennt ungebundene Asteroiden auf Fluchtkurs. Erst dann lassen sie sich per ' +
-      '„Flüchtende entfernen" (<span class="ico">↗</span>) gezielt aufräumen.<br>' +
-      '<h3>Flüchtende markieren</h3>' +
-      'Markiert die erkannten Flüchtenden mit einem pulsierenden roten Ring. Nur ' +
-      'wirksam, wenn die Fluchterkennung an ist.',
+      '<h3>Fluchterkennung</h3>' +
+      'Je ein Haken pro Körperklasse — <b>Asteroiden</b> und <b>schwere Körper</b> ' +
+      '(Sonnen, Planeten, Störmassen). Was erkannt wird, bekommt einen pulsierenden ' +
+      'roten Ring und einen roten Namen, und nur das räumt „Flüchtende entfernen" ' +
+      '(<span class="ico">↗</span>) auch ab. Steht ein Haken aus, bleibt die ' +
+      'Klasse unmarkiert <i>und</i> unangetastet.<br>' +
+      'Der Unterschied liegt darunter: Bei Asteroiden entfällt ohne Haken der ' +
+      'Bahnenergie-Test ganz (er kostet bei Hunderttausenden Rechenzeit). Bei ' +
+      'schweren Körpern läuft er immer weiter, denn Auto-Fit und Schwerpunkt ' +
+      'lassen Flüchtende bewusst außen vor — sonst zöge ein einziger Ausreißer ' +
+      'die Kamera mit sich fort.',
     'help.time':
       '<h3>Zeitschritt (Tage/Schritt)</h3>' +
       'Wie viele Sim-Tage die Physik pro Bild voranschreitet — der Basis-Takt. ' +
@@ -1232,7 +1282,9 @@ const I18N = {
     'sc.alphacen': 'Alpha Centauri',
     'sc.kepler16': 'Kepler-16',
     'sc.kepler47': 'Kepler-47 (binary star, 3 planets)',
-    'sc.cluster': 'Galaxy cluster (filaments)',
+    'sc.cluster': 'Galaxy cluster (expansion)',
+    'sc.struktur': 'Structure formation (self-gravitating)',
+    'sc.cluster-kollaps': 'Galaxy cluster (collapse)',
     'btn.save': 'Save',
     'btn.export': 'Export',
     'btn.import': 'Import',
@@ -1299,6 +1351,7 @@ const I18N = {
     'tt.gpu': 'Physics via WebGPU compute shader on the local iGPU/dGPU. Requires browser WebGPU support.',
     'tt.hybrid': 'Hybrid: massive bodies (planets/stars/choreographies) run f64 in the WebWorker (stable for fragile systems), asteroids/belts/clouds as test particles f32 on the GPU (fast). Needs WebGPU.',
     'tt.cuda': 'Native CUDA backend (Tesla V100, f64): full precision AND speed. Only appears when the local backend server is running (backend/server.py).',
+    'tt.cuda-gesperrt': 'Not available for this scenario: the CUDA kernel is built for few masses and many test particles, computing mass against mass serially on a single thread. With hundreds of massive bodies it would be far slower than the WebWorker.',
     'lbl.film': 'Film mode',
     'lbl.film-speed': 'Playback speed (days/s)',
     'tt.film-speed': 'How many sim days are played back per second. Independent of how fast the GPU computes — if the buffer runs dry, playback waits at the production edge. Details: 💡 next to the physics engine.',
@@ -1331,15 +1384,16 @@ const I18N = {
     'tt.recenter': 'Recenter',
     'tt.fab-clear-pert': 'Clear all rogues',
     'tt.fab-clear-clouds': 'Clear all clouds',
-    'tt.collisions': 'Counter of real collision events (contact planet × planet or planet × asteroid)',
+    'tt.collisions': 'Counter of real collision events (contact planet × planet or planet × asteroid). "Escaped" separately counts asteroids the CUDA backend removes from the computation because they are faster than three times escape velocity — that is not a collision but cleanup.',
     'tt.bodycount': 'Total visible bodies, then by type: 🕳️ black holes, ☀️ suns, 🪐 solid bodies, 🪨 asteroids. In film mode 👁 shows how many are currently being transmitted — the rest are outside the viewport or thinned by LOD.',
     'badge.collisions': 'Collisions',
+    'badge.entwichen': 'Escaped',
     'lbl.ast-ast': 'Asteroid × asteroid collisions',
     'tt.ast-ast': 'Also tests asteroid × asteroid for direct collisions. Noticeably more expensive per frame with many bodies (>2000); default off.',
-    'lbl.ast-escape': 'Asteroid escape detection',
-    'tt.ast-escape': 'Detects whether asteroids are on an escape trajectory (cheap orbital-energy test). Lets hyperbolically ejected asteroids be cleaned up via "Remove escaping". Slightly more expensive per frame with very many asteroids; default off.',
-    'lbl.ast-escape-mark': 'Mark escaping',
-    'tt.ast-escape-mark': 'Marks detected escaping asteroids with a pulsing red ring (only if detection is on). Can look busy with dense clouds.',
+    'lbl.ast-escape': 'Escape detection asteroids',
+    'tt.ast-escape': 'Detects whether asteroids are on an escape trajectory (cheap orbital-energy test) and flags them with a red ring. Only then does "Remove escaping" clear them. Slightly more expensive per frame with very many asteroids; default off.',
+    'lbl.mass-escape': 'Escape detection heavy bodies',
+    'tt.mass-escape': 'Flags stars, planets and perturbers on an escape trajectory: pulsing red ring, red name, and “Remove escaping” clears them. Off = they stay unmarked and the trash button leaves them alone. The orbital energy test itself keeps running — camera and barycenter deliberately leave escapers out, otherwise a single runaway would drag the view along with it.',
     'tt.lock': 'Release focus',
     'tt.body-mass': 'Mass in Earth masses',
     'tt.body-vel': 'Speed in km/s',
@@ -1449,11 +1503,17 @@ const I18N = {
       '<span style="color:#ff3030">lighter</span> red). They do <b>not</b> merge or ' +
       'shatter and do <b>not</b> attract each other gravitationally — that only happens ' +
       'when hitting a planet or star.<br>' +
-      '<h3>Asteroid escape detection</h3>' +
-      'Detects unbound asteroids on an escape trajectory. Only then can they be cleared ' +
-      'via “Remove escaping” (<span class="ico">↗</span>).<br>' +
-      '<h3>Mark escaping</h3>' +
-      'Marks the detected escapers with a pulsing red ring. Only active when escape detection is on.',
+      '<h3>Escape detection</h3>' +
+      'One checkbox per body class — <b>asteroids</b> and <b>heavy bodies</b> ' +
+      '(stars, planets, perturbers). Whatever is detected gets a pulsing red ring ' +
+      'and a red name, and only that is cleared by “Remove escaping” ' +
+      '(<span class="ico">↗</span>). With a box unchecked, that class stays ' +
+      'unmarked <i>and</i> untouched.<br>' +
+      'The difference is underneath: for asteroids, unchecking drops the orbital ' +
+      'energy test entirely (it costs real time with hundreds of thousands). For ' +
+      'heavy bodies it keeps running, because auto-fit and barycenter deliberately ' +
+      'leave escapers out — otherwise a single runaway would drag the camera along ' +
+      'with it.',
     'help.time':
       '<h3>Time step (days/step)</h3>' +
       'How many sim-days the physics advances per frame — the base rate. Larger = the ' +
@@ -1822,7 +1882,7 @@ function buildSolarSystemWithBelts() {
   if (BELT_KB_COUNT > 0) addBelt('KB', BELT_KB_COUNT, 30, 50, 0.2, 0.04, '#9fc6dc');
 }
 
-// Galaxienhaufen mit kosmischen Filamenten.
+// Galaxienhaufen — zwei Szenarien aus demselben Aufbau.
 //
 // Physikalisch ist das der Fall, der zu dieser Engine passt: wenige
 // schwere Koerper, die einander WIRKLICH einzeln spueren, plus sehr viele
@@ -1830,17 +1890,51 @@ function buildSolarSystemWithBelts() {
 // galaxie waere das Gegenteil — dort traegt die verteilte Scheibenmasse
 // das Feld, das zentrale Schwarze Loch stellt nur 0,004 % davon.)
 //
-// Die Testteilchen stroemen entlang der Gravitationsgradienten aus den
-// Leerraeumen zu den Massen und spannen dabei Brücken zwischen ihnen —
-// derselbe Mechanismus, der im Universum das kosmische Netz aus Knoten,
-// Filamenten und Voids erzeugt. Was fehlt, ist die Expansion des Raums:
-// ohne sie kollabiert der Haufen am Ende, statt sich zu stabilisieren.
+// Unterschiedlich ist allein das Anfangs-Geschwindigkeitsfeld, und daran
+// haengt alles:
+//
+//   KOLLAPS    — nur Rotation, 58 % der Fluchtgeschwindigkeit. Tief
+//                gebunden, also faellt die Wolke zusammen: dichter Kern,
+//                verschmelzende Galaxien, herausgestreute Teilchen. Ein
+//                Klumpen mit Halo, nie ein Netz. Lehrbuch-Kollaps eines
+//                kalten Systems ("violent relaxation").
+//
+//   EXPANSION  — zusaetzlich ein radialer Hubble-Fluss v = H*r, marginal
+//                gebunden (Omega ~ 1). Die Expansion verhindert den
+//                globalen Kollaps; was bleibt, ist ein sich dehnendes Feld
+//                mit verschmelzenden Galaxien darin.
+//
+// Ein kosmisches Netz entsteht in KEINEM von beiden, und das liegt nicht
+// am Geschwindigkeitsfeld: die Testteilchen sind masselos und ziehen sich
+// gegenseitig nicht an (der Kernel rechnet sie nur gegen die massiven
+// Koerper). Filamente setzen aber Selbstgravitation voraus — eine
+// Ueberdichte muss sich SELBST anziehen, um enger zu werden. Ohne das
+// folgen die Teilchen bloss dem Feld weniger Punktmassen und bleiben so
+// glatt verteilt, wie sie gestartet sind. Siehe TODO.md.
+//
+// Beides bleibt ohnehin eine Karikatur: 2D, ohne periodische Raender und
+// ohne mitwachsenden Raum. Der Hubble-Fluss ist eine Anfangsbedingung,
+// keine Metrik — die Expansion wird von der Gravitation abgebremst, statt
+// von einem Skalenfaktor getragen.
 const CLUSTER_GALAXIEN = 56;     // < M_MAX (64) im CUDA-Kernel
 const CLUSTER_TRACER = 150000;
 const CLUSTER_R = 60000;         // AE, Radius des Anfangsgebiets
+const CLUSTER_R_MAX = CLUSTER_R * 1.35;   // aeusserste Testteilchen
+const CLUSTER_MASSE_PRO = 1e8;   // M☉ je "Galaxie"
 
-function buildGalaxyCluster() {
-  const massePro = 1e8;                       // M☉ je "Galaxie"
+// Expansionsrate des marginal gebundenen Falls: am Aussenrand ist v = H*r
+// gerade die Fluchtgeschwindigkeit. Das ist das kosmologische Omega = 1 —
+// Expansion und Gravitation halten sich die Waage. Weiter innen liegt
+// H*r unter der oertlichen Fluchtgeschwindigkeit (die Flaechenverteilung
+// laesst die eingeschlossene Masse wie r^2 wachsen), dort gewinnt also
+// die Schwerkraft und die Ueberdichten kollabieren — was gewollt ist.
+const CLUSTER_H = Math.sqrt(2 * G_AU * CLUSTER_MASSE_PRO * CLUSTER_GALAXIEN /
+                            CLUSTER_R_MAX) / CLUSTER_R_MAX;
+
+// `tangential` = Anteil der Kreisbahngeschwindigkeit (Drehimpuls),
+// `hubble`     = Expansionsrate in 1/Jahr (0 = keine Expansion).
+function buildGalaxyCluster({ tangential, hubble }) {
+  const massePro = CLUSTER_MASSE_PRO;
   const gesamt = massePro * CLUSTER_GALAXIEN;
   const vVir = Math.sqrt(G_AU * gesamt / CLUSTER_R);
   // Kreisbahngeschwindigkeit im Feld der Wolke. INNEN waechst die
@@ -1853,22 +1947,42 @@ function buildGalaxyCluster() {
     return vVir * (rr < CLUSTER_R ? Math.sqrt(rr / CLUSTER_R)
                                   : Math.sqrt(CLUSTER_R / rr));
   };
-  // Anteil der Kreisbahngeschwindigkeit. Unter 1 heisst: die Wolke faellt
-  // zusammen, statt fertig zu kreisen — der Kollaps ERZEUGT die Struktur.
-  // 0,7 ergibt ein Virialverhaeltnis 2T/|U| von rund 0,23: gebunden,
-  // deutlich unterkuehlt, aber mit genug Drehimpuls, dass nicht alles
-  // radial in einen Punkt stuerzt.
-  const KALT = 0.7;
+  // Geschwindigkeit eines Koerpers an (x, y): Drehimpuls-Anteil um das
+  // Zentrum plus radialer Hubble-Fluss. `streu` mischt Zufall bei, damit
+  // das Feld nicht perfekt geordnet startet — eine exakt symmetrische
+  // Anfangsbedingung erzeugt keine Struktur, sondern nur Symmetrie.
+  const geschwindigkeit = (x, y, streu) => {
+    const r = Math.hypot(x, y) || 1;
+    const vt = tangential * vCirc(r);
+    const vr = hubble * r;
+    // Bewusst klein gehalten: der Zufall soll das Feld aufrauen, nicht
+    // die Energiebilanz verschieben. Er geht quadratisch in die kinetische
+    // Energie ein und hebt <v^2> auch dann, wenn er im Mittel null ist.
+    const zufall = () => (Math.random() * 2 - 1) * streu * (vt + vr);
+    return [-y / r * vt + x / r * vr + zufall(),
+             x / r * vt + y / r * vr + zufall()];
+  };
 
   // Keime: die Galaxien sitzen in Gruppen, nicht gleichverteilt. Eine
   // anisotrope Anfangsverteilung ist die Voraussetzung fuer Filamente —
   // aus einer perfekt gleichmaessigen Wolke entsteht nur ein Klumpen.
+  //
+  // Ihr gemeinsamer Schwerpunkt wird anschliessend in den Ursprung
+  // geschoben. Sonst liegt er je nach Wurf weit daneben, und weil die
+  // Testteilchen um den Ursprung streuen, waere der Haufen von Anfang an
+  // exzentrisch: der aeusserste Rand ruecke nach aussen, waehrend H auf
+  // CLUSTER_R_MAX kalibriert ist — die Expansion fiele dort dann ueber
+  // die Fluchtgeschwindigkeit und der Haufen loeste sich auf, statt
+  // marginal gebunden zu bleiben.
   const keime = [];
   for (let i = 0; i < 7; i++) {
     const a = Math.random() * 2 * Math.PI;
     const r = CLUSTER_R * (0.25 + 0.65 * Math.random());
     keime.push([r * Math.cos(a), r * Math.sin(a)]);
   }
+  const kmx = keime.reduce((s, k) => s + k[0], 0) / keime.length;
+  const kmy = keime.reduce((s, k) => s + k[1], 0) / keime.length;
+  for (const k of keime) { k[0] -= kmx; k[1] -= kmy; }
   const farben = ['#ffd9a0', '#cfe0ff', '#ffc0c0', '#d8ffd0',
                   '#e8d0ff', '#fff0c0', '#c0f0ff'];
   const gx = [], gy = [];
@@ -1890,14 +2004,11 @@ function buildGalaxyCluster() {
       if (frei) break;
     }
     gx.push(x); gy.push(y);
-    const r = Math.hypot(x, y) || 1;
-    const vc = KALT * vCirc(r);
+    const [vx, vy] = geschwindigkeit(x, y, 0.08);
     pushBody({
       name: 'G' + (i + 1), mass: massePro,
       color: farben[i % farben.length],
-      x, y,
-      vx: -y / r * vc + (Math.random() * 2 - 1) * 0.2 * vc,
-      vy:  x / r * vc + (Math.random() * 2 - 1) * 0.2 * vc,
+      x, y, vx, vy,
       // Nahe Begegnungen verschmelzen (Galaxienverschmelzung) — bei
       // mittleren Abstaenden von einigen tausend AE nur bei Treffern.
       rkm: R_GAL * AU / 1000,
@@ -1908,20 +2019,109 @@ function buildGalaxyCluster() {
   // Testteilchen: gleichmaessig in der Flaeche (r ~ sqrt(zufall)), bis
   // etwas ausserhalb der Galaxien, damit sie von aussen einfallen und
   // dabei die Braecken zwischen den Massen nachzeichnen.
-  const rMax = CLUSTER_R * 1.35;
   for (let i = 0; i < CLUSTER_TRACER; i++) {
     const a = Math.random() * 2 * Math.PI;
-    const r = Math.max(rMax * Math.sqrt(Math.random()), 1);
+    const r = Math.max(CLUSTER_R_MAX * Math.sqrt(Math.random()), 1);
     const x = r * Math.cos(a), y = r * Math.sin(a);
-    const vc = KALT * vCirc(r);
+    const [vx, vy] = geschwindigkeit(x, y, 0.06);
     pushBody({
       name: 'S' + (i + 1), mass: 0,
       color: '#9fb8e0',
-      x, y,
-      vx: -y / r * vc + (Math.random() * 2 - 1) * 0.15 * vc,
-      vy:  x / r * vc + (Math.random() * 2 - 1) * 0.15 * vc,
+      x, y, vx, vy,
       rkm: 1,
       isAsteroid: true,
+    });
+  }
+}
+
+// Strukturbildung: dasselbe Feld, aber JEDES Teilchen traegt Masse und
+// spuert jedes andere. Das ist die Zutat, die den Galaxienhaufen-Szenarien
+// fehlt — nur so kann eine Ueberdichte sich selbst zusammenziehen und
+// Struktur entstehen, statt ein vorgegebenes Feld nachzuzeichnen.
+//
+// Der Preis ist die Teilchenzahl: alle gegen alle ist O(N^2), waehrend
+// masselose Tracer nur gegen die wenigen Massen laufen. Und der CUDA-Pfad
+// haelt die massiven Koerper im Shared Memory (M_MAX = 64), taugt hier
+// also nicht — dieses Szenario gehoert in den Worker. Der grosse Wurf mit
+// zehntausenden selbstgravitierenden Teilchen braucht einen Kernel mit
+// Tiling; siehe TODO.md.
+// Koerperzahl: alle gegen alle ist O(N^2), und gerechnet wird im Worker
+// auf EINEM CPU-Kern. Gemessen (Kraftberechnung mit typed arrays, drei
+// Yoshida-Auswertungen und vier Substeps je Bild):
+//   300 -> 6,5 ms/Bild   600 -> 9,4 ms   900 -> 19,2 ms   1500 -> 56 ms
+// Dazu kommen Kollisionspruefung, Spuren und Zeichnen. 500 haelt die
+// Wiedergabe fluessig und zeigt trotzdem deutliche Klumpenbildung; wer
+// feinere Struktur will, dreht hoch und nimmt das Tempo in Kauf.
+const STRUKTUR_N = 500;
+const STRUKTUR_R = 60000;        // AE, Radius des Anfangsgebiets
+const STRUKTUR_MASSE = 1e8 * CLUSTER_GALAXIEN / STRUKTUR_N;  // Gesamtmasse
+                                 // wie beim Haufen, nur feiner verteilt
+
+function buildStrukturbildung() {
+  const gesamt = STRUKTUR_MASSE * STRUKTUR_N;
+
+  // Klumpige Anfangsverteilung: ohne Dichtefluktuationen gibt es nichts,
+  // woran die Selbstgravitation ansetzen koennte. Die Keime sind die
+  // Ueberdichten, aus denen die Knoten werden.
+  const keime = [];
+  for (let i = 0; i < 9; i++) {
+    const a = Math.random() * 2 * Math.PI;
+    const r = STRUKTUR_R * (0.20 + 0.70 * Math.random());
+    keime.push([r * Math.cos(a), r * Math.sin(a)]);
+  }
+  const kmx = keime.reduce((s, k) => s + k[0], 0) / keime.length;
+  const kmy = keime.reduce((s, k) => s + k[1], 0) / keime.length;
+  for (const k of keime) { k[0] -= kmx; k[1] -= kmy; }
+
+  // Erst alle Orte wuerfeln, dann zentrieren, dann erst die
+  // Geschwindigkeiten. Grund: H muss am TATSAECHLICHEN Aussenrand
+  // kalibriert werden. Aus dem Sollradius geschaetzt liegt er daneben —
+  // die Keim-Klumpen reichen weiter, und die Schwerpunkt-Korrektur
+  // verschiebt zusaetzlich. Am echten Rand faellt die Expansion dann
+  // ueber die Fluchtgeschwindigkeit und der Haufen loest sich auf.
+  const px = [], py = [];
+  for (let i = 0; i < STRUKTUR_N; i++) {
+    // Zwei Drittel um die Keime, ein Drittel gleichmaessig verteilt — die
+    // Zwischenraeume brauchen Material, sonst gibt es nichts, was sich
+    // spaeter zu Bruecken zwischen den Knoten sammeln koennte.
+    if (i % 3 === 0) {
+      const a = Math.random() * 2 * Math.PI;
+      const r = STRUKTUR_R * 1.2 * Math.sqrt(Math.random());
+      px.push(r * Math.cos(a)); py.push(r * Math.sin(a));
+    } else {
+      const [kx, ky] = keime[i % keime.length];
+      px.push(kx + (Math.random() * 2 - 1) * STRUKTUR_R * 0.22);
+      py.push(ky + (Math.random() * 2 - 1) * STRUKTUR_R * 0.22);
+    }
+  }
+  // Alle Koerper sind gleich schwer, der Massenschwerpunkt ist also das
+  // arithmetische Mittel.
+  const mx = px.reduce((s, v) => s + v, 0) / STRUKTUR_N;
+  const my = py.reduce((s, v) => s + v, 0) / STRUKTUR_N;
+  let rMax = 1;
+  for (let i = 0; i < STRUKTUR_N; i++) {
+    px[i] -= mx; py[i] -= my;
+    rMax = Math.max(rMax, Math.hypot(px[i], py[i]));
+  }
+  // Marginal gebunden (Omega ~ 1): am Rand ist der Hubble-Fluss gerade
+  // die Fluchtgeschwindigkeit.
+  const hubble = Math.sqrt(2 * G_AU * gesamt / rMax) / rMax;
+
+  for (let i = 0; i < STRUKTUR_N; i++) {
+    const x = px[i], y = py[i];
+    const r = Math.hypot(x, y) || 1;
+    const vr = hubble * r;
+    const streu = () => (Math.random() * 2 - 1) * 0.08 * vr;
+    pushBody({
+      name: 'M' + (i + 1), mass: STRUKTUR_MASSE,
+      color: '#cfe0ff',
+      x, y,
+      vx: x / r * vr + streu(),
+      vy: y / r * vr + streu(),
+      // Kleiner Beruehrungsradius: Verschmelzungen sollen die seltene
+      // Ausnahme sein. Wuerden die Klumpen einander gleich auffressen,
+      // bliebe von der Struktur nur eine Handvoll Punkte uebrig.
+      rkm: 40 * AU / 1000,
     });
   }
 }
@@ -2136,38 +2336,47 @@ function buildChoreography(v1, v2, alpha) {
 }
 
 // Pro Szenario: Aufbau-Funktion + sinnvolle Voreinstellungen.
-// zoom    = Kamera-Zoom im linearen Modus
-// zoomLog = Kamera-Zoom im logarithmischen Modus (andere Skala!)
-// dt      = Zeitschritt Tage/Frame
-// slow    = Verlangsamungs-Slider-Wert (log10 des Faktors; 0 = 1x).
+// dt   = Zeitschritt Tage/Frame
+// slow = Verlangsamungs-Slider-Wert (log10 des Faktors; 0 = 1x).
+//
+// Kein Zoom-Preset: den setzt fitZoomToSystem() aus den tatsaechlichen
+// Koerper-Positionen. Ein Preset waere eine zweite Wahrheit, die nach
+// jedem Rogue-Einschlag oder Wolken-Wurf nicht mehr passt.
 const SCENARIOS = {
-  'Sonnensystem':          { build: buildSolarSystem,   zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
-  'Sonnensystem mit Gürteln': { build: buildSolarSystemWithBelts, zoom: 0.02, zoomLog: 4, dt: 1, slow: 0 },
-  'Trisolaris (3 Sonnen)': { build: buildTrisolaris,    zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, injectAngle: 180 },
-  'Lagrange (instabil)':   { build: buildLagrange,       zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
-  'Lagrange (stabil)':     { build: buildLagrangeStable, zoom: 6.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
-  'Trojaner (L4)':         { build: buildTrojan,         zoom: 0.6,  zoomLog: 6.55, dt: 1,   slow: 0, precise: true },
-  'Figur 8 (Choreografie)':{ build: buildFigure8,        zoom: 0.8,  zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
-  'Butterfly I':           { build: () => buildChoreography(0.30689, 0.12551, 2.5), zoom: 0.8, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
-  'Moth I':                { build: () => buildChoreography(0.46444, 0.39606, 2.5), zoom: 0.55, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
-  'Goggles':               { build: () => buildChoreography(0.08330, 0.12789, 2.5), zoom: 0.7, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
-  'Yarn':                  { build: () => buildChoreography(0.55906, 0.34919, 2.5), zoom: 0.9, zoomLog: 6.55, dt: 0.5, slow: 0, precise: true },
-  'Leeres System':         { build: buildEmpty,         zoom: 0.35, zoomLog: 6.55, dt: 1,   slow: 0 },
-  'TRAPPIST-1':            { build: buildTrappist,      zoom: 96,   zoomLog: 330,  dt: 0.1, slow: Math.log10(7) },
-  'Alpha Centauri':        { build: buildAlphaCentauri, zoom: 0.15, zoomLog: 6.55, dt: 5,   slow: 0 },
-  'Kepler-16':             { build: buildKepler16,      zoom: 8,    zoomLog: 30,   dt: 0.5, slow: 0 },
-  'Kepler-47 (Doppelstern, 3 Planeten)': { build: buildKepler47, zoom: 6, zoomLog: 30, dt: 0.1, slow: 0 },
-  // Braucht das CUDA-Backend: 150k Koerper sind fuer die Browser-Engines
-  // zu viel. zoom passt das Anfangsgebiet (~160.000 AE breit) ins Bild.
-  'Galaxienhaufen (Filamente)': { build: buildGalaxyCluster, zoom: 0.0001, zoomLog: 2.3, dt: 5, slow: 0 },
+  'Sonnensystem':          { build: buildSolarSystem,   dt: 1,   slow: 0 },
+  'Sonnensystem mit Gürteln': { build: buildSolarSystemWithBelts, dt: 1, slow: 0 },
+  'Trisolaris (3 Sonnen)': { build: buildTrisolaris,    dt: 0.5, slow: 0, injectAngle: 180 },
+  'Lagrange (instabil)':   { build: buildLagrange,      dt: 0.5, slow: 0, precise: true },
+  'Lagrange (stabil)':     { build: buildLagrangeStable, dt: 0.5, slow: 0, precise: true },
+  'Trojaner (L4)':         { build: buildTrojan,        dt: 1,   slow: 0, precise: true },
+  'Figur 8 (Choreografie)':{ build: buildFigure8,       dt: 0.5, slow: 0, precise: true },
+  'Butterfly I':           { build: () => buildChoreography(0.30689, 0.12551, 2.5), dt: 0.5, slow: 0, precise: true },
+  'Moth I':                { build: () => buildChoreography(0.46444, 0.39606, 2.5), dt: 0.5, slow: 0, precise: true },
+  'Goggles':               { build: () => buildChoreography(0.08330, 0.12789, 2.5), dt: 0.5, slow: 0, precise: true },
+  'Yarn':                  { build: () => buildChoreography(0.55906, 0.34919, 2.5), dt: 0.5, slow: 0, precise: true },
+  'Leeres System':         { build: buildEmpty,         dt: 1,   slow: 0 },
+  'TRAPPIST-1':            { build: buildTrappist,      dt: 0.1, slow: Math.log10(7) },
+  'Alpha Centauri':        { build: buildAlphaCentauri, dt: 5,   slow: 0 },
+  'Kepler-16':             { build: buildKepler16,      dt: 0.5, slow: 0 },
+  'Kepler-47 (Doppelstern, 3 Planeten)': { build: buildKepler47, dt: 0.1, slow: 0 },
+  // Brauchen das CUDA-Backend: 150k Koerper sind fuer die Browser-Engines
+  // zu viel. Gleicher Aufbau, unterschiedliches Geschwindigkeitsfeld —
+  // siehe den Block ueber buildGalaxyCluster.
+  'Galaxienhaufen (Kollaps)': {
+    build: () => buildGalaxyCluster({ tangential: 0.7, hubble: 0 }),
+    dt: 5, slow: 0 },
+  // Wenig Drehimpuls, dafuer die Expansion: 0,15 laesst dem Feld gerade
+  // genug Rotation, dass der Kollaps der Ueberdichten nicht rein radial
+  // in einen Punkt laeuft.
+  'Galaxienhaufen (Expansion)': {
+    build: () => buildGalaxyCluster({ tangential: 0.15, hubble: CLUSTER_H }),
+    dt: 5, slow: 0 },
+  // Umgekehrter Zuschnitt: wenige Koerper, dafuer traegt jeder Masse und
+  // spuert jeden anderen. `nurBrowser` haelt es vom CUDA-Pfad fern, dessen
+  // Kernel nur 64 massive Koerper im Shared Memory fuehrt.
+  'Strukturbildung (selbstgravitierend)': {
+    build: buildStrukturbildung, dt: 2, slow: 0, nurBrowser: true },
 };
-
-// Liefert den Szenario-Zoom passend zum aktiven Modus (linear vs. log).
-function scenarioZoom(name) {
-  const sc = SCENARIOS[name];
-  if (!sc) return useLogZoom ? 6.55 : 0.35;
-  return useLogZoom ? sc.zoomLog : sc.zoom;
-}
 
 function initBodies() {
   bodies = [];
@@ -2179,19 +2388,60 @@ function initBodies() {
 }
 
 // Koerper-Liste-UI (Checkboxen + Masse/Geschw.-Felder) neu aufbauen.
-function rebuildBodyList() {
-  [checkDiv, mobCheckDiv].forEach(c => { c.innerHTML = ''; });
+// Ab dieser Zahl startet die Koerperliste eingeklappt. Die Grenze ist
+// grosszuegig: bis dahin ist eine offene Liste noch ueberschaubar, und
+// wer sie will, klappt sie auf.
+const KOERPERLISTE_ZU_AB = 40;
+
+// Jeder Eintrag kostet zwei DOM-Knoten (Desktop + Mobil). Bei hunderten
+// massiven Koerpern ist das beim Szenario-Wechsel und nach jeder
+// Verschmelzung spuerbar — deshalb wird nur gefuellt, was auch offen ist.
+// Zugeklappte Listen merken sich den Nachholbedarf und bauen sich beim
+// Aufklappen auf.
+let _koerperlisteOffen = { desk: true, mob: true };
+
+function fuelleKoerperliste(details, ziel, offen) {
+  if (!offen) { ziel.innerHTML = ''; return; }
+  ziel.innerHTML = '';
   // Asteroiden NICHT einzeln auflisten — bei 100+ Wolken-Bodies sonst
   // sehr lange Liste, viele DOM-Updates, scroll-unfreundlich. Sie
   // werden ueber die Wolken-Buttons (Wolke loeschen / Fluechtende
   // loeschen) gemeinsam verwaltet.
   for (const b of bodies) {
     if (b.isAsteroid) continue;
-    addPlanetCheckbox(b, checkDiv);
-    addPlanetCheckbox(b, mobCheckDiv);
+    addPlanetCheckbox(b, ziel);
+  }
+}
+
+// `neueSzene` = die Koerper wurden komplett ausgetauscht (Szenario-Wechsel,
+// Reset, Import). Nur dann wird ueber den Klappzustand neu entschieden;
+// bei den laufenden Aufrufen (Verschmelzung, Rogue) bleibt stehen, was der
+// Nutzer eingestellt hat.
+function rebuildBodyList(neueSzene = false) {
+  const anzahl = bodies.reduce((n, b) => n + (b.isAsteroid ? 0 : 1), 0);
+  const paare = [['bodies-details', checkDiv, 'planet-checks-count', 'desk'],
+                 ['mob-bodies-details', mobCheckDiv, 'mob-planet-checks-count', 'mob']];
+  for (const [detId, ziel, zaehlerId, schluessel] of paare) {
+    const det = document.getElementById(detId);
+    const zaehler = document.getElementById(zaehlerId);
+    if (zaehler) zaehler.textContent = '(' + fmtDE(anzahl, 0) + ')';
+    if (det && neueSzene) det.open = anzahl <= KOERPERLISTE_ZU_AB;
+    _koerperlisteOffen[schluessel] = det ? det.open : true;
+    fuelleKoerperliste(det, ziel, _koerperlisteOffen[schluessel]);
   }
   updatePerturberList();
   updateApplyButton();
+}
+
+for (const [detId, ziel, schluessel] of
+     [['bodies-details', 'planet-checks', 'desk'],
+      ['mob-bodies-details', 'mob-planet-checks', 'mob']]) {
+  const det = document.getElementById(detId);
+  if (!det) continue;
+  det.addEventListener('toggle', function () {
+    _koerperlisteOffen[schluessel] = det.open;
+    fuelleKoerperliste(det, document.getElementById(ziel), det.open);
+  });
 }
 
 // Szenario laden: Koerper neu aufbauen + Koerper-Liste-UI neu erzeugen.
@@ -2218,16 +2468,14 @@ function loadScenario(name) {
   perturberCounter = 0;
   fragmentCounter = 0;
   totalCollisions = 0;
+  totalEntwichen = 0;
   collisionFlashes.length = 0;
-  const cc = document.getElementById('collision-count');
-  if (cc) cc.textContent = '0';
-  const cb = document.getElementById('collision-badge');
-  if (cb) cb.classList.remove('show');
+  updateCollisionBadge();
   simTime = 0;
   realElapsedMs = 0; lastTickMs = 0;
   injectMarked = false;
   initBodies();
-  rebuildBodyList();
+  rebuildBodyList(true);   // neue Szene: Klappzustand neu bestimmen
 }
 
 // ============================================================
@@ -2336,16 +2584,14 @@ function restoreState(state) {
     if (m) asteroidCounter = Math.max(asteroidCounter, parseInt(m[1], 10));
   }
   totalCollisions = 0;
+  totalEntwichen = 0;
   collisionFlashes.length = 0;
-  const cc2 = document.getElementById('collision-count');
-  if (cc2) cc2.textContent = '0';
-  const cb2 = document.getElementById('collision-badge');
-  if (cb2) cb2.classList.remove('show');
+  updateCollisionBadge();
   simTime = 0; injectMarked = false;
   realElapsedMs = 0; lastTickMs = 0;
   computeAccelerations();
   computeTrailInterval();
-  rebuildBodyList();
+  rebuildBodyList(true);   // neue Szene: Klappzustand neu bestimmen
   // Zoom-Modus mitrestaurieren: der gespeicherte zoom-Wert gilt fuer genau
   // diesen Modus (lineare und log. Skala sind nicht vergleichbar).
   if (state.logZoom != null) {
@@ -2434,7 +2680,9 @@ const SCENARIO_I18N_KEY = {
   'Alpha Centauri': 'sc.alphacen',
   'Kepler-16': 'sc.kepler16',
   'Kepler-47 (Doppelstern, 3 Planeten)': 'sc.kepler47',
-  'Galaxienhaufen (Filamente)': 'sc.cluster',
+  'Galaxienhaufen (Kollaps)': 'sc.cluster-kollaps',
+  'Galaxienhaufen (Expansion)': 'sc.cluster',
+  'Strukturbildung (selbstgravitierend)': 'sc.struktur',
 };
 
 // Szenario-Auswahl neu befuellen: Presets + gespeicherte Konfigurationen.
@@ -3650,17 +3898,17 @@ function draw() {
 
   // Bodies (Asteroiden werden uebersprungen — schon im Batch oben gezeichnet;
   // ausgenommen unbound-/Fokus-Marker, die einzeln gerendert bleiben).
-  // Ohne Flucht-Markierung/Asti-Fokus interessieren hier nur die paar
-  // massiven Koerper — der 250k-Scan mit 3 Property-Reads entfaellt.
-  const _astiSonderfaelle = astEscapeMark ||
+  // Ohne Asteroiden-Fluchterkennung/Asti-Fokus interessieren hier nur die
+  // paar massiven Koerper — der 250k-Scan mit 3 Property-Reads entfaellt.
+  const _astiSonderfaelle = astEscape ||
                             (focusBody && focusBody.isAsteroid);
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (b.isAsteroid && !_astiSonderfaelle) continue;
     if (!b.visible) continue;
-    // Flucht-Asteroid nur dann einzeln (mit rotem Ring) zeichnen, wenn Markierung an;
-    // sonst normal gebatcht — Erkennung laeuft trotzdem (fuer Aufraeumen).
-    if (b.isAsteroid && !(b.unbound && astEscapeMark) && b !== focusBody) continue;
+    // Flucht-Asteroid einzeln (mit rotem Ring) zeichnen; ohne Erkennung
+    // ist unbound nie gesetzt und er bleibt im normalen Batch.
+    if (b.isAsteroid && !b.unbound && b !== focusBody) continue;
     const [sx, sy] = worldToScreen(b.x, b.y);
     if (b.isAsteroid) {
       // Nur Marker, kein erneutes Zeichnen des Body-Punkts (ist schon da).
@@ -3733,7 +3981,7 @@ function draw() {
     }
 
     // Fluchtkurs-Markierung: pulsierender roter Ring
-    if (b.unbound) {
+    if (b.unbound && massEscape) {
       const ph = (Math.sin(performance.now() / 160) + 1) / 2;  // 0..1
       ctx.beginPath();
       ctx.strokeStyle = `rgba(255,90,90,${(0.25 + 0.7 * ph).toFixed(3)})`;
@@ -3762,7 +4010,7 @@ function draw() {
 
     // Label (Asteroiden bekommen nie ein Label — sie wurden weiter oben
     // im Pre-Pass behandelt und springen mit continue aus dieser Schleife).
-    ctx.fillStyle = b.unbound ? '#ff6a6a' : b.color + 'dd';
+    ctx.fillStyle = (b.unbound && massEscape) ? '#ff6a6a' : b.color + 'dd';
     ctx.font = '11px monospace';
     ctx.fillText(b.name, sx + b.radius + 5, sy + 4);
   }
@@ -4379,6 +4627,11 @@ function _cudaSetVisible(visible) {
   }
   if (!visible && typeof filmActive !== 'undefined' && filmActive) filmStop();
   _filmControlsAktiv();
+  // Der Server kann verfuegbar sein und das Szenario trotzdem nicht auf
+  // CUDA laufen — die Sperre muss beim Einblenden erneut greifen.
+  if (visible && typeof cudaVerfuegbarkeitPruefen === 'function') {
+    cudaVerfuegbarkeitPruefen();
+  }
 }
 
 // Film-Bedienelemente (Checkbox + die vier Regler) nur aktiv, wenn das
@@ -4472,7 +4725,8 @@ function zerlegeFilm(buf) {
       a: dv.getUint32(off + 8, true),
       b: dv.getUint32(off + 12, true),
       mass: dv.getFloat32(off + 16, true),
-      kind: dv.getUint32(off + 20, true),   // 0=merge/kill, 1=bounce
+      kind: dv.getUint32(off + 20, true),   // 0=merge/kill, 1=bounce,
+                                            // 2=Numerik-Waechter
       x: dv.getFloat32(off + 24, true),     // exakter Ereignis-Ort
       y: dv.getFloat32(off + 28, true),
     });
@@ -5042,8 +5296,10 @@ function filmStart() {
   filmRefs = src.slice();
   filmEvents = [];
   _filmEventsApplied = 0;
+  _filmEntwichenApplied = 0;
   collisionFlashes.length = 0;       // Flashes der alten Session verwerfen
   _filmCollBase = totalCollisions;   // Neustart: bisherige Zaehlung behalten
+  _filmEntwichenBase = totalEntwichen;
   _filmEvVerworfen = 0;              // gilt je Session (Server zaehlt neu)
   _filmBaseVis = new Uint8Array(N);
   _filmBaseMass = new Float64Array(N);
@@ -5269,6 +5525,8 @@ let _filmMetaTail = 0;       // Server-Puffergrenzen (aus jedem Push-Frame)
 let _filmMetaHead = 0;
 let filmEvents = [];         // Merge/Kill-Ereignisse { t, a, b, mass }
 let _filmEventsApplied = 0;
+let _filmEntwichenApplied = 0;   // davon Waechter-Ereignisse (kind 2)
+let _filmEntwichenBase = 0;      // Stand vor der aktuellen Session
 let _filmBaseVis = null;     // Baseline fuer Rueckspulen ueber Ereignisse
 let _filmBaseMass = null;
 let _filmEvVis = null;       // Ereignis-Sichtbarkeit (Kills angewendet)
@@ -5555,6 +5813,7 @@ function filmApplyEvents(t) {
       }
     }
     _filmEventsApplied = 0;
+    _filmEntwichenApplied = 0;
   }
   let changed = false;
   let flashes = 0;
@@ -5577,6 +5836,19 @@ function filmApplyEvents(t) {
     // auf (Feuerwerk-Puls), weil sie denselben Zeitstempel teilen.
     const subRaster = (((ev.a ^ ev.b) >>> 0) % 1000) / 1000 * rasterTage;
     const flashAge = Math.max(0, (t - ev.t + subRaster)) * msProTag;
+    if (ev.kind === 2) {
+      // Numerik-Waechter: der Producer nimmt einen Asteroiden aus der
+      // Rechnung, der schneller als das Dreifache der Fluchtgeschwindig-
+      // keit ist. Er verschwindet wie bei einem Kill, aber es ist keine
+      // Kollision — kein Partner, kein Blitz, eigener Zaehler.
+      if (ev.b < _filmEvVis.length) {
+        _filmEvVis[ev.b] = 0;
+        if (filmRefs[ev.b]) filmRefs[ev.b].visible = false;
+      }
+      _filmEntwichenApplied++;
+      changed = true;
+      continue;
+    }
     if (ev.kind === 1) {
       // Bounce: niemand stirbt, keine Massenaenderung — nur Zaehler und
       // Visuals wie in den Live-Engines (Farb-Marker + Explosions-Flash).
@@ -5635,17 +5907,18 @@ function filmApplyEvents(t) {
     }
     changed = true;
   }
-  if (changed ||
-      totalCollisions !== _filmCollBase + _filmEventsApplied +
-                          _filmEvVerworfen) {
-    // Basis + Session-Events: Zaehlerstaende ueberleben so die Film-
-    // Neustarts (Inject, Zerbersten), statt auf 0 zu springen.
-    totalCollisions = _filmCollBase + _filmEventsApplied +
-                      _filmEvVerworfen;
-    const cc = document.getElementById('collision-count');
-    if (cc) cc.textContent = fmtDE(totalCollisions, 0);
-    const cb = document.getElementById('collision-badge');
-    if (cb) cb.classList.toggle('show', totalCollisions > 0);
+  // Basis + Session-Events: Zaehlerstaende ueberleben so die Film-
+  // Neustarts (Inject, Zerbersten), statt auf 0 zu springen. Die
+  // Waechter-Ereignisse stecken mit in _filmEventsApplied (es ist ein
+  // Index in filmEvents) und muessen deshalb wieder abgezogen werden —
+  // sie sind keine Kollisionen.
+  const koll = _filmCollBase + _filmEventsApplied + _filmEvVerworfen -
+               _filmEntwichenApplied;
+  const entw = _filmEntwichenBase + _filmEntwichenApplied;
+  if (changed || totalCollisions !== koll || totalEntwichen !== entw) {
+    totalCollisions = koll;
+    totalEntwichen = entw;
+    updateCollisionBadge();
   }
 }
 
@@ -5672,8 +5945,7 @@ function filmTick(dtDays, slowFactor, nowMs) {
                           false, null, A);
       shatter(A, B);
       totalCollisions++;
-      const cc = document.getElementById('collision-count');
-      if (cc) cc.textContent = fmtDE(totalCollisions, 0);
+      updateCollisionBadge();
     }
     // Neustart ueber den bewaehrten Dump-Mechanismus (der Server
     // antwortet auf FILM_STOP mit dem Shatter-Dump als status=5).
@@ -6119,7 +6391,7 @@ var useHybrid = false;               // Hybrid: massive Koerper Worker-f64, Aste
 var useCuda = false;                 // natives CUDA-Backend (localhost, f64)
 var astAstCollisions = DEFAULTS.astAstCollisions;  // Toggle Asteroid x Asteroid (default aus, teuer)
 var astEscape = DEFAULTS.astEscape;                // Toggle Asteroiden-Fluchterkennung
-var astEscapeMark = DEFAULTS.astEscapeMark;        // Toggle Ring-Markierung der Flucht-Asteroiden
+var massEscape = DEFAULTS.massEscape;        // Toggle Fluchtkurs-Markierung (alle Koerpertypen)
 var hybridNearWorker = DEFAULTS.hybridNearWorker;  // Toggle: nahe Asteroiden im Hybrid auf den Worker
 let gpu = null;            // { device, pipeline } oder null
 const gpuBuf = { state: null, accel: null, params: null, read: null, bind: null, N: 0 };
@@ -6500,7 +6772,27 @@ function spawnCollisionFlash(x, y, scale, asteroid, track, cooldownBody,
   return true;
 }
 let totalCollisions = 0;
+// Vom Numerik-Waechter des Film-Producers entfernte Asteroiden (schneller
+// als das Dreifache der Fluchtgeschwindigkeit). Getrennt gefuehrt, weil
+// es keine Kollisionen sind — sie haben keinen Partner und keinen Ort,
+// an dem etwas passiert waere.
+let totalEntwichen = 0;
 let perturberCounter = 0;   // monoton — eindeutige Stoermassen-Namen
+
+// Einzige Stelle, die das Kollisions-Badge schreibt. Der Waechter-Teil
+// erscheint erst, wenn er etwas zu zeigen hat — bei den Browser-Engines
+// bleibt er dauerhaft aus (dort raeumt niemand auf).
+function updateCollisionBadge() {
+  const cc = document.getElementById('collision-count');
+  if (cc) cc.textContent = fmtDE(totalCollisions, 0);
+  const wc = document.getElementById('entwichen-count');
+  if (wc) wc.textContent = fmtDE(totalEntwichen, 0);
+  const wp = document.getElementById('entwichen-part');
+  if (wp) wp.style.display = totalEntwichen > 0 ? '' : 'none';
+  const cb = document.getElementById('collision-badge');
+  if (cb) cb.classList.toggle('show',
+                              totalCollisions > 0 || totalEntwichen > 0);
+}
 
 function removeBody(b) {
   const i = bodies.indexOf(b);
@@ -6937,10 +7229,7 @@ function _tryCollide(a, b, dtFrame) {
   spawnCollisionFlash(flashX, flashY, flashScale, aIsAst || bIsAst,
                       flashTrack, flashTrack || b);
   totalCollisions++;
-  const countEl = document.getElementById('collision-count');
-  if (countEl) countEl.textContent = fmtDE(totalCollisions, 0);
-  const badge = document.getElementById('collision-badge');
-  if (badge && !badge.classList.contains('show')) badge.classList.add('show');
+  updateCollisionBadge();
   if (heavyChange) {
     computeAccelerations();
     updatePerturberList();
@@ -7279,10 +7568,7 @@ document.getElementById('slow-slider').addEventListener('input', function() {
   document.getElementById('mob-slow-val').textContent = slowLabel(this.value);
 });
 document.getElementById('zoom-slider').addEventListener('input', function() {
-  cam.zoom = parseFloat(this.value);
-  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
-  document.getElementById('mob-zoom-slider').value = this.value;
-  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
+  applyZoom(sliderToZoom(this.value));
 });
 
 // Bahnspur-Laenge — sofort wirksam, kuerzt bestehende Spuren mit.
@@ -7398,6 +7684,9 @@ function onScenarioChange(name) {
   }
   document.getElementById('scenario-select').value = name;
   document.getElementById('mob-scenario-select').value = name;
+  // Engine-Wahl an die neue Szene anpassen (CUDA taugt nicht fuer
+  // Szenarien aus hunderten massiven Koerpern).
+  cudaVerfuegbarkeitPruefen();
   // Leeres System startet pausiert — zum Bauen per Klick.
   setPaused(name === 'Leeres System');
   try { localStorage.setItem('sim_scenario', name); } catch (e) {}
@@ -7449,10 +7738,7 @@ document.getElementById('mob-slow-slider').addEventListener('input', function() 
   document.getElementById('slow-val').textContent = slowLabel(this.value);
 });
 document.getElementById('mob-zoom-slider').addEventListener('input', function() {
-  cam.zoom = parseFloat(this.value);
-  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
-  document.getElementById('zoom-slider').value = this.value;
-  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
+  applyZoom(sliderToZoom(this.value));
 });
 document.getElementById('mob-p-mass').addEventListener('input', function() {
   document.getElementById('mob-p-mass-val').textContent = fmtMassWithSun(Math.pow(10, parseFloat(this.value)));
@@ -7519,24 +7805,31 @@ function updateCloudDerived() {
     document.getElementById('mob-cloud-jit').value = this.value;
   });
 });
-// Cloud-Gesamtmasse-Slider: log-Skala -5..2 (1e-5 .. 100 M⊕).
-// Default -3 = 0,001 M⊕ entspricht dem realen Asteroidengürtel.
-// Label dynamisch dezimal — keine Exponentialschreibweise, trailing zeros
-// nach dem Komma werden getrimmt (min. eine Nachkommastelle bleibt).
-function cloudMassLabel(sliderVal) {
-  const m = Math.pow(10, parseFloat(sliderVal));
-  if (m >= 100) return fmtDE(Math.round(m), 0);
+// Zahl ueber viele Groessenordnungen dezimal beschriften — keine
+// Exponentialschreibweise. Die Nachkommastellen wachsen, je kleiner der
+// Wert wird; trailing zeros werden getrimmt (min. eine Stelle bleibt).
+// Gemeinsam genutzt von Wolken-Masse und Zoom, die beide auf log-Slidern
+// sitzen und dieselbe Lesbarkeits-Frage haben.
+function dezimalLabel(v) {
+  if (v >= 100) return fmtDE(Math.round(v), 0);
   let digits;
-  if (m >= 10)         digits = 1;
-  else if (m >= 0.1)   digits = 2;
-  else if (m >= 0.01)  digits = 3;
-  else if (m >= 0.001) digits = 4;
-  else                 digits = 5;
-  let s = fmtDE(m, digits);
+  if (v >= 10)          digits = 1;
+  else if (v >= 0.1)    digits = 2;
+  else if (v >= 0.01)   digits = 3;
+  else if (v >= 0.001)  digits = 4;
+  else if (v >= 0.0001) digits = 5;
+  else                  digits = 6;
+  let s = fmtDE(v, digits);
   if (s.indexOf(',') >= 0) {
     s = s.replace(/0+$/, '').replace(/,$/, ',0');
   }
   return s;
+}
+
+// Cloud-Gesamtmasse-Slider: log-Skala -5..2 (1e-5 .. 100 M⊕).
+// Default -3 = 0,001 M⊕ entspricht dem realen Asteroidengürtel.
+function cloudMassLabel(sliderVal) {
+  return dezimalLabel(Math.pow(10, parseFloat(sliderVal)));
 }
 ['cloud-mass', 'mob-cloud-mass'].forEach(id => {
   document.getElementById(id).addEventListener('input', function() {
@@ -7552,27 +7845,52 @@ let targetZoom = 0.35;
 let zoomLerping = false;
 let panLerpTarget = null;   // {x, y} im transformierten Kamera-Raum, oder null
 
-// Setzt den Kamera-Zoom sofort (kein Lerp) und synchronisiert beide
-// Slider + Anzeigen. Fuer Reset, Szenario-Wechsel, Mausrad, Buttons.
+// Grenzen des Kamera-Zooms (px pro AE = zoom * 80). Einzige Wahrheit —
+// Slider-Skala, Auto-Fit, Mausrad, Pinch und die +/-Knoepfe leiten sich
+// hieraus ab.
+//
+// Die Untergrenze bestimmt, wie gross eine Szene sein darf, die noch
+// komplett ins Bild passt: bei 1e-5 sind das rund 500.000 AE Halbmesser,
+// genug fuer den Galaxienhaufen (81.000 AE) auch im linearen Modus.
+const ZOOM_MIN = 1e-5;
+const ZOOM_MAX = 500;
+
+function clampZoom(z) {
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+}
+
+// Der Slider laeuft logarithmisch: seine Position ist log10(zoom). Linear
+// waere der Regler ueber sieben Dekaden unbrauchbar — alles unterhalb von
+// Zoom 1 lebte dann im ersten Promille des Weges.
+const zoomToSlider = z => Math.log10(z);
+const sliderToZoom = pos => Math.pow(10, parseFloat(pos));
+
+// Beide Zoom-Slider (Desktop + Mobil) und ihre Wertanzeigen auf einen
+// Zoom stellen. Einzige Stelle, die die Slider-Skala kennt.
+function syncZoomUI(z) {
+  const pos = zoomToSlider(z);
+  const txt = dezimalLabel(z);
+  document.getElementById('zoom-slider').value = pos;
+  document.getElementById('zoom-val').textContent = txt;
+  document.getElementById('mob-zoom-slider').value = pos;
+  document.getElementById('mob-zoom-val').textContent = txt;
+}
+
+// Setzt den Kamera-Zoom sofort (kein Lerp) und synchronisiert die UI.
+// Fuer Reset, Szenario-Wechsel, Mausrad, Pinch, Buttons, Slider.
 function applyZoom(z) {
-  cam.zoom = z;
-  targetZoom = z;
+  cam.zoom = clampZoom(z);
+  targetZoom = cam.zoom;
   zoomLerping = false;
-  document.getElementById('zoom-slider').value = z;
-  document.getElementById('zoom-val').textContent = fmtDE(z, 2);
-  document.getElementById('mob-zoom-slider').value = z;
-  document.getElementById('mob-zoom-val').textContent = fmtDE(z, 2);
+  syncZoomUI(cam.zoom);
 }
 
 // Setzt nur das Zoom-Ziel — simLoop lerpt cam.zoom dorthin. Fuer
 // weiche Uebergange beim Log/Linear-Toggle.
 function applyZoomSmooth(z) {
-  targetZoom = z;
+  targetZoom = clampZoom(z);
   zoomLerping = true;
-  document.getElementById('zoom-slider').value = z;
-  document.getElementById('zoom-val').textContent = fmtDE(z, 2);
-  document.getElementById('mob-zoom-slider').value = z;
-  document.getElementById('mob-zoom-val').textContent = fmtDE(z, 2);
+  syncZoomUI(targetZoom);
 }
 
 // Auto-Fit: Zoom so waehlen, dass alle relevanten Bodies im Bild
@@ -7622,7 +7940,7 @@ function fitZoomToSystem(smooth = false) {
     if (dy < -1e-9) minZoom = Math.min(minZoom, halfTop    / -dy);
   }
   if (!isFinite(minZoom)) minZoom = useLogZoom ? 6.55 : 0.35;
-  const target = Math.max(0.001, Math.min(500, minZoom));
+  const target = clampZoom(minZoom);
   if (smooth) {
     applyZoomSmooth(target);
     // Pan-Ziel setzen — wird im simLoop gelerpt, auch wenn
@@ -7692,7 +8010,7 @@ const chkSync = [
   ['chk-bary-no-rogue', 'mob-chk-bary-no-rogue', 'excludeRoguesFromBary'],
   ['chk-ast-ast', 'mob-chk-ast-ast', 'astAstCollisions'],
   ['chk-ast-escape', 'mob-chk-ast-escape', 'astEscape'],
-  ['chk-ast-escape-mark', 'mob-chk-ast-escape-mark', 'astEscapeMark'],
+  ['chk-mass-escape', 'mob-chk-mass-escape', 'massEscape'],
   ['chk-hybrid-near', 'mob-chk-hybrid-near', 'hybridNearWorker'],
 ];
 chkSync.forEach(([desk, mob, varName]) => {
@@ -7733,6 +8051,33 @@ chkSync.forEach(([desk, mob, varName]) => {
 // gegenseitig aus -> native Radio-Gruppe. mode: 'cpu' | 'worker' | 'gpu' |
 // 'hybrid'. Hybrid = massive Koerper Worker-f64 + Asteroiden GPU-f32.
 // Desktop- und Mobile-Gruppe (name="engine" / "engine-mob") werden gespiegelt.
+// Szenarien mit hunderten MASSIVEN Koerpern koennen nicht auf CUDA. Der
+// Kernel ist fuer wenige Massen und viele Testteilchen gebaut: er laedt
+// die Massen mit `threadIdx.x < M` in den Shared Memory (Block = 256) und
+// rechnet massiv-x-massiv anschliessend in `if (tid == 0)` — also O(M^2)
+// SERIELL auf einem einzigen GPU-Thread. Bei 900 Koerpern waeren das
+// 810.000 Paare auf einem Thread, um Groessenordnungen langsamer als der
+// Worker. Nicht bloss die Konstante M_MAX steht im Weg, sondern der
+// Zuschnitt des Kernels; der Umbau steht in TODO.md.
+//
+// Statt die Wahl still zu umgehen, wird sie hier gesperrt: der Knopf ist
+// deaktiviert und eine laufende CUDA-Sitzung schaltet sichtbar auf den
+// Worker um. Eine Engine-Anzeige, die etwas anderes meldet als das, was
+// rechnet, ist schlimmer als eine ausgegraute Option.
+function cudaVerfuegbarkeitPruefen() {
+  const sc = SCENARIOS[currentScenario];
+  const gesperrt = !!(sc && sc.nurBrowser);
+  for (const id of ['rad-cuda', 'mob-rad-cuda']) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = gesperrt;
+  }
+  for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda']) {
+    const el = document.getElementById(id);
+    if (el) el.title = gesperrt ? t('tt.cuda-gesperrt') : t('tt.cuda');
+  }
+  if (gesperrt && useCuda) applyEngine('worker', true);
+}
+
 function applyEngine(mode, persist) {
   useWorker = (mode === 'worker');
   useGPU    = (mode === 'gpu');
@@ -7844,19 +8189,11 @@ document.getElementById('btn-reset').addEventListener('click', function() {
 });
 
 document.getElementById('mob-zoom-in').addEventListener('click', function() {
-  cam.zoom = Math.min(500, cam.zoom * 1.3);
-  document.getElementById('zoom-slider').value = cam.zoom;
-  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
-  document.getElementById('mob-zoom-slider').value = cam.zoom;
-  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
+  applyZoom(cam.zoom * 1.3);
 });
 
 document.getElementById('mob-zoom-out').addEventListener('click', function() {
-  cam.zoom = Math.max(0.001, cam.zoom / 1.3);
-  document.getElementById('zoom-slider').value = cam.zoom;
-  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
-  document.getElementById('mob-zoom-slider').value = cam.zoom;
-  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
+  applyZoom(cam.zoom / 1.3);
 });
 
 // Planet visibility (desktop)
@@ -8233,11 +8570,22 @@ document.getElementById('mob-recenter').addEventListener('click', doRecenter);
 document.getElementById('btn-clear-pert').addEventListener('click', doClearPerturbers);
 document.getElementById('mob-clear-pert').addEventListener('click', doClearPerturbers);
 
+// Zaehlt, was "Fluechtende entfernen" treffen wuerde: alles mit
+// ↗-Markierung (escapeScore >= 25) — aber nur aus den Klassen, deren
+// Fluchterkennung eingeschaltet ist. Der Knopf raeumt nichts weg, was
+// der Nutzer nicht auch angezeigt bekommt.
+//
+// Bei Asteroiden bleibt escapeScore ohne astEscape ohnehin 0; die
+// Abfrage steht trotzdem da, damit die Regel an einer Stelle vollstaendig
+// lesbar ist und nicht aus zwei entfernten Codestellen erschlossen
+// werden muss.
+function fluechtendeKandidaten() {
+  return bodies.filter(b => (b.escapeScore || 0) >= 25 &&
+                            (b.isAsteroid ? astEscape : massEscape));
+}
+
 function doClearEscaping() {
-  // Alle Bodies mit ↗-Markierung (escapeScore >= 25) loeschen — egal ob
-  // System-Body oder Rogue. Nuetzlich nach chaotischen Vorbeifluegen.
-  const victims = bodies.filter(b => (b.escapeScore || 0) >= 25);
-  for (const v of victims) removeBody(v);
+  for (const v of fluechtendeKandidaten()) removeBody(v);
   rebuildBodyList();
 }
 document.getElementById('btn-clear-escaping').addEventListener('click', doClearEscaping);
@@ -8523,11 +8871,7 @@ canvas.addEventListener('mouseleave', function() {
 canvas.addEventListener('wheel', function(e) {
   e.preventDefault();
   const factor = e.deltaY < 0 ? 1.15 : 0.87;
-  cam.zoom = Math.max(0.001, Math.min(500, cam.zoom * factor));
-  document.getElementById('zoom-slider').value = cam.zoom;
-  document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
-  document.getElementById('mob-zoom-slider').value = cam.zoom;
-  document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
+  applyZoom(cam.zoom * factor);
 });
 
 // ============================================================
@@ -8664,11 +9008,7 @@ canvas.addEventListener('touchmove', function(e) {
     // Pinch zoom
     const dist = getTouchDist(e.touches[0], e.touches[1]);
     const scale = dist / touchPinchStartDist;
-    cam.zoom = Math.max(0.001, Math.min(500, touchPinchStartZoom * scale));
-    document.getElementById('zoom-slider').value = cam.zoom;
-    document.getElementById('zoom-val').textContent = fmtDE(cam.zoom, 2);
-    document.getElementById('mob-zoom-slider').value = cam.zoom;
-    document.getElementById('mob-zoom-val').textContent = fmtDE(cam.zoom, 2);
+    applyZoom(touchPinchStartZoom * scale);
 
     // Pan (Standard 2-Finger-Pan).
     const mid = getTouchMidpoint(e.touches[0], e.touches[1]);
@@ -8873,12 +9213,28 @@ canvas.addEventListener('touchcancel', function(e) {
 // Setzt alle Slider + Checkboxen (Desktop + Mobile) aus dem zentralen
 // DEFAULTS-Block oben im Script. Aufrufen VOR den anderen Init-Schritten.
 function applyDefaults() {
+  // Zoom-Skala aus den Konstanten, bevor irgendwer einen Wert setzt.
+  // Der Zoom-Slider steht bewusst NICHT in sliderDefs: er ist kein Regler
+  // mit eigenem Zustand, sondern die Anzeige der Kamera (siehe
+  // CONTROLS_AUSSEN). Persistieren waere sinnlos — der Auto-Fit beim
+  // Szenario-Load ueberschreibt den Wert ohnehin sofort.
+  // Die Grenzen aufs Raster legen (aussen herum, nie enger), sonst ist der
+  // letzte Rasterpunkt vor max unerreichbar und der Anschlag bleibt knapp
+  // unter ZOOM_MAX haengen. clampZoom faengt den Ueberhang ab.
+  const ZOOM_STEP = 0.001;
+  for (const id of ['zoom-slider', 'mob-zoom-slider']) {
+    const el = document.getElementById(id);
+    el.min = Math.floor(zoomToSlider(ZOOM_MIN) / ZOOM_STEP) * ZOOM_STEP;
+    el.max = Math.ceil(zoomToSlider(ZOOM_MAX) / ZOOM_STEP) * ZOOM_STEP;
+    el.step = ZOOM_STEP;
+  }
+  applyZoom(DEFAULTS.zoom);
+
   // Slider — Liste von [stem, defaultValue]; Desktop ('stem') und Mobile
   // ('mob-stem') werden gleich behandelt.
   const sliderDefs = [
     ['dt-slider',        DEFAULTS.dt],
     ['slow-slider',      DEFAULTS.slow],
-    ['zoom-slider',      DEFAULTS.zoom],
     ['trail-slider',     DEFAULTS.trail],
     ['trail-ast-slider', DEFAULTS.trailAst],
     ['p-mass',           DEFAULTS.injectMass],
@@ -8896,6 +9252,7 @@ function applyDefaults() {
     ['film-raster',      DEFAULTS.filmRaster],
     ['film-speed',       DEFAULTS.filmSpeed],
     ['film-lod',         DEFAULTS.filmLod],
+    ['film-sub',         DEFAULTS.filmSub],
   ];
   for (const [stem, val] of sliderDefs) {
     // Slider-Persistierung: wenn ein Wert in localStorage gespeichert ist,
@@ -8934,7 +9291,7 @@ function applyDefaults() {
     ['chk-bary-no-rogue',  'excludeRoguesFromBary', DEFAULTS.excludeRoguesFromBary],
     ['chk-ast-ast',        'astAstCollisions',      DEFAULTS.astAstCollisions],
     ['chk-ast-escape',     'astEscape',             DEFAULTS.astEscape],
-    ['chk-ast-escape-mark','astEscapeMark',         DEFAULTS.astEscapeMark],
+    ['chk-mass-escape','massEscape',         DEFAULTS.massEscape],
     ['chk-hybrid-near',    'hybridNearWorker',      DEFAULTS.hybridNearWorker],
   ];
   for (const [stem, varName, val] of chkDefs) {
@@ -9006,22 +9363,6 @@ setLang(currentLang);
 // wenn kein WebGL verfuegbar). Muss NACH resize() laufen, damit das
 // ast-canvas die korrekte Aufloesung bekommt.
 initAsteroidGL();
-
-// Sub-Toggle "Flüchtende markieren" nur aktiv, wenn die Asteroiden-Fluchterkennung an
-// ist (sonst gibt es nichts zu markieren). Spiegelt Desktop + Mobile.
-(function () {
-  function syncAstEscapeMarkEnabled() {
-    for (const id of ['chk-ast-escape-mark', 'mob-chk-ast-escape-mark']) {
-      const el = document.getElementById(id);
-      if (el) el.disabled = !astEscape;
-    }
-  }
-  for (const id of ['chk-ast-escape', 'mob-chk-ast-escape']) {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('change', syncAstEscapeMarkEnabled);
-  }
-  syncAstEscapeMarkEnabled();
-})();
 
 simLoop();
 

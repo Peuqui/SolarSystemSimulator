@@ -39,7 +39,9 @@ EV_BYTES = 32    # Ereignis: f64 tTage | u32 a (Ueberlebender/0xFFFFFFFF) |
 #                  fehlt im Folge-Sample, seine interpolierte Position
 #                  stammt je nach Stream-Dichte von Tagen davor)
 #                  kind 0 = merge/kill (b verschwindet), 1 = bounce (nur
-#                  Zaehler + Visual, niemand stirbt)
+#                  Zaehler + Visual, niemand stirbt), 2 = Numerik-Waechter
+#                  (b verschwindet wie bei 0, ist aber KEINE Kollision:
+#                  kein Partner, kein Blitz, eigener Zaehler)
 
 BOUNCE_E = 0.6      # Restitution (wie BOUNCE_RESTITUTION im JS)
 
@@ -679,9 +681,12 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 sim.deactivate_body(st_local, j)
                 mass[j] = 0.0
                 vis[j] = 0
-                emit_event(0xFFFFFFFF, j, 0.0, 0, k_ev,
-                           float(sx[j]), float(sy[j]))   # Numerik-Waechter
-                collisions += 1
+                # Numerik-Waechter: eigenes kind, damit der Client das
+                # Aufraeumen nicht als Kollision zeigt. Frueher lief es
+                # als kind 0 mit a=0xFFFFFFFF durch — der Client sah eine
+                # Kollision ohne Partner und blitzte im Leeren.
+                emit_event(0xFFFFFFFF, j, 0.0, 2, k_ev,
+                           float(sx[j]), float(sy[j]))
                 changed = True
         if changed:
             coll_val.value = collisions
