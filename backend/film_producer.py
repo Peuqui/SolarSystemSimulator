@@ -20,6 +20,7 @@ Masse und Sichtbarkeit laufen als Ereignisse im Event-Ring.
 """
 from __future__ import annotations
 
+import os
 import time
 
 import cupy as cp
@@ -961,8 +962,24 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     diag_t_merges = 0.0      # davon apply_merges (GPU-Roundtrips pro Paar)
     diag_t_bounce = 0.0      # davon apply_bounce (Deltas + emit_event)
     diag_t_ring = 0.0        # tobytes + Kopie in den Shared-Memory-Ring
+    # Elternwaechter: die PID des Servers beim Start merken. Aendert sie
+    # sich, ist der Server weg und wir wurden von init (oder einem
+    # subreaper) adoptiert — dann beenden wir uns selbst.
+    #
+    # `daemon=True` allein genuegt nicht: Python beendet Daemon-Kinder ueber
+    # einen atexit-Handler, und der laeuft NICHT, wenn der Server ein
+    # SIGTERM oder SIGKILL bekommt. Genau so entstehen die Waisen, die
+    # danach stundenlang CUDA-Kontexte und damit GPU-Speicher halten,
+    # ohne je wieder zu rechnen (beobachtet: 1,35 GB ueber vier Karten,
+    # 14 h lang, nachdem ein Test per `timeout` abgewuergt worden war).
+    #
+    # Der Vergleich gegen die GEMERKTE PID statt gegen 1 ist noetig, weil
+    # unter systemd nicht init adoptiert, sondern der User-Manager.
+    eltern_pid = os.getppid()
     try:
         while running_val.value:
+            if os.getppid() != eltern_pid:
+                break        # verwaist — Server ist weg
             if shatter_flag is not None and shatter_flag.value:
                 break        # Zerbersten erkannt — Client uebernimmt
             # Pipeline: Erkennungs-Ergebnisse des VORIGEN Batches
