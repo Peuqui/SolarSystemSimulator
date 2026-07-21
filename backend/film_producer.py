@@ -445,7 +445,10 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     is_star_bh = np.array(state.get("isStarBH",
                                     np.zeros(len(is_ast), np.uint8)),
                           dtype=np.uint8, copy=True) != 0
-    st = sim.load_state(x, y, vx, vy, mass, vis, state["isAst"])
+    # real_r mitgeben: damit erkennt die Feinschleife Beruehrungen mit
+    # massiven Koerpern selbst — auf ~Radius/20 genau statt auf ein
+    # Sample-Raster (bei einem Sonnensturz 0,07 AE).
+    st = sim.load_state(x, y, vx, vy, mass, vis, state["isAst"], real_r)
     n = len(x)
     collisions = 0
     dt_years = raster_days / 365.25
@@ -504,6 +507,12 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     import struct as _struct
 
     sub_ueberlauf = [0]
+    # Beruehrungszeitpunkte aus der Feinschleife, in ABSOLUTEN Sample-
+    # Einheiten (k + Bruchteil). Die Streckenpruefung der Erkennung findet
+    # dieselben Treffer, kann sie zeitlich aber nur auf ein Raster genau
+    # verorten; hier steht der Kontakt auf ~Radius/20. Eintraege werden
+    # nach Gebrauch entfernt — sonst waechst das Dict ueber die Session.
+    kernel_kontakt: dict[int, float] = {}
 
     def emit_event(a: int, b: int, new_mass: float, kind: int,
                    k_ev: int, ex: float, ey: float,
@@ -610,6 +619,15 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         svy = sample[3 * n:4 * n]
         changed = False
         for mi, j, frac in pairs:
+            # Hat die Feinschleife diesen Koerper selbst beruehren sehen?
+            # Dann gilt IHR Zeitpunkt: sie prueft je Substep gegen die
+            # echte Bahn, die Erkennung nur die Sehne zwischen zwei
+            # Samples (bei einem Sturz 0,07 AE am Stueck).
+            tk = kernel_kontakt.pop(j, None)
+            if tk is not None:
+                f_kern = tk - (k_ev + 1)
+                if -1.0 <= f_kern <= 1.0:
+                    frac = f_kern
             # Zerbersten (wie _tryCollide im JS): Koerper x Koerper ohne
             # Stern/SL bei vImp >= 1,5 vEsc. Der Producer erkennt NUR:
             # Zustand einfrieren, f64-Dump, Selbst-Stopp — die Fragment-
@@ -649,6 +667,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             mass[b] = 0.0
             vis[b] = 0
             real_r[a] = (real_r[a] ** 3 + real_r[b] ** 3) ** (1.0 / 3.0)
+            sim.set_radius(st_local, a, float(real_r[a]))
             emit_event(a, b, float(m_ges), 0, k_ev, nx, ny, frac)
             collisions += 1
             changed = True
@@ -1023,6 +1042,10 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             _t = time.monotonic()
             outs = sim.step_batch(st, dt_years, K)
             diag_t_step += time.monotonic() - _t
+            kh = st.get("hits")
+            if kh is not None and len(kh[0]):
+                for a_idx, t_rel in zip(kh[0], kh[1]):
+                    kernel_kontakt[int(a_idx)] = k + float(t_rel) / dt_years
             # Erkennung laeuft UEBERLAPPT auf der Erkennungs-GPU, waehrend
             # die Physik-GPUs schon den naechsten Batch rechnen.
             future = executor.submit(analyze_batch_timed, outs, k)

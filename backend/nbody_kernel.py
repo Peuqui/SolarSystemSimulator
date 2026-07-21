@@ -152,6 +152,15 @@ extern "C" __global__ void frame_kernel(
     // ein Koerper genau bei subN == mSub. mSub = 0 schaltet das Feature ab.
     float* __restrict__ subPos, unsigned char* __restrict__ subN,
     const int mSub,
+    // BERUEHRUNG mit einem massiven Koerper, in der Feinschleife erkannt.
+    // hitT haelt die Batch-Zeit des ersten Kontakts (< 0 = keiner), hitM
+    // den Partner. Die Erkennung im Producer prueft nur die Sehne
+    // zwischen zwei Samples — bei einem Sturz sind das 0,07 AE am Stueck,
+    // und der Koerper verschwaende sichtbar VOR dem Stern. Hier liegt der
+    // Abstand ohnehin im Register, und der Substep ist nahe der Masse
+    // fein (dtF = dist/vrel/20), die Zeit also auf ~dist/20 genau.
+    float* __restrict__ hitT, int* __restrict__ hitM,
+    const double* __restrict__ aRad, const double* __restrict__ mRad,
     const int nAst, const int M,
     const int gpuId, const int nGpus,
     const double G, const double soft,
@@ -458,6 +467,14 @@ extern "C" __global__ void frame_kernel(
                         const double dx = mxi - px, dy = myi - py;
                         double dist = sqrt(dx * dx + dy * dy);
                         if (dist < 1e-12) dist = 1e-12;
+                        // Beruehrung? Der Abstand steht hier ohnehin —
+                        // ein Vergleich gegen sqrt und Division in
+                        // derselben Schleife ist gratis. Nur der ERSTE
+                        // Kontakt zaehlt (danach ist der Koerper tot).
+                        if (hitT[i] < 0.0f && dist <= mRad[kk] + aRad[i]) {
+                            hitT[i] = (float)(ks * dtRaster + tSeg0 + tau);
+                            hitM[i] = kk;
+                        }
                         const double dvx = mvx[kk] - pvx;
                         const double dvy = mvy[kk] - pvy;
                         const double vrel =
@@ -675,13 +692,19 @@ class NBodyCuda:
     def load_state(self, x: np.ndarray, y: np.ndarray,
                    vx: np.ndarray, vy: np.ndarray,
                    mass: np.ndarray, visible: np.ndarray,
-                   is_ast: np.ndarray) -> dict:
+                   is_ast: np.ndarray,
+                   real_r: np.ndarray | None = None) -> dict:
         """Vollzustand uebernehmen — bleibt danach GPU-resident.
 
         Asteroiden werden nach f64-Score gewichtet auf die Karten
         verteilt (contiguous Slices der Originalreihenfolge); massive
         Koerper sind auf jeder Karte repliziert. Rueckgabe ist ein
-        Zustands-Dict PRO SESSION."""
+        Zustands-Dict PRO SESSION.
+
+        `real_r` sind die Beruehrungsradien. Ohne sie meldet die
+        Feinschleife keine Beruehrungen (hitT bleibt leer) und der
+        Aufrufer ist auf seine eigene Erkennung angewiesen — so laeuft
+        der Live-Pfad, der gar nicht kollidiert."""
         ast = is_ast != 0
         m_idx = np.flatnonzero(~ast)
         a_idx = np.flatnonzero(ast)
@@ -750,6 +773,17 @@ class NBodyCuda:
                     K_MAX * max(ms, 1) * 2 * max(len(sa), 1), cp.float32)
                 sh["subn"] = cp.zeros(
                     K_MAX * max(len(sa), 1), cp.uint8)
+                # Beruehrungen der Feinschleife. hitT < 0 = keine; die
+                # Radien bleiben null, wenn der Aufrufer keine liefert —
+                # dann meldet der Kernel nie einen Treffer.
+                sh["hitt"] = cp.full(max(len(sa), 1), -1.0, cp.float32)
+                sh["hitm"] = cp.zeros(max(len(sa), 1), cp.int32)
+                sh["arad"] = cp.zeros(max(len(sa), 1), dd)
+                sh["mrad"] = cp.zeros(max(m, 1), dd)
+                if real_r is not None:
+                    rr = np.asarray(real_r, np.float64)
+                    sh["arad"][:len(sa)] = cp.asarray(rr[sa])
+                    sh["mrad"][:m] = cp.asarray(rr[m_idx])
                 if g == 0:
                     sh["snapM"] = cp.empty(K_MAX * 4 * max(m, 1),
                                            cp.float32)
@@ -805,6 +839,9 @@ class NBodyCuda:
                     o += ln
                 (g_ax, g_ay, g_avx, g_avy, _g_am,
                  g_mx, g_my, g_mvx, g_mvy, g_mm) = views
+                # Beruehrungen gelten je BATCH (ein Koerper stirbt einmal),
+                # anders als subN, das der Kernel je Raster selbst nullt.
+                sh["hitt"].fill(-1.0)
                 grid = max(1, (n_ast + self._block - 1) // self._block)
                 self._kerns[d](
                     (grid,), (self._block,),
@@ -820,6 +857,7 @@ class NBodyCuda:
                      sh["snap"],
                      sh.get("snapM", sh["snap"]),
                      sh["subpos"], sh["subn"], cp.int32(self.m_sub),
+                     sh["hitt"], sh["hitm"], sh["arad"], sh["mrad"],
                      cp.int32(n_ast), cp.int32(m),
                      cp.int32(sh["gpu_id"]), cp.int32(ng),
                      cp.float64(G_AU), cp.float64(SOFTENING),
@@ -850,7 +888,41 @@ class NBodyCuda:
                 for f in range(4):
                     out[:, f * n + mi] = snapm[:, f, :]
         st["sub"] = self._collect_sub(st, k)
+        st["hits"] = self._collect_hits(st)
         return out
+
+    def _collect_hits(self, st: dict):
+        """Beruehrungen mit massiven Koerpern aus der Feinschleife holen.
+
+        Rueckgabe: (idx, t, partner) mit idx = Originalindizes der
+        getroffenen Asteroiden, t = Zeit seit Batch-Beginn (Jahre),
+        partner = Originalindex des massiven Koerpers. Leer, wenn keine
+        Radien geladen wurden oder nichts getroffen hat.
+
+        Die Zeit ist auf etwa Beruehrungsradius/20 genau: so fein wird
+        der Substep nahe der Masse (dtF = dist/vrel/20). Die
+        Streckenpruefung im Producer kommt nur auf ein Sample-Raster —
+        bei einem Sturz mit 50 AE/Jahr sind das 0,07 AE."""
+        m_idx = st["m_idx_h"]
+        idx_all, t_all, part_all = [], [], []
+        for sh in st["shards"]:
+            n_ast = sh["n_ast"]
+            if not n_ast:
+                continue
+            with cp.cuda.Device(sh["dev"]):
+                ht = sh["hitt"][:n_ast]
+                sel = cp.flatnonzero(ht >= 0.0)
+                if sel.size == 0:
+                    continue
+                sel_h = cp.asnumpy(sel)
+                idx_all.append(sh["a_idx_h"][sel_h])
+                t_all.append(cp.asnumpy(ht[sel]))
+                part_all.append(m_idx[cp.asnumpy(sh["hitm"][:n_ast][sel])])
+        if not idx_all:
+            return (np.empty(0, np.int64), np.empty(0, np.float32),
+                    np.empty(0, np.int64))
+        return (np.concatenate(idx_all), np.concatenate(t_all),
+                np.concatenate(part_all))
 
     def _collect_sub(self, st: dict, k: int):
         """Zwischenbilder der heissen Astis einsammeln.
@@ -969,6 +1041,21 @@ class NBodyCuda:
             with cp.cuda.Device(sh["dev"]):
                 sh["f64"][cp.asarray(np.asarray(flat, np.int64))] = \
                     cp.asarray(vals)
+
+    def set_radius(self, st: dict, idx: int, wert: float) -> None:
+        """Beruehrungsradius eines Koerpers setzen (waechst beim Merge).
+
+        Ohne das prueft die Feinschleife weiter gegen den alten Radius —
+        ein Stern, der Material aufgesammelt hat, wuerde nach seinem
+        Anfangsradius treffen."""
+        g = int(st["inv_shard"][idx])
+        pos = int(st["inv_pos"][idx])
+        for sh in st["shards"]:
+            with cp.cuda.Device(sh["dev"]):
+                if g == -1:
+                    sh["mrad"][pos] = wert       # massiv: auf jeder Karte
+                elif sh["gpu_id"] == g:
+                    sh["arad"][pos] = wert
 
     def deactivate_body(self, st: dict, idx: int) -> None:
         """Koerper einfrieren und kraftlos machen: Masse 0, visible 0."""

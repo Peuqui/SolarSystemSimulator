@@ -82,8 +82,11 @@ def main():
             b_idx, _m, kind = struct.unpack_from("<IfI", raw, 12)
             if kind != 0 or b_idx >= n:
                 continue
-            # Position des Opfers zur Kill-ZEIT, so wie der Client sie
-            # interpoliert: lineares Mittel der Nachbarsamples.
+            # Position des Opfers zur Kill-ZEIT, LINEAR zwischen den
+            # Nachbarsamples. Bewusst der schlechteste Fall: der Client
+            # interpoliert fuer heisse Koerper entlang der
+            # Sub-Stuetzpunkte, also achtmal feiner. Gemessen wird hier
+            # somit eine OBERE SCHRANKE des sichtbaren Versatzes.
             i_f = (t_ev - sess.t0) / RASTER - 1.0
             i0 = int(np.floor(i_f))
             if i0 < sess.tail_abs or i0 + 1 >= kopf:
@@ -108,18 +111,16 @@ def main():
               f"{a[len(a)//2] / r_stern:6.2f} x R")
         print(f"  groesster               {a[-1]:.5f} AE = "
               f"{a[-1] / r_stern:6.2f} x R")
-        # Schwelle als REGRESSIONSSCHUTZ, nicht als Perfektionsanspruch:
-        # ohne Kontaktzeitpunkt lag der Median bei 8,7 x R (gemessen an
-        # einer Nutzer-Szene), mit ihm bei ~2,3 x R.
+        # Schwelle als REGRESSIONSSCHUTZ, nicht als Perfektionsanspruch.
+        # Gemessene Mediane an einer Nutzer-Szene:
+        #   8,7 x R  ohne Kontaktzeitpunkt (Ereignis auf der Rastergrenze)
+        #   2,3 x R  mit tt aus der Streckenpruefung
+        #   2,0 x R  mit der Beruehrungspruefung in der Feinschleife
         #
-        # Der Rest ist die Sehnen-Naeherung: geprueft wird die Strecke
-        # zwischen zwei Samples, und die schneidet bei einem Radialsturz
-        # den echten Bogen ab — der Punkt der groessten Annaeherung AUF
-        # der Sehne liegt weiter aussen als das echte Perihel. Exakt
-        # wuerde es erst in der Feinschleife des Kernels, wo der Abstand
-        # zu jedem massiven Koerper ohnehin je Substep berechnet wird
-        # (so macht es der Hybrid-Modus). Solange die Kollision blitzt,
-        # faellt der Rest optisch nicht auf.
+        # Der verbleibende Rest steckt in der linearen Interpolation
+        # DIESER MESSUNG, nicht mehr im Zeitpunkt: der Kernel meldet den
+        # Kontakt auf ~Radius/20 genau. Im Client faellt er kleiner aus,
+        # weil dort die Sub-Stuetzpunkte die Bahn tragen.
         ok = a[len(a) // 2] < 3.0 * r_stern
         print("\n" + ("BESTANDEN — die Koerper verschwinden IM Stern"
                       if ok else
