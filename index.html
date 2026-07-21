@@ -4895,13 +4895,26 @@ function filmHandoverStart(zweck) {
   }, FILM_HANDOVER_MS);
 }
 
-function filmStop() {
+// amPlayhead = Neustart nach einer MUTATION (Injektion, Edit, Loeschen,
+// Raster-Wechsel). Der Producer rechnet weit voraus; sein f64-Dump gilt
+// fuer den Kopf, nicht fuer das gerade Gezeigte — mit ihm neu zu starten
+// warf die Darstellung um den ganzen Vorlauf in die Zukunft. Der Server
+// liefert dann stattdessen den Ring-Zustand am Playhead (f32 genuegt: die
+// Mutation aendert die Szene ohnehin). Bei der ECHTEN Engine-Uebergabe
+// (Film aus, Engine-Wechsel, Zerbersten) bleibt es beim exakten f64-Dump.
+function filmStop(amPlayhead) {
   // Sicherheitsnetz, falls der exakte f64-Dump (status=5) nicht ankommt —
   // der Dump ueberschreibt die Schaetzung, wenn er eintrifft.
   filmReconstructVelocities();
   if (filmActive && cudaReady && cudaSocket) {
     const buf = new ArrayBuffer(16);
-    new DataView(buf).setUint32(0, 4, true);   // MSG_FILM_STOP
+    const dv = new DataView(buf);
+    dv.setUint32(0, 4, true);                  // MSG_FILM_STOP
+    dv.setUint32(4, amPlayhead ? 1 : 0, true);
+    // Playhead MITSCHICKEN statt den Server seinen Heartbeat-Wert nehmen
+    // zu lassen: der ist bis zu eine Sekunde alt, bei hohem Abspieltempo
+    // also um Dutzende Sim-Tage daneben.
+    dv.setFloat64(8, filmPlayheadDays, true);
     cudaSocket.send(buf);
   }
   filmActive = false;
@@ -5535,9 +5548,12 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // die Differenzenquotient-Schaetzung traegt u16-Quantisierungsfehler
     // (~10-20% in v) und verformte die Bahnen bei jedem Inject.
     // filmStop loest den Dump aus; status=5 startet den Film neu.
+    // Zustand am PLAYHEAD anfordern: der Producer-Kopf liegt weit in der
+    // Zukunft, und dorthin zu springen ist genau das, was beim Injizieren
+    // stoerte. Die vorausgerechnete Zukunft ist ohnehin ungueltig.
     _filmRestartPending = true;
     filmHandoverStart('Neustart nach Mutation');
-    filmStop();
+    filmStop(true);
     return;
   }
   // rohDelta = tatsaechlich vergangene Zeit. delta ist fuer den Playhead-
@@ -5832,7 +5848,7 @@ const FILM_LOD_ALLE = 1e9;
     filmApply(filmPlayheadDays);
     _filmRestartPending = true;
     filmHandoverStart('Neustart nach Raster-Wechsel');
-    filmStop();
+    filmStop(true);          // am Playhead weiter, nicht am Producer-Kopf
   });
 });
 

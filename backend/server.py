@@ -699,13 +699,55 @@ class FilmSession:
         if jump:
             self.sent_abs = None
 
-    async def dump_state(self) -> bytes | None:
-        """Exakten f64-Zustand vom Producer anfordern (Engine-Uebergabe)."""
+    def state_at_playhead(self, t_days: float) -> bytes | None:
+        """Zustand am PLAYHEAD aus dem Ring statt am Producer-Kopf.
+
+        Der Producer rechnet weit voraus (gemessen Kopf 462 bei Playhead
+        81). Sein f64-Dump beschreibt daher den Kopf — startet der Client
+        eine MUTATION (Injektion, Edit, Loeschen) damit neu, springt die
+        Darstellung um den gesamten Vorlauf in die Zukunft.
+
+        Fuer diesen Fall ist der Ring die richtige Quelle: er haelt
+        x|y|vx|vy jedes Samples vollstaendig, nur in f32. Der
+        Genauigkeitsverlust (~1e-5 AU) ist hier ohne Belang — eine
+        Injektion aendert die Szene ohnehin. Fuer die Engine-Uebergabe
+        bleibt es beim exakten f64-Dump.
+
+        Die vorausgerechnete Zukunft wird mit der Session verworfen; der
+        Client startet den Film ab diesem Zustand neu.
+
+        `t_days` kommt aus dem STOP-Paket, nicht aus `playhead_val`: der
+        Heartbeat ist bis zu eine Sekunde alt und liegt bei hohem
+        Abspieltempo um Dutzende Sim-Tage daneben.
+        """
+        head_abs = self.head_val.value
+        if head_abs == 0:
+            return None
+        # Slot i traegt die Zeit t0 + (i+1)*raster (wie in batch/build_frame)
+        i = int(round((t_days - self.t0) / self.raster_days)) - 1
+        i = max(self.tail_abs, min(i, head_abs - 1))
+        raw = np.frombuffer(self.shm.buf, "<f4", 4 * self.n,
+                            (i % self.capacity) * self.sample_bytes)
+        t_i = self.t0 + (i + 1) * self.raster_days
+        return struct.pack("<IId", 5, self.n, t_i) + \
+            raw.astype("<f8").tobytes()
+
+    async def dump_state(self, playhead_days: float | None = None) \
+            -> bytes | None:
+        """Zustand fuer den Client-Neustart: exakter f64-Dump des Producers
+        (Engine-Uebergabe) oder — wenn `playhead_days` gesetzt ist — der
+        Ring-Zustand zur angezeigten Zeit (Mutation, s. state_at_playhead)."""
         if self.dump_req_val.value == 2 and not self.proc.is_alive():
             # Producer hat sich selbst beendet (Zerbersten) — sein
             # letzter Dump liegt bereit, niemand wuerde noch antworten.
             return struct.pack("<IId", 5, self.n, self.head) + \
                 bytes(self.dump_shm.buf[0:4 * 8 * self.n])
+        if playhead_days is not None:
+            zustand = self.state_at_playhead(playhead_days)
+            if zustand is not None:
+                return zustand
+            # Ring noch leer (Mutation direkt nach dem Filmstart): auf den
+            # f64-Dump zurueckfallen — der Vorlauf ist dann ohnehin klein.
         self.dump_req_val.value = 1
         # Der Producer bedient den Dump erst zwischen zwei Kernel-Batches;
         # bei grossen N dauert ein Batch entsprechend lange. Kommt der Dump
@@ -869,8 +911,13 @@ async def handle(ws):
                 if typ == MSG_FILM_STOP:
                     if film:
                         # Exakten Endzustand an den Client — sonst startet
-                        # die naechste Engine mit eingefrorenen Impulsen
-                        state_msg = await film.dump_state()
+                        # die naechste Engine mit eingefrorenen Impulsen.
+                        # _n = 1: Neustart nach Mutation, dann zaehlt der
+                        # Zustand am PLAYHEAD (sonst springt die Szene um
+                        # den Producer-Vorlauf in die Zukunft); der Playhead
+                        # steht im dt_years-Feld des Headers.
+                        state_msg = await film.dump_state(
+                            dt_years if _n else None)
                         if state_msg:
                             await ws.send(state_msg)
                         film.stop()
