@@ -2089,6 +2089,58 @@ function loadScenario(name) {
 // ============================================================
 //  KONFIGURATIONEN SPEICHERN / LADEN
 // ============================================================
+// Alle Schieberegler und Kontrollkaestchen des Menues einsammeln.
+//
+// Die mobilen Klone (mob-*) werden ausgelassen: sie spiegeln dieselben
+// Werte, und ihre Handler setzen die Desktop-Elemente ohnehin mit —
+// beide zu sichern hiesse, denselben Wert zweimal zu fuehren.
+// Radiobuttons (Engine-Wahl) bleiben absichtlich aussen vor: eine
+// importierte Szene soll die Rechenmaschine nicht umschalten.
+//
+// CONTROLS_AUSSEN sind keine Einstellungen, sondern Sitzungszustand:
+// der Playhead der Film-Zeitleiste gehoert zum laufenden Film, nicht zur
+// Szene, und der Zoom kommt ueber state.zoom/applyZoom (die Kamera ist
+// kein Regler und der Slider nur ihre Anzeige).
+const CONTROLS_AUSSEN = new Set(['film-scrub', 'zoom-slider']);
+
+function captureControls() {
+  const out = {};
+  for (const el of document.querySelectorAll(
+         'input[type=range], input[type=checkbox]')) {
+    if (!el.id || el.id.startsWith('mob-') ||
+        CONTROLS_AUSSEN.has(el.id)) continue;
+    out[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  return out;
+}
+
+// Gegenstueck: Werte setzen UND die Handler ausloesen, denn per Skript
+// gesetzte Controls feuern von sich aus kein Event — die abgeleiteten
+// Variablen (filmSpeed, filmLodBudget, astAstCollisions ...) und die
+// Wertanzeigen haengen aber genau daran.
+//
+// Erst die Regler, dann die Haken: `chk-film` steht im DOM VOR den
+// Film-Reglern, wuerde den Film also mit noch alten Werten starten.
+function applyControls(c) {
+  if (!c) return;
+  const anwenden = (typ, ereignis) => {
+    for (const el of document.querySelectorAll(`input[type=${typ}]`)) {
+      if (!el.id || el.id.startsWith('mob-') ||
+          CONTROLS_AUSSEN.has(el.id) || !(el.id in c)) continue;
+      if (typ === 'checkbox') {
+        if (el.checked === c[el.id]) continue;   // kein Toggle ohne Not
+        el.checked = c[el.id];
+      } else {
+        if (el.value === String(c[el.id])) continue;
+        el.value = c[el.id];
+      }
+      el.dispatchEvent(new Event(ereignis, { bubbles: true }));
+    }
+  };
+  anwenden('range', 'input');
+  anwenden('checkbox', 'change');
+}
+
 // Aktuellen Zustand (alle Koerper + Ansicht) als serialisierbares Objekt.
 function captureState() {
   return {
@@ -2097,6 +2149,11 @@ function captureState() {
     logZoom: useLogZoom,
     dt: parseFloat(document.getElementById('dt-slider').value),
     slow: parseFloat(document.getElementById('slow-slider').value),
+    // ALLE Regler und Haken — nicht einzeln aufgezaehlt, sondern aus dem
+    // DOM gelesen: eine Liste hier wuerde beim naechsten neuen Regler
+    // stillschweigend unvollstaendig. dt/slow stehen zusaetzlich oben,
+    // weil restoreState sie ueber applyDt/applySlow anwendet.
+    controls: captureControls(),
     bodies: bodies.map(b => ({
       name: b.name, mass: b.mass, x: b.x, y: b.y, vx: b.vx, vy: b.vy,
       color: b.color, isStar: b.isStar, realR: b.realR, visible: b.visible,
@@ -2112,6 +2169,16 @@ function captureState() {
 // Zustand wiederherstellen — ersetzt alle Koerper.
 function restoreState(state) {
   if (!state || !Array.isArray(state.bodies)) return false;
+  // Laufenden Film beenden, BEVOR bodies ersetzt wird: filmRefs zeigt
+  // sonst auf die alten Objekte, der Stream schreibt weiter in sie und
+  // die neue Szene bewegt sich nicht. Kein Handover noetig — der
+  // importierte Zustand ersetzt den alten vollstaendig, ein f64-Dump
+  // waere gegenstandslos.
+  if (typeof filmActive !== 'undefined' && filmActive) {
+    _filmRestartPending = false;
+    _filmStartWartet = false;
+    filmStop();
+  }
   bodies = [];
   trails = {};
   for (const s of state.bodies) {
@@ -2125,6 +2192,14 @@ function restoreState(state) {
     trails[s.name] = [];
   }
   perturbers = []; perturberCounter = 0; fragmentCounter = 0;
+  // Asteroid-Zaehler hinter die importierten Namen setzen. Sonst
+  // vergaebe die naechste Injektion Namen, die es schon gibt — und
+  // `trails[name]` ist nach Namen indiziert, die Spuren zweier Koerper
+  // liefen also ineinander.
+  for (const b of bodies) {
+    const m = /^A(\d+)$/.exec(b.name || '');
+    if (m) asteroidCounter = Math.max(asteroidCounter, parseInt(m[1], 10));
+  }
   totalCollisions = 0;
   collisionFlashes.length = 0;
   const cc2 = document.getElementById('collision-count');
@@ -2147,8 +2222,18 @@ function restoreState(state) {
   if (state.zoom) applyZoom(state.zoom);
   if (state.dt) applyDt(state.dt);
   if (state.slow != null) applySlow(state.slow);
+  // Alle uebrigen Regler und Haken. NACH applyDt/applySlow, damit deren
+  // Sonderbehandlung (Anzeige, abgeleitete Werte) nicht ueberschrieben
+  // wird — fuer dieselben beiden Elemente ist es dann ein No-Op.
+  applyControls(state.controls);
+  // Der Engine-Zustand (CUDA/Worker) gehoert zu den ALTEN Koerpern —
+  // ohne diese Markierung liefe die Physik mit dem alten Upload weiter
+  // und die importierte Szene stuende still.
+  _cudaStateStale = true;
+  markBodiesMutated();
   return true;
 }
+
 
 function savedConfigNames() {
   try { return JSON.parse(localStorage.getItem('sim_cfg_index') || '[]'); }
