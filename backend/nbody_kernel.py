@@ -62,6 +62,13 @@ MAX_SUB_DT_YEARS = 0.5 / 365.25
 MAX_SUB_STEPS_PER_FRAME = 100_000
 YOSHIDA_W1 = 1.0 / (2.0 - 2.0 ** (1.0 / 3.0))
 YOSHIDA_W0 = -(2.0 ** (1.0 / 3.0)) / (2.0 - 2.0 ** (1.0 / 3.0))
+# Zwischenbilder je Raster fuer die HEISSEN (eng begegnenden) Asteroiden.
+# Sie fallen in der ohnehin laufenden Feinschleife an; der Client muss
+# zwischen ihnen nur noch linear interpolieren. 0 schaltet sie ab.
+# 8 druecken den Sehnenfehler gegenueber dem Raster um Faktor 64 — damit
+# ist er selbst bei r=0,05 AU unsichtbar (5,8e-5 AU).
+SUB_SAMPLES = 8
+SUB_SAMPLES_MAX = 32           # Puffer-Obergrenze (VRAM je Shard)
 
 _SRC = r"""
 #include <cooperative_groups.h>
@@ -139,6 +146,12 @@ extern "C" __global__ void frame_kernel(
     // Batch-Snapshots: kompakt [K][4][nAst] f32; GPU 0 schreibt die
     // Massiven zusaetzlich nach snapM [K][4][M].
     float* __restrict__ snap, float* __restrict__ snapM,
+    // ZWISCHENBILDER der heissen Astis: subPos [K][mSub][2][nAst] f32.
+    // Nur wer im ganzen Raster heiss war, hat eine LUECKENLOSE Bahn —
+    // subN [K][nAst] zaehlt die geschriebenen Stuetzpunkte, gueltig ist
+    // ein Koerper genau bei subN == mSub. mSub = 0 schaltet das Feature ab.
+    float* __restrict__ subPos, unsigned char* __restrict__ subN,
+    const int mSub,
     const int nAst, const int M,
     const int gpuId, const int nGpus,
     const double G, const double soft,
@@ -245,6 +258,11 @@ extern "C" __global__ void frame_kernel(
         if (tid == 0) {
             ctrl->remaining = dtRaster;
             ctrl->done = 0;
+        }
+        // Zwischenbild-Zaehler dieses Rasters nullen (vor dem sync, damit
+        // die Feinschleife unten schon auf sauberen Werten arbeitet).
+        if (mSub > 0) {
+            for (int i = tid; i < nAst; i += stride) subN[ks * nAst + i] = 0;
         }
         grid.sync();
 
@@ -414,6 +432,11 @@ extern "C" __global__ void frame_kernel(
             // nicht als Bahnpunkte. Monoton sind es echte Bahnpunkte, die als
             // Zwischenbilder (Sub-Samples) ausgegeben werden koennen.
             // Massiv-Positionen linear ueber dtH interpoliert, kein Sync.
+            // Zeit seit Beginn dieses Rasters am Segment-ANFANG. Die
+            // Zwischenbild-Zeitpunkte liegen auf dem Raster (j*dtRaster/mSub),
+            // nicht auf dem Segment — dieser Versatz rechnet sie um.
+            const double tSeg0 = dtRaster - ctrl->remaining - dtH;
+            const double subDt = mSub > 0 ? dtRaster / mSub : 0.0;
             for (int i = tid; i < nAst; i += stride) {
                 if (!aVis[i] || !hot[i]) continue;
                 double px = ax[i], py = ay[i];
@@ -447,6 +470,16 @@ extern "C" __global__ void frame_kernel(
                     if (dtF < maxSubDt / 1000.0)
                         dtF = maxSubDt / 1000.0;
                     if (dtF > span - tau) dtF = span - tau;
+                    // Genau auf dem naechsten Zwischenbild-Zeitpunkt landen,
+                    // damit die Stuetzpunkte exakt auf dem Raster sitzen.
+                    if (mSub > 0) {
+                        const double tAbs = tSeg0 + tau;
+                        const int jn = (int)floor(tAbs / subDt + 1e-9) + 1;
+                        if (jn <= mSub) {
+                            const double rest = jn * subDt - tAbs;
+                            if (rest > 0.0 && dtF > rest) dtF = rest;
+                        }
+                    }
                     // Yoshida (3 Verlets) mit interpolierten Massiven
                     double tSub = tau;
                     for (int wf = 0; wf < 3; wf++) {
@@ -486,6 +519,20 @@ extern "C" __global__ void frame_kernel(
                         pvy += 0.5 * (acy + ncy) * df;
                     }
                     tau += dtF;
+                    // Auf einem Zwischenbild-Zeitpunkt? Dann Stuetzpunkt
+                    // ablegen. subPos ist [K][mSub][2][nAst] (nAst hinten,
+                    // damit der Host je Zeitpunkt zusammenhaengend gathert).
+                    if (mSub > 0) {
+                        const double q = (tSeg0 + tau) / subDt;
+                        const int j = (int)floor(q + 0.5);
+                        if (j >= 1 && j <= mSub && fabs(q - j) < 1e-6) {
+                            const long long b =
+                                ((long long)ks * mSub + (j - 1)) * 2 * nAst;
+                            subPos[b + i] = (float)px;
+                            subPos[b + nAst + i] = (float)py;
+                            subN[ks * nAst + i]++;
+                        }
+                    }
                 }
                 ax[i] = px; ay[i] = py;
                 avx[i] = pvx; avy[i] = pvy;
@@ -589,11 +636,15 @@ class NBodyCuda:
     devices: Liste der Physik-GPUs (devices[0] integriert die Massiven).
     Ein einzelnes int wird als 1-Karten-Verbund akzeptiert."""
 
-    def __init__(self, devices):
+    def __init__(self, devices, m_sub=SUB_SAMPLES):
         if isinstance(devices, int):
             devices = [devices]
         if not devices or len(devices) > G_MAX:
             raise ValueError(f"1..{G_MAX} Devices erwartet: {devices}")
+        if not 0 <= m_sub <= SUB_SAMPLES_MAX:
+            raise ValueError(f"m_sub ausserhalb 0..{SUB_SAMPLES_MAX}: {m_sub}")
+        # Zwischenbilder je Raster fuer die heissen Astis (0 = aus)
+        self.m_sub = int(m_sub)
         self.devices = list(devices)
         self.device = self.devices[0]      # Kompatibilitaet (Erkennung etc.)
         self._mods = {}
@@ -691,6 +742,14 @@ class NBodyCuda:
                       "ctrl": cp.zeros(5, dtype=cp.float64),
                       "snap": cp.empty(K_MAX * 4 * max(len(sa), 1),
                                        cp.float32)}
+                # Zwischenbilder der heissen Astis: [K][mSub][2][nAst].
+                # Voll dimensioniert (VRAM ist reichlich), zum Host geht
+                # nur die kompakte Auswahl — der Gather laeuft auf der GPU.
+                ms = self.m_sub
+                sh["subpos"] = cp.zeros(
+                    K_MAX * max(ms, 1) * 2 * max(len(sa), 1), cp.float32)
+                sh["subn"] = cp.zeros(
+                    K_MAX * max(len(sa), 1), cp.uint8)
                 if g == 0:
                     sh["snapM"] = cp.empty(K_MAX * 4 * max(m, 1),
                                            cp.float32)
@@ -760,6 +819,7 @@ class NBodyCuda:
                      sh["gs"], sh["ctrl"],
                      sh["snap"],
                      sh.get("snapM", sh["snap"]),
+                     sh["subpos"], sh["subn"], cp.int32(self.m_sub),
                      cp.int32(n_ast), cp.int32(m),
                      cp.int32(sh["gpu_id"]), cp.int32(ng),
                      cp.float64(G_AU), cp.float64(SOFTENING),
@@ -789,7 +849,50 @@ class NBodyCuda:
                 mi = st["m_idx_h"]
                 for f in range(4):
                     out[:, f * n + mi] = snapm[:, f, :]
+        st["sub"] = self._collect_sub(st, k)
         return out
+
+    def _collect_sub(self, st: dict, k: int):
+        """Zwischenbilder der heissen Astis einsammeln.
+
+        Gueltig ist nur, wer im ganzen Raster heiss war und damit eine
+        LUECKENLOSE Bahn hat (subN == mSub) — sonst klaffte zwischen den
+        Stuetzpunkten die grobe Integration. Der Gather laeuft auf der GPU;
+        zum Host geht nur die kompakte Auswahl (bei wenigen Heissen also
+        ein Bruchteil des vollen Puffers).
+
+        Rueckgabe: Liste ueber die k Raster, je (idx, pos) mit idx =
+        Original-Koerperindizes (nh,) und pos = (mSub, 2, nh) f32, oder
+        None wenn das Feature aus ist."""
+        if self.m_sub <= 0:
+            return None
+        ms = self.m_sub
+        teile = [[] for _ in range(k)]      # je Raster: (idx, pos) je Shard
+        for sh in st["shards"]:
+            n_ast = sh["n_ast"]
+            if not n_ast:
+                continue
+            with cp.cuda.Device(sh["dev"]):
+                subn = sh["subn"][:k * n_ast].reshape(k, n_ast)
+                pos = sh["subpos"][:k * ms * 2 * n_ast].reshape(
+                    k, ms, 2, n_ast)
+                for ks in range(k):
+                    sel = cp.flatnonzero(subn[ks] == ms)
+                    if sel.size == 0:
+                        continue
+                    komp = cp.asnumpy(pos[ks][:, :, sel])
+                    teile[ks].append(
+                        (sh["a_idx_h"][cp.asnumpy(sel)], komp))
+        frames = []
+        for ks in range(k):
+            if not teile[ks]:
+                frames.append((np.empty(0, np.int64),
+                               np.empty((ms, 2, 0), np.float32)))
+                continue
+            idx = np.concatenate([t[0] for t in teile[ks]])
+            pos = np.concatenate([t[1] for t in teile[ks]], axis=2)
+            frames.append((idx, pos))
+        return frames
 
     def step(self, st: dict, dt_years: float) -> np.ndarray:
         """Ein einzelnes Sample (Kompatibilitaets-API fuer den
