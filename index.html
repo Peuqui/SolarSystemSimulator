@@ -5488,7 +5488,7 @@ function filmApplyEvents(t) {
     // Neustarts (Inject, Zerbersten), statt auf 0 zu springen.
     totalCollisions = _filmCollBase + _filmEventsApplied;
     const cc = document.getElementById('collision-count');
-    if (cc) cc.textContent = totalCollisions;
+    if (cc) cc.textContent = fmtDE(totalCollisions, 0);
     const cb = document.getElementById('collision-badge');
     if (cb) cb.classList.toggle('show', totalCollisions > 0);
   }
@@ -5518,7 +5518,7 @@ function filmTick(dtDays, slowFactor, nowMs) {
       shatter(A, B);
       totalCollisions++;
       const cc = document.getElementById('collision-count');
-      if (cc) cc.textContent = totalCollisions;
+      if (cc) cc.textContent = fmtDE(totalCollisions, 0);
     }
     // Neustart ueber den bewaehrten Dump-Mechanismus (der Server
     // antwortet auf FILM_STOP mit dem Shatter-Dump als status=5).
@@ -6783,7 +6783,7 @@ function _tryCollide(a, b, dtFrame) {
                       flashTrack, flashTrack || b);
   totalCollisions++;
   const countEl = document.getElementById('collision-count');
-  if (countEl) countEl.textContent = totalCollisions;
+  if (countEl) countEl.textContent = fmtDE(totalCollisions, 0);
   const badge = document.getElementById('collision-badge');
   if (badge && !badge.classList.contains('show')) badge.classList.add('show');
   if (heavyChange) {
@@ -7191,8 +7191,9 @@ function setBeltCount(kind, n) {
     try { localStorage.setItem('sim_belt_kb', String(n)); } catch (e) {}
   }
   const sv = beltCountToSlider(n);
-  document.getElementById('belt-' + kind + '-val').textContent = n;
-  document.getElementById('mob-belt-' + kind + '-val').textContent = n;
+  document.getElementById('belt-' + kind + '-val').textContent = fmtDE(n, 0);
+  document.getElementById('mob-belt-' + kind + '-val').textContent =
+    fmtDE(n, 0);
   document.getElementById('belt-' + kind + '-slider').value = sv;
   document.getElementById('mob-belt-' + kind + '-slider').value = sv;
   if (currentScenario === 'Sonnensystem mit Gürteln') {
@@ -7206,8 +7207,8 @@ function setBeltCount(kind, n) {
   // Live-Update der angezeigten Zahl waehrend des Ziehens (ohne Reload).
   document.getElementById(id).addEventListener('input', function() {
     const n = beltSliderToCount(this.value);
-    document.getElementById('belt-ab-val').textContent = n;
-    document.getElementById('mob-belt-ab-val').textContent = n;
+    document.getElementById('belt-ab-val').textContent = fmtDE(n, 0);
+    document.getElementById('mob-belt-ab-val').textContent = fmtDE(n, 0);
   });
 });
 ['belt-kb-slider', 'mob-belt-kb-slider'].forEach(id => {
@@ -7216,8 +7217,8 @@ function setBeltCount(kind, n) {
   });
   document.getElementById(id).addEventListener('input', function() {
     const n = beltSliderToCount(this.value);
-    document.getElementById('belt-kb-val').textContent = n;
-    document.getElementById('mob-belt-kb-val').textContent = n;
+    document.getElementById('belt-kb-val').textContent = fmtDE(n, 0);
+    document.getElementById('mob-belt-kb-val').textContent = fmtDE(n, 0);
   });
 });
 
@@ -7337,8 +7338,8 @@ function updateCloudDerived() {
 ['cloud-n', 'mob-cloud-n'].forEach(id => {
   document.getElementById(id).addEventListener('input', function() {
     const n = cloudCountFromSlider(this.id);
-    document.getElementById('cloud-n-val').textContent = n;
-    document.getElementById('mob-cloud-n-val').textContent = n;
+    document.getElementById('cloud-n-val').textContent = fmtDE(n, 0);
+    document.getElementById('mob-cloud-n-val').textContent = fmtDE(n, 0);
     document.getElementById('cloud-n').value = this.value;
     document.getElementById('mob-cloud-n').value = this.value;
     updateCloudDerived();
@@ -8165,7 +8166,7 @@ function updateStats() {
     `<span>${fmtDE(_perf.fps, 1)}</span> ${t('stats.fps')}<br>` +
     `${t('stats.phys')}: <span>${fmtDE(_perf.msPhys, 1)}</span> ms — ` +
     `${t('stats.rate')}: <span>${fmtDE(_perf.daysPerSec, 1)}</span> ${t('stats.rate-unit')}<br>` +
-    `${t('stats.bodies')}: <span>${activeCount}</span> ${t('stats.active')} / ${bodies.length} ${t('stats.total')} (${perturbers.length} ${t('stats.rogues')})<br>` +
+    `${t('stats.bodies')}: <span>${fmtDE(activeCount, 0)}</span> ${t('stats.active')} / ${fmtDE(bodies.length, 0)} ${t('stats.total')} (${fmtDE(perturbers.length, 0)} ${t('stats.rogues')})<br>` +
     `${t('stats.ke')}: <span>${fmtDExp(ke, 2)}</span><br>` +
     `${t('stats.pe')}: <span>${fmtDExp(pe, 2)}</span><br>` +
     `${t('stats.te')}: <span>${fmtDExp(totalE, 2)}</span>`;
@@ -8188,18 +8189,19 @@ function updateStats() {
   if (bcEl) {
     if (activeCount > 0) {
       const parts = [];
-      if (bhN)    parts.push('\u{1F573}️ ' + bhN);   // schwarze Loecher
-      if (sunN)   parts.push('☀️ ' + sunN);     // Sonnen
-      if (solidN) parts.push('\u{1FA90} ' + solidN);      // feste Koerper
-      if (astN)   parts.push('\u{1FAA8} ' + astN);        // Asteroiden
+      if (bhN)    parts.push('\u{1F573}️ ' + fmtDE(bhN, 0));   // schwarze Loecher
+      if (sunN)   parts.push('☀️ ' + fmtDE(sunN, 0));     // Sonnen
+      if (solidN) parts.push('\u{1FA90} ' + fmtDE(solidN, 0));      // feste Koerper
+      if (astN)   parts.push('\u{1FAA8} ' + fmtDE(astN, 0));        // Asteroiden
       // Im Film-Modus zusaetzlich, WIE VIELE davon uebertragen werden:
       // Culling und Dichte-LOD schicken nur einen Teil, die Physik
       // rechnet aber mit allen. Ohne die Zahl ist eine duenn wirkende
       // Wolke nicht von einer stark ausgeduennten zu unterscheiden.
       const gestreamt = (typeof filmActive !== 'undefined' && filmActive &&
                          _filmStreamN > 0)
-        ? '&nbsp;|&nbsp;👁 ' + _filmStreamN.toLocaleString('de-DE') : '';
-      bcEl.innerHTML = '<span>' + t('stats.bodies') + ': ' + activeCount + '</span>'
+        ? '&nbsp;|&nbsp;👁 ' + fmtDE(_filmStreamN, 0) : '';
+      bcEl.innerHTML = '<span>' + t('stats.bodies') + ': ' +
+        fmtDE(activeCount, 0) + '</span>'
         + (parts.length ? '&nbsp;|&nbsp;' + parts.join('&nbsp;|&nbsp;') : '')
         + gestreamt;
       bcEl.classList.add('show');
