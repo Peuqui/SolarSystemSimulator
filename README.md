@@ -45,7 +45,9 @@ Film-Modus.
 - **Log-Zoom-Modus** für gleichzeitige Sicht auf Sonne und äußere Planeten
 - **Bahnspuren** (variable Länge), **Kraftvektoren**, **Schwerpunkt-
   Zentrierung** und **Gitternetz** ein-/ausblendbar
-- **Konfigurationen** lokal speichern, exportieren und importieren
+- **Konfigurationen** lokal speichern, exportieren und importieren —
+  gesichert werden alle Körper samt Zustand **und sämtliche Regler und
+  Schalter** (Zeitschritt, Film-Einstellungen, Darstellungsoptionen)
 - **Live-Statistik**: kinetische / potenzielle / Gesamtenergie, Drehimpuls,
   Schwerpunkt-Drift, Fluchtkurs-Erkennung; Live-Benchmark-Badge (FPS,
   Tage/s, aktive Engine)
@@ -86,7 +88,18 @@ entkoppelt:
   folgen** an der Produktionskante.
 - Übertragen werden nur Positionen als **Integer-Bildschirmkoordinaten**
   (server-seitiges View-Culling, u16-Quantisierung); Masse/Sichtbarkeit
-  laufen als kompakte Ereignisse.
+  laufen als kompakte Ereignisse. Die Referenz-Box folgt dem
+  Bildausschnitt, nicht der Szene — ein weit hinausgeschleuderter Körper
+  verdirbt die Auflösung im Zentrum also nicht.
+- **Gemessene Zwischenbilder statt geratener Kurven**: Für eng
+  begegnende Asteroiden legt der Kernel in seiner Feinschleife
+  Stützpunkte auf der echten Bahn ab (Regler, Voreinstellung 8 je
+  Raster); der Browser interpoliert dazwischen nur noch geradlinig. Ein
+  Perihel-Durchgang ist damit ein Messwert. Alle übrigen Körper laufen
+  über Catmull-Rom durch vier Sample-Punkte — bei ihnen liegt der
+  Sehnenfehler ohnehin unter der Sichtbarkeitsschwelle. Der Server
+  spannt die Stützpunkte über das jeweils gestreamte Intervall, die
+  Bandbreite je Körper bleibt damit unabhängig vom Abspieltempo.
 - **Dichte-LOD**: Reicht das Punktbudget nicht für alle Körper, gilt eine
   Rangfolge — massive Körper (Sonne, Planeten, Rogues, Sterne, Schwarze
   Löcher) werden **nie** ausgedünnt, danach kommen die Asteroiden des
@@ -100,7 +113,12 @@ entkoppelt:
   (Auto … „Alle"). **Physik und Kollisionen laufen immer für alle
   Körper** — ausgedünnt wird nur die Darstellung.
 - Kollisions-Ereignisse (Merge, Kill, Bounce, Zerbersten) tragen ihren
-  **exakten Ort** und werden zeitrichtig als Explosionen abgespielt.
+  **exakten Ort und Zeitpunkt** und werden zeitrichtig als Explosionen
+  abgespielt. Der Kontakt mit einem massiven Körper wird in der
+  Feinschleife des Kernels je Substep geprüft — ein Körper, der mit
+  50 AE/Jahr in einen Stern stürzt, verschwindet dadurch *in* ihm und
+  nicht eine Rasterweite davor (das wären 0,07 AE, das Fünfzehnfache
+  eines Sonnenradius).
 - Beim Verlassen des Films oder Engine-Wechsel wird der exakte
   f64-Zustand an die neue Engine übergeben — kein Impulsverlust.
 

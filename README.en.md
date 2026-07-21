@@ -42,7 +42,9 @@ backend** with multi-GPU physics and a decoupled film mode.
 - **Log-zoom mode** for seeing the sun and outer planets at once
 - **Orbit trails** (variable length), **force vectors**, **barycenter
   centering** and **grid** toggleable
-- **Save, export and import configurations** locally
+- **Save, export and import configurations** locally — stores every body
+  with its state **and all sliders and switches** (time step, film
+  settings, display options)
 - **Live stats**: kinetic / potential / total energy, angular momentum,
   barycenter drift, escape-trajectory detection; live benchmark badge
   (FPS, days/s, active engine)
@@ -81,7 +83,18 @@ Requires the active CUDA backend. Compute and display are fully decoupled:
   production edge.
 - Only positions are transmitted, as **integer screen coordinates**
   (server-side view culling, u16 quantization); mass/visibility travel as
-  compact events.
+  compact events. The reference box follows the viewport rather than the
+  scene, so a single body flung far out does not spoil the resolution at
+  the centre.
+- **Measured in-between frames instead of guessed curves**: for closely
+  encountering asteroids the kernel records waypoints on the real
+  trajectory during its fine loop (slider, 8 per interval by default);
+  the browser only interpolates in straight lines between them. A
+  perihelion passage is therefore a measurement. Everything else uses
+  Catmull-Rom through four sample points — for those bodies the chord
+  error stays below the visibility threshold anyway. The server spans the
+  waypoints across whatever interval it streams, so the bandwidth per
+  body is independent of playback speed.
 - **Density LOD**: when the point budget cannot cover every body, a
   priority applies — massive bodies (sun, planets, rogues, stars, black
   holes) are **never** thinned, then come the asteroids of the loaded
@@ -94,7 +107,11 @@ Requires the active CUDA backend. Compute and display are fully decoupled:
   slider (Auto … "All"). **Physics and collisions always run for every
   body** — only the display is thinned.
 - Collision events (merge, kill, bounce, shatter) carry their **exact
-  location** and are replayed as explosions at the right time.
+  location and time** and are replayed as explosions at the right moment.
+  Contact with a massive body is tested per substep inside the kernel's
+  fine loop — a body plunging into a star at 50 AU/year therefore
+  disappears *inside* it rather than one sample interval short (0.07 AU,
+  fifteen times a solar radius).
 - On leaving film mode or switching engines the exact f64 state is handed
   over to the new engine — no loss of momentum.
 
