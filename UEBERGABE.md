@@ -1,436 +1,145 @@
-# Übergabeprotokoll — Stand 2026-07-21
+# Übergabeprotokoll
 
-Fortschreibung. Commits vom 21.07.: `231a6bb`, `ac189d0`, `b303177`
-(davor `3a83777`). Der Abschnitt **2A** beschreibt den Stand vom 21.07.,
-der laufende Umbau steht in **3.0**.
+Was hier steht, steht **nicht** im Git-Log: Betriebswissen, Messfallen,
+gescheiterte Ansätze und offene Punkte. Die Umsetzungshistorie ist
+bewusst nicht enthalten — dafür ist `git log` da.
+
+Stand: 2026-07-21, Commit `dea0857`.
 
 ---
 
-## 1. Gemessene Kennzahlen
+## 1. Betriebswissen
 
-Szene: 267k Körper, Raster 0,5 Tage, drei Tesla V100 (Physik) + Quadro
-RTX 8000 (Erkennung), Client über LAN.
+**Was wirkt wann:**
 
-| Posten | Anteil | Bemerkung |
-|---|---|---|
-| Bounce-Erkennung | **75–93 %** | der Engpass |
-| Physik (`step_batch`, 3× V100) | 4–20 % | |
-| Merge-Erkennung | 2–4 % | |
-| Anwenden der Kollisionen | 1–3 % | |
-| Ring-Schreiben (`tobytes`) | 1–5 % | |
+| Geändert | Wirksam durch |
+|---|---|
+| `index.html` | **Harter Reload** (Strg+Shift+R) — kein Cache-Control! |
+| `film_producer.py` | Film aus/an (neuer Prozess per `spawn`) |
+| `server.py`, `nbody_kernel.py` | Backend-Prozess muss beendet werden |
 
-**Produktionsrate:** 60k → 120 Sim-Tage/s · 117k → 16 · 267k → 3–6
-(stark von der räumlichen Verteilung abhängig, nicht nur von N).
+Der Server läuft socket-aktiviert mit `--idle-exit 120`: Er beendet sich
+erst **120 s nach der letzten getrennten Verbindung**. Ein Reload reicht
+nicht. Sauber: `systemctl --user stop solar-cuda.service` — der Socket
+lauscht weiter und startet ihn beim nächsten Verbindungsaufbau neu.
 
-**PCIe:** Alle fünf Karten hängen mit **×4** an M.2-zu-Oculink- bzw.
-USB4-Adaptern (Mini-PC). Hardwarebedingt, nicht änderbar.
+**Prozesse korrekt zählen** (`pgrep -af "server.py"` matcht die eigene
+Shell-Zeile mit!):
+```bash
+pgrep -c -f "SolarSystemSimulator/venv/bin/python server.py"
+```
+
+**Läuft der geänderte Code wirklich?** Startzeit des Prozesses gegen die
+Dateizeit prüfen:
+```bash
+ps -eo pid,lstart,cmd | grep "venv/bin/python server.py"
+stat -c '%y %n' backend/server.py
+```
+
+**Logs:** `journalctl --user -u solar-cuda.service -f`
+(Zeitanteile nur mit `--diag` in der Unit.)
 
 **GPU-Nummerierung:** `nvidia-smi` zählt nach PCI-Bus, CUDA nach
 Rechenleistung. Die drei V100 sind für CUDA 0–2, die beiden RTX 8000
 sind 3 und 4. Kein Fehler.
 
----
+**PCIe:** Alle fünf Karten hängen mit **×4** an M.2-zu-Oculink- bzw.
+USB4-Adaptern (Mini-PC). Hardwarebedingt, nicht änderbar.
 
-## 2. Am 20.07. abends umgesetzt
-
-### 2.1 Erkennung räumlich auf beide RTX 8000 — **erledigt, aber dynamisch**
-
-Umgesetzt wie im Entwurf: `Erkennungskarte` (Klasse in
-`film_producer.py`) hält eine GPU samt residenten Arrays und ist für
-einen x-Streifen `[lo, hi)` zuständig. Ein Paar gehört ihr, wenn
-`min(x_i, x_j)` darin liegt; um jedes eigene Paar sehen zu können,
-prüft sie Körper bis `hi + halo`. Nach links braucht sie **keinen**
-Halo — läge der Partner links von `lo`, wäre er selbst das Minimum.
-Die Streifen sind dadurch lückenlos **und** überschneidungsfrei, es
-gibt zwischen den Karten nichts abzustimmen.
-
-`halo = 2h + 2·r_max`: Nachbarzellen werden bis Versatz 1 geprüft, ein
-Paar liegt also höchstens 2h auseinander. `h` und die Streifengrenzen
-(Quantile der lebenden Asteroiden) werden **einmal global** bestimmt und
-an beide Karten gegeben — rechnete jede Karte ihr eigenes `h`, wären
-die Halo-Breiten verschieden und die Besitz-Regel nicht mehr dicht.
-
-**Der Befund, der den Entwurf korrigiert:** Der erwartete Faktor 2 tritt
-nur bei sehr hoher Kollisionsdichte ein. Gemessen mit
-`bench_erkennung.py` (250k Asteroiden, zwei RTX 8000):
-
-| Kandidatenpaare/Sample | 1 Karte | 2 Karten | Gewinn |
-|---|---|---|---|
-| 3,4 Mio | 8,5 ms | 13,1 ms | 0,65× |
-| 6,2 Mio | 12,0 ms | 14,4 ms | 0,83× |
-| 11,4 Mio | 17,2 ms | 14,5 ms | 1,18× |
-| 22,9 Mio | 31,5 ms | 20,3 ms | 1,55× |
-| 91 Mio | 111,5 ms | 64,8 ms | 1,72× |
-| 178 Mio | 212,7 ms | 128,9 ms | 1,65× |
-
-Der Umschlagpunkt liegt bei **8–9 Mio Kandidatenpaaren pro Sample**.
-Darunter kosten doppelter Batch-Upload und doppelte Kernel-Starts mehr,
-als die halbierte GPU-Arbeit einbringt. Ein ausgebildeter Gürtel liegt
-mit unter 10^6 klar darunter, frisch injizierte, sich durchdringende
-Wolken mit 10^8–10^9 klar darüber.
-
-Deshalb entscheidet `karten_wahl()` **pro Batch** neu (Schwellen
-`DET_ZU_AB` = 15 Mio, `DET_AB_UNTER` = 6 Mio, Hysterese). Ein
-Film-Neustart ist dafür **nicht** nötig: Streifen werden ohnehin je
-Sample zugeteilt, eine ruhende Karte bekommt schlicht keinen Upload
-mehr, ihre residenten Arrays bleiben liegen. Zuschalten kostet nur den
-nächsten Batch-Upload.
-
-Ende-zu-Ende an der Knödel-Szene (5 eng injizierte Wolken, 250k
-Asteroiden) bestätigt: `detkarten=2/2` in der dichten Phase, automatisch
-`1/2`, sobald sich der Gürtel gebildet hat.
-
-Jenseits von ~10^10 Paaren fällt der Gewinn wieder auf 1,0×: dort wird
-`h` so groß, dass der Halo einen erheblichen Teil des Nachbarstreifens
-mit abdeckt. Nur ein Transient, nicht optimiert.
-
-**Regressionsschutz:** `test_erkennung_streifen.py` prüft die Invariante,
-an der der Anlauf vom Vormittag scheiterte — die Vereinigung der
-Streifen-Treffer ist *exakt* die Trefferliste einer einzelnen Karte,
-über gleichverteilte Wolke, dichten Klumpen, zwei getrennte Wolken und
-ein Paar direkt auf der Grenze, jeweils mit 2, 3 und 5 Streifen.
-
-### 2.3 Client-Worker — **erledigt**
-
-Der WebSocket liegt jetzt in einem eigenen Worker (`NET_WORKER_SRC` in
-`index.html`), der die v4-Frames vollständig zerlegt und die Nutzlast
-**transferiert** statt kopiert (idx/qx/qy sind Views auf den empfangenen
-Puffer).
-
-Präzisierung der Diagnose des Vormittags: die Dekodierung selbst war nie
-teuer — sie erzeugt fast nur Views. Teuer ist, dass der Main-Thread pro
-Bild in `filmApply` + Rendern hängt und in dieser Zeit **kein**
-`onmessage` läuft; der Socket wird nicht geleert, das Empfangsfenster
-kollabiert. Der Worker leert ihn unabhängig davon weiter.
-
-Der Rest des Clients spricht unverändert `send()`/`close()`/
-`readyState` — über eine schmale Fassade auf den Worker. Der Live-CUDA-
-Pfad (status 0) läuft mit, kostet eine `postMessage`-Etappe (~µs gegen
-ms Netz-Roundtrip).
-
-Im Browser durchgetestet: Verbindungsaufbau, Verfügbarkeits-Probe mit
-sofortigem Trennen, Film-Stream (Samples, Ereignisse), f64-Dump zur
-Engine-Übergabe (status 5), Film-Neustart danach. Keine Konsolenfehler.
-
-### 2.6 Dichte-LOD des Streams — **neu, erledigt**
-
-Befund aus dem Betrieb: Bei 300k–515k Körpern war der ursprüngliche
-Asteroidengürtel „wie eine schüttere Glatze" praktisch verschwunden.
-
-Ursache war die alte Ausdünnung `sel % stride == 0` — eine **feste Rate
-über den Original-Index**, also überall derselbe Anteil. Der Gürtel hat
-eine feste kleine Objektzahl (800 + 600), verteilt über riesige Ringe;
-bei `stride 5` blieben ~280 Punkte übrig. Injizierte Wolken verlieren
-denselben Anteil, wirken aber kompakt weiter dicht. Die Regel war also
-**dichteblind**: sie löscht dünne Strukturen und lässt dichte unberührt
-wirken.
-
-Ersetzt durch `_lod_auswahl` / `_dichte_filter` mit **Rangfolge**:
-
-1. Massive Körper (Sonne, Planeten, Rogues, Sterne, SL) — nie ausgedünnt
-   (war schon vorher so: `| ~self._is_ast[sel]`)
-2. Asteroiden des geladenen Systems
-3. Nachträglich injizierte Wolken — bekommen den Rest
-
-Innerhalb jeder Stufe gilt `behalten ~ anzahl^0,5` je Gitterzelle.
-Nicht nivellierend: dichte Gebiete bleiben
-sichtbar dichter, nur nicht mehr um den vollen Faktor. Gemessen
-(`test_lod_dichte.py`, Gürtel 1400 gegen Wolke 300k):
-
-| Budget | Gürtel | Wolke | Dichteverhältnis |
-|---|---|---|---|
-| 120k | 100 % | 34,5 % | 73,9× statt roh 214× |
-| 60k | 100 % | 16,5 % | 35,3× |
-| 20k | 100 % | 6,0 % | 12,8× |
-
-Die Auswahl läuft über einen **Hash des Original-Index** gegen eine
-stufenlose Rate, nicht über einen ganzzahligen Stride. Ein Stride je Zelle
-kann nur die Raten 1, ½, ⅓ … treffen; zwei Nachbarzellen landen dann auf ⅓
-und ¼ und unterscheiden sich um ein Drittel Dichte — mit harter Kante
-entlang der Zellgrenze, sichtbar als **rechteckige Blockartefakte**. Der
-Hash beseitigt zugleich ein zweites Raster: „jeder n-te Index" legt in
-gleichmäßig erzeugten Wolken selbst eines an, weil die Körper in
-Erzeugungsreihenfolge im Raum liegen. Nebeneffekt: Das Budget wird voll
-ausgenutzt (119.931 statt 104.878 von 120.000 — die ganzzahlige Stufung
-verschenkte 13 %). Deterministisch, also über Samples stabil.
-
-Das Gitter ist 512×512, nicht 128×128: Die Auto-Box umspannt alle Körper
-inklusive weit hinausgeschleuderter, der sichtbare Ausschnitt ist davon
-oft nur ein Bruchteil — grobe Zellen wären dort entsprechend groß.
-
-Das Budget ist damit ein **Zielwert**, keine harte Schranke: die Auswahl
-trifft die Zellvorgabe im Erwartungswert und streut um ~√Budget (0,7 % bei
-20.000). Ein exakter Deckel bräuchte eine Teilsortierung — Aufwand ohne
-Wirkung, da das Budget selbst aus einer Bandbreitenschätzung stammt.
-
-**Neuer Regler „Punkte im Bild"** — logarithmisch wie Abspieltempo und
-Sample-Raster (linker Anschlag Auto, dann 10.000 … 5 Mio, rechter Anschlag
-„Alle" = gar keine Ausdünnung).
-Bewusst **nur einer**: die Bildrate hängt an der Summe der Punkte, zwei
-Budgets ließen unspielbare Kombinationen zu, ohne dass ein einzelner
-Regler verdächtig aussieht — derselbe Fehler wurde bei dt/Verlangsamung
-schon einmal korrigiert. Wird über `MSG_FILM_SUB` mitgeschickt und wirkt
-daher **ohne Filmneustart**.
-
-**Protokoll:** FILM_START hat ein viertes u8-Array `injiziert`,
-Version 4→ Bits sind jetzt `2` (`FILM_PROTO_VERSION` in server.py).
-
-**Nebenbei repariert:** `getState`/`restoreState` sicherten `isAsteroid`
-gar nicht — nach Export/Import wären alle Asteroiden massive Körper
-geworden (der Producer hätte sie als solche integriert, `M_MAX`!).
-
-**Bekannte Grenzen bei der Ereignis-Anzeige** (nicht angefasst):
-
-- Ein Blitz wird nur gezeigt, wenn beide Partner gestreamt sind
-  (`_filmInView`), und es sind höchstens 8 pro Frame. Das Dichte-LOD
-  entschärft das dort, wo es auffällt (dünne Gebiete sind jetzt
-  vollständig gestreamt), beseitigt es aber nicht.
-- Der Server liefert höchstens **1024 Ereignisse pro Frame**. In dichten
-  Szenen baut sich ein Rückstand auf; die Ereignisse treffen nach ihrer
-  Zeit ein und werden in einem Frame angewandt — der Zähler springt
-  schubweise statt zu laufen.
-- Läuft der Rückstand über den Ereignisring (65536), springt der Server
-  vor (`ev_from = max(sent_ev, ev_total - ev_cap + 8)`) und Ereignisse
-  gehen **still verloren**. Der Badge zählt dann dauerhaft zu niedrig
-  gegenüber der tatsächlich gerechneten Physik.
-
-### 2.4 Aufräumen — **erledigt**
-
-- Die Dispersions-Diagnose in `analyze_bounce` (`cp.unique`, zwei
-  `bincount`, zwei `percentile`, Nachbar-Suche je Sample) ist **weg**.
-  Sie gehörte zur verworfenen Idee 3.1 und war damit toter Code, der
-  jedes Sample Rechenzeit kostete.
-- Die verbliebene Zeitanteils-Diagnose (Producer und `[stream]`) läuft
-  nur noch mit `--diag`. Sie ist für die Engpass-Suche gebaut und kostet
-  jetzt praktisch nichts mehr, hat im Alltag aber nichts zu suchen.
-- `analyze_bounce` und `analyze_merge` waren in `if True:`-Blöcke
-  gehüllt (Restgerüst) — entfernt.
-- `pick_detect_device` → `pick_detect_devices` (liefert eine Liste).
+**ruff** liegt nicht im Projekt-venv:
+`/home/mp/Projekte/AIfred-Intelligence/venv/bin/ruff check backend/`
 
 ---
 
-## 2A. Am 21.07. umgesetzt
+## 2. Tests und Messwerkzeuge
 
-### 2A.1 Feinschleife der heißen Astis monoton — `231a6bb`
+Standalone-Skripte, kein pytest:
 
-Die private Feinschleife der *heißen* (eng begegnenden) Asteroiden lief
-**dreimal** je Zeitschritt — einmal pro Yoshida-Teilschritt (w1, w0, w1).
+```bash
+cd backend
+../venv/bin/python test_film_golden.py      # Ende-zu-Ende Kollisionskette
+../venv/bin/python test_kill_ort.py         # Kill-Abstand gegen Sternradius
+../venv/bin/python test_bewegter_stern.py   # enge Begegnung, BEWEGTER Stern
+../venv/bin/python test_subsamples.py       # Stützpunkte gegen NumPy-Referenz
+../venv/bin/python test_film_protokoll.py   # Frame gegen das Worker-Schema
+../venv/bin/python test_playhead_state.py   # Ring-Roundtrip, Sub-Überlauf
+../venv/bin/python test_erkennung_streifen.py  # Streifen == eine Karte
+../venv/bin/python test_kernel.py           # Kernel + Multi-GPU
+../venv/bin/python bench_erkennung.py       # Umschaltschwelle der 2. Karte
+../venv/bin/python bench_film.py -n 60000 --det-gpus 1
+```
 
-**Die zentrale Erkenntnis:** `YOSHIDA_W0 ≈ -1,702` ist **negativ**. Ein
-Yoshida-Schritt läuft 1,35×dt vor, 1,70×dt **zurück**, 1,35×dt vor. Die
-Zwischenzustände gehören damit zu **keiner physikalischen Zeit** und sind
-als Bahnpunkte unbrauchbar. Zusätzlich ist `MAX_SUB_DT_YEARS` = 0,5 Tage
-= das Standard-Raster, es gibt also nur **einen** Yoshida-Schritt je
-Sample: gültige Bahnpunkte existierten ausschließlich an den
-Sample-Grenzen.
+`test_film_protokoll.py` dekodiert ein echtes Frame nach demselben Schema
+wie `zerlegeFilm` in `index.html` — dort laufen Server und Client am
+ehesten auseinander, und zwar still: ein um vier Bytes verschobener
+Offset liefert keine Fehlermeldung, sondern Positionen im Nichts.
 
-Die Feinschleife läuft jetzt **einmal monoton** über das ganze `dtH`
-(Massiv-Positionen linear über `dtH` interpoliert, `mx0` dafür vor die
-w-Schleife gezogen). Ergebnis:
-
-* Taucher-Nahbegegnung **10× genauer** (1,44e-06 → 1,45e-07 AU)
-* **1,5–1,7× schneller** (200k: 222,9 → 146,3 ms auf 1 GPU;
-  191,6 → 114,4 ms auf 3 GPUs) — ein Drittel der Feinschleifen-Arbeit
-* Physik gegen die NumPy-Referenz unverändert (2,309e-07 AU)
-
-### 2A.2 Playhead-Regelung — `ac189d0`
-
-Drei Fehler, die sich gegenseitig verdeckten:
-
-1. Der Playhead folgte `_filmHeadRate` (der Kantenbewegung = **Producer**-
-   Tempo) statt dem eingestellten. Bei Zeitlupe rannte er los (gemessen
-   **5,5 statt 1,0 Tage/s**), holte die knapp gehaltene Kante ein und
-   klemmte → *Stufen mit Pausen*.
-2. Der Aufhol-Snap wertete den bloßen Abstand zur Kante als Rückstand.
-   Nach einem Wechsel schnell→langsam liegt aber absichtlich viel Vorrat
-   (gemessen 151 Tage) → *Sprung in die Zukunft*. Er feuert jetzt nur bei
-   echtem **Zeitverlust** (Tab inaktiv), erkannt am **ungedeckelten**
-   Frame-Abstand (`rohDelta`; `delta` ist auf 250 ms gedeckelt und taugt
-   dafür nicht).
-3. Die Producer-Rate als generelle Obergrenze ließ den Playhead **stehen**,
-   sobald der Server bei vollem Puffer nichts mehr sendet (Kante steht →
-   Schätzung → 0).
-
-**Regel:** Das eingestellte Tempo führt, die Producer-Rate darf nur
-bremsen — und nur dicht an der Kante.
-
-### 2A.3 GPU-Zwischenbilder (Sub-Samples) — `b303177`
-
-Der Kernel legt für heiße Astis **M_sub Stützpunkte je Raster** ab, exakt
-auf `j*dtRaster/M_sub` (die Schrittweite wird darauf gekappt). Damit liegt
-eine Perihel-Passage als **Messwert** vor, statt im Browser geraten zu
-werden.
-
-Umsetzung bewusst schlicht: voller Puffer `subPos[K][mSub][2][nAst]` auf
-der GPU, Kompaktierung per **Gather in CuPy** (kein `atomicAdd`/Slots im
-Kernel). `subN` zählt die Stützpunkte; gültig ist nur, wer im ganzen
-Raster heiß war (**lückenlose** Bahn). `SUB_SAMPLES = 8`,
-`NBodyCuda(devices, m_sub=…)`, Ergebnis in `st["sub"]`.
-
-Verifiziert (`backend/test_subsamples.py`): Auswahl trifft ohne
-Zusatzkriterium (Taucher ja, ferner Asti nein), Stützpunkte gegen feine
-NumPy-Referenz **max 3,69e-07 AU**, Laufzeit +6 %.
-
-**Noch ungenutzt** — Ring, Protokoll und Client folgen (siehe 3.0).
+**Blinder Fleck bis 21.07.:** Alle Tests hatten einen **ruhenden Stern im
+Ursprung**. Ein Fehler in der Positions-Interpolation der massiven Körper
+(die Feinschleife interpoliert sie linear über `dtH`) wäre nie
+aufgefallen. `test_bewegter_stern.py` schließt die Lücke.
 
 ---
 
-## 3. Noch offen
+## 3. Messfallen
 
-### 3.0 Sub-Samples bis zum Bildschirm bringen (NÄCHSTER SCHRITT)
+- **Die Kandidatenzahl ist die relevante Größe, nicht N.** Dieselben
+  250k Asteroiden ergeben als Knödel 10⁹ und als Gürtel 10⁵ Paare pro
+  Sample — Faktor 10⁴ in der Erkennungslast. Zwei Messungen mit gleicher
+  Objektzahl sind darum **nicht** vergleichbar.
+- `bench_film.py --szene knoedel` durchläuft diese Entwicklung: Der
+  Gesamtwert am Ende ist irreführend, phasenweise nach Kandidatenzahl
+  vergleichen.
+- Ein einzelner `nvidia-smi`-Aufruf misst in einem Stop-and-Go-System
+  zufällig eine Pause. Immer Zeitreihen nehmen.
+- Vor jeder Messung prüfen, ob der laufende Prozess den geänderten Code
+  geladen hat (siehe Abschnitt 1).
+- Für A/B gegen einen früheren Stand: `git stash` → messen →
+  `git stash pop`. Verlässlicher als der Vergleich mit dokumentierten
+  Zahlen aus anderen Szenen.
 
-Der Kernel liefert die Punkte bereits (2A.3), sie kommen aber nicht im
-Browser an. **Ring, Protokoll und Client wechseln das Datenformat
-gleichzeitig** — ein Teilstand ist nicht lauffähig, daher am Stück
-umsetzen. Reihenfolge:
-
-**a) Injektions-Bug zuerst** (klein, stört akut beim Testen):
-Injiziert man eine Wolke/Rogue, springt die Darstellung weit in die
-Zukunft. Ursache: Der Producer rechnet weit voraus (gemessen `head=462`
-bei `ph=81`); bei einer Mutation dumpt er seinen **f64-Zustand am Kopf**
-(`dump_shm`, server.py ~708), und der Client startet damit neu.
-*Fix:* beim Mutations-Neustart den Zustand zum **Playhead** aus dem Ring
-nehmen (`x|y|vx|vy` liegen dort vollständig vor, nur f32 — nach einer
-Injektion unkritisch) und die vorausgerechnete Zukunft verwerfen.
-
-**b) Ring** (`server.py` ~167, `film_producer.py` ~938):
-Slot wird `x|y` + Sub-Block (Anzahl u32 + Indizes + Positionen, feste
-Obergrenze `sub_max`, überzählige Heiße fallen auf Catmull zurück).
-`vx|vy` entfällt, sobald der v-Block weg ist — das **halbiert** den Ring
-und schafft den Platz für die Sub-Samples fast von allein.
-
-**c) Protokoll v4 + Client in EINEM Zug:**
-Sub-Block rein, v-Block raus. Im Client fliegt der komplette
-Integrationsapparat raus: `_filmTrace`, `_filmPerihel`, `_filmBahnCache`,
-`FILM_PERI_MIN`, `FILM_BAHN_M/N`, Scratch-Arrays, Hermite-Stufe,
-`_filmVPos`, Parabel-Stufe. **Hier verschwindet das „Körper werden vor der
-Sonne zur Seite gedrückt"** (bisher Perihel-Guard-Kompromiss).
-
-**d) M_sub-Regler** (einstellbar + persistiert, wie die anderen
-Film-Regler).
-
-**Wieviel Interpolation bleibt — gerechnet, nicht geraten:**
-Sehnenfehler `r·(1-cos(θ/2))`, sichtbar ab ~1e-4 AU bei nahem Zoom:
-
-| Bahn | Abstand 0,5 d | 0,0625 d (M_sub=8) | 50 d (hohes Tempo) |
-|---|---|---|---|
-| r=0,05 AU | *3,7e-3 | 5,8e-5 | *1,4e-2 |
-| r=0,3 AU  | *1,0e-4 | 1,6e-6 | *5,6e-1 |
-| r=2,5 AU  |  1,5e-6 | 2,3e-8 | *1,5e-2 |
-
-Daraus folgt der Zuschnitt — **2 Stufen statt 5**:
-* **mit** Sub-Samples → **linear** (Fehler ≤ 5,8e-5, unsichtbar)
-* **ohne** → **Catmull-Rom** (nötig, weil der Server bei hohem Tempo
-  Samples überspringt, bis ~50 d Abstand — das heilen Sub-Samples nicht,
-  sie kosten ja Bandbreite)
-* Randfall (Nachbar fehlt) → Sehne
-
-Schöner Nebenbefund: Die Sehne wird ab **r≈0,3 AU** sichtbar, und das
-GPU-Kriterium „heiß" (`dist/vrel/20 < dtH`) greift **ebenfalls** ab
-r≈0,3 AU. Beide skalieren mit der Bahnkrümmung — die heißen Körper sind
-exakt die, bei denen lineare Interpolation sonst versagt. Kein
-Zusatzkriterium nötig.
-
-### 3.0b Verworfene Irrwege (nicht erneut versuchen)
-
-* **Schachbrett = LOD-Gitter?** Widerlegt. Autokorrelation der Dichte im
-  Log-Raum zeigt **keinen** Peak bei der Zellperiode (glatter Abfall
-  0,994→0,985), die Screen-Autokorrelation ist ~0. Weder LOD-Zellen noch
-  Rendering-Raster. Sichtbar sind großräumige diagonale Dichtebänder, die
-  auch **ohne** Ausdünnung da sind (echte Struktur), von `LOD_GAMMA=0,5`
-  nur im Kontrast verstärkt.
-* **Dichte-Glättung im `_dichte_filter`** (Box-Blur der Zellbelegung):
-  bringt nichts und schadet leicht (0,1924 gegen 0,1789 rel. Std bei
-  homogenem Feld). Der Filter **dämpft** Poisson-Fluktuation bereits über
-  die lokale `rate`-Anpassung; eine Glättung nimmt ihm genau das.
-* **Client-seitige Bahnintegration** (`_filmTrace` + bidirektionaler
-  Blend): Der *Algorithmus* ist gut (Blend-Fehler ~1e-6 gegen
-  Ground-Truth, auch mit u16-Quantisierung — besser als jede
-  Alternative), aber im Browser **zu teuer**: Cache-Rebuild bei einer
-  sonnennahen Wolke 87 ms (5k Körper) bis 1,8 s (50k) → periodisches
-  Einfrieren, das als „Pumpen/Schockwelle" erscheint. Deshalb wandert er
-  auf die GPU (2A.3) und wird im Client **ersatzlos gestrichen**.
-* **Gröber streamen bei Zeitlupe** wäre falsch: Man geht ja runter, um
-  *mehr* Details zu sehen.
-
-### 3.1 Datenlokalität GPU-zu-GPU (war 2.2)
-**Bewertet, nicht umgesetzt — der Entwurf trägt so nicht.**
-
-Der Gedanke war, den Host-Umweg zu sparen. Das geht so nicht auf:
-`step_batch` liefert bewusst ein Host-Array, und das wird auch
-gebraucht — `bounce_deltas` rechnet auf der CPU, `apply_merges` liest
-Host-Positionen. Ein P2P-Transfer würde also nur den **H2D** zur
-Erkennungskarte ersetzen, nicht den **D2H** von den Physikkarten. Dafür
-müsste zusätzlich der Shard-Scatter in die Originalreihenfolge auf die
-GPU wandern.
-
-Der billigere Hebel zuerst: **Pinned (page-locked) Host-Puffer** für
-`out` in `step_batch`. Verdoppelt den PCIe-Durchsatz in beide
-Richtungen ohne Architekturänderung. Vorher messen — mit zwei aktiven
-Erkennungskarten wird pro Batch doppelt hochgeladen, der Anteil ist
-also gestiegen.
-
-### 3.1b Interpolation weiter verbessern (ÜBERHOLT durch 3.0)
-
-> **Veraltet.** Die hier skizzierten client-seitigen Hebel sind durch die
-> GPU-Sub-Samples (2A.3 / 3.0) erledigt bzw. bewusst verworfen (3.0b).
-> Nicht mehr umsetzen — der Client wird *vereinfacht*, nicht erweitert.
-> Der Abschnitt bleibt nur zur Einordnung stehen.
-
-Der Client interpoliert die Film-Positionen jetzt mit **Catmull-Rom**
-(glatte Kurve durch vier Sample-Punkte) statt linearer Sehne — behebt das
-Pumpen in Sonnennähe, gemessen 29× genauer auf einer Kreisbahn. Zwei
-Hebel bleiben für den Extremfall (Perihel, wo ein Körper fast eine halbe
-Umrundung pro Raster macht — dort sind die Samples selbst zu grob):
-
-- **Geschwindigkeit mitstreamen** (Hermite mit echten Tangenten statt aus
-  Nachbar-Samples geschätzten). Verdoppelt die Bandbreite pro Punkt
-  (16 statt 8 Byte); nur nötig, wenn Catmull-Rom sichtbar nicht reicht.
-- **Adaptiv feineres Raster für sonnennahe/schnelle Körper** — analog zur
-  „enge Begegnungen präzise"-Mechanik des Hybrid-Backends (astAdaptive im
-  Worker). Dort wird der Substep an nahen schweren Körpern gedrückt; das
-  Muster ließe sich für das Film-Sample-Raster übernehmen.
-
-### 3.1c Bekannte Grenze: abrupter Verbindungsverlust im Film
-Bricht die CUDA-Verbindung WÄHREND des Films unerwartet ab (Server-Crash,
-Netzwerk, `systemctl stop`), nullt der `onclose`-Pfad `filmQueue`, **ohne**
-vorher `filmReconstructVelocities()` aufzurufen — die Körper landen im
-Worker mit v≈0 und stürzen in die Sonne. Der GEPLANTE Engine-Wechsel ist
-sauber (Dump + Rekonstruktion über `filmStop`). Fix wäre einzeilig
-(Rekonstruktion im `onclose` vor dem Nullen), auf Nutzerwunsch vorerst
-nicht gebaut — im Normalbetrieb tritt der Fall nicht auf.
-
-### 3.1d Rückspul-Ring in den VRAM (Idee, nicht umgesetzt)
-Der Sample-Ring liegt in Shared Memory (`/dev/shm`, tmpfs = RAM). Die
-freien Erkennungskarten (RTX 8000, je 48 GB) haben reichlich ungenutztes
-VRAM — dort ließe sich eine VIEL längere Rückspul-Historie halten,
-besonders seit das v-Streaming den Ring auf 16 B/Körper verdoppelt.
-
-**Haken:** Der Ring entkoppelt heute zwei getrennte Prozesse — Producer
-(GPU) schreibt, Server liest ihn in µs direkt aus dem RAM. Im VRAM müsste
-der Server per CUDA-IPC zugreifen und pro `build_frame` D2H zurücklesen.
-Das verlagert Transferlast in einen heute blitzschnellen Pfad. Vor dem
-Bau messen: build_frame-Latenz shm gegen VRAM+D2H.
-
-### 3.2 nginx (braucht sudo)
-- `sites-available/narnia` ist seit Mai **nicht synchron** mit
-  `sites-enabled/narnia`. Aktiv ist `sites-enabled` (kein Symlink!).
-  Zwei Wahrheiten für dieselbe Config.
-- `/solar-system/` hat **kein `Cache-Control`** — anders als
-  `/haemotrace/` und `/ai-atc/`. Daher nach jeder `index.html`-Änderung
-  ein harter Reload nötig.
-
-### 3.3 Socket-Unit auf `0.0.0.0:8765`
-Testrest der Direktverbindung; das Backend ist damit ohne Auth im LAN
-erreichbar. Original gesichert, auf Wunsch des Nutzers vorerst so
-belassen. `?cudaws=ws://host:8765` im Client hängt den nginx-Proxy ab
-(Diagnose) und kann bleiben.
+**Diagnose-Vorgehen bei „die Szene sieht falsch aus":** Zuerst die
+**Anfangsbedingungen** nachrechnen, dann erst die Pipeline verdächtigen.
+Am 21.07. hat die Suche nach einem „Loch vor der Sonne" durch vier
+Sackgassen geführt, weil in Interpolation, Streaming und Quantisierung
+gesucht wurde. Ein Blick auf `v/v_esc` = 0,24 hätte in fünf Minuten
+gezeigt, dass die injizierte Wolke gebunden ist und hineinfallen *muss*.
+Das eigentliche Problem war ein ganz anderes (fehlende
+Kollisionsanzeige).
 
 ---
 
-## 4. Verworfen — nicht erneut versuchen
+## 4. Aktuelle Kennzahlen
 
-### 4.1 Bounce-Reichweite auf lokale Dispersion umstellen
+Gemessen 21.07., 200 001 Körper, Raster 0,5 d, drei V100 (Physik) +
+RTX 8000 (Erkennung):
+
+| Szene | Produktion | Kernel | Wartet auf Erkennung | Bounce (GPU) | Host gesamt |
+|---|---|---|---|---|---|
+| Gürtel (2 Mio Kandidaten) | 46,8 d/s | 33 % | 59 % | 44 % | ~9 % |
+| dichter Ring (49 Mio) | 12,6 d/s | 9 % | **88 %** | **84 %** | ~2 % |
+
+**Die Erkennung ist der Taktgeber, und sie läuft vollständig auf der
+GPU.** `bounceCPU` ist in beiden Fällen 0 % — es gibt viele Kandidaten,
+aber wenige echte Treffer, und nur die kosten Host-Zeit. Auslagern lässt
+sich nichts mehr; der einzige nennenswerte CPU-Posten ist das
+Ring-Schreiben (9 % bei leichter Last, 2 % unter Last).
+
+Produktionsrate über die Umbauten des 21.07.: 60,3 → 62,3 → 66,6 d/s
+(60k, Gürtel, eine Erkennungskarte) — Unterschiede in der Streuung
+zwischen Läufen.
+
+**Nicht gemessen:** `build_frame` im Server-Prozess (Culling, Dichte-LOD
+mit Bisektion und 512×512-`bincount`, Quantisierung, Sub-Kette) ist reine
+numpy-Arbeit für jedes gestreamte Sample. Der Server ist ein eigener
+Prozess, läuft also parallel zur GPU — ob er bei großem N selbst zum
+Engpass wird, sagen die `[stream]`-Zeilen mit `--diag`.
+
+---
+
+## 5. Verworfen — nicht erneut versuchen
+
+### 5.1 Bounce-Reichweite auf lokale Dispersion umstellen
 `h = 2·v95·dt` richtet sich nach der **absoluten** Bahngeschwindigkeit,
 obwohl für Kollisionen nur die **relative** zählt. Gemessen und
 verworfen: das Maximum der Dispersion liegt 40- bis 100-mal über dem
@@ -440,83 +149,93 @@ verworfen: das Maximum der Dispersion liegt 40- bis 100-mal über dem
 **Nebenbefund, wichtig:** Der bestehende Ansatz deckt damit nur die
 langsamsten 95 % ab. Kollisionen sehr schneller Körper — Sonnennähe,
 ausgeschleuderte Asteroiden — werden **bereits heute nicht gefunden**.
-Bewusste Näherung, kein Regressionsfehler, aber eine bekannte
-Genauigkeitsgrenze.
+Bewusste Näherung, keine Regression, aber eine bekannte Genauigkeitsgrenze.
 
-### 4.2 Multi-GPU-Schwelle senken
+### 5.2 Multi-GPU-Schwelle senken
 `test_kernel.py` legte nahe, eine Einzelkarte sei schneller als drei.
-Im Betrieb umgestellt → fünf- bis sechsmal langsamer. Zurückgenommen;
-eine saubere Wiederholung ergab 244 gegen 198 Tage/s zugunsten des
-Verbunds. Die Schwelle von 30k ist korrekt, Warnung steht im Code.
+Im Betrieb umgestellt → **fünf- bis sechsmal langsamer**. Der Benchmark
+misst den Kernel ohne die Erkennungs-Pipeline; sobald diese mitläuft,
+kehrt sich das Bild um. Die Schwelle von 30k ist korrekt.
+
+### 5.3 Client-seitige Bahnintegration
+Der *Algorithmus* war gut (Blend-Fehler ~1e-6 gegen Ground-Truth), im
+Browser aber zu teuer: Cache-Rebuild bei einer sonnennahen Wolke 87 ms
+(5k Körper) bis 1,8 s (50k) → periodisches Einfrieren. Ersetzt durch
+GPU-Stützpunkte, im Client ersatzlos gestrichen.
+
+### 5.4 Dichte-Glättung im `_dichte_filter`
+Box-Blur der Zellbelegung bringt nichts und schadet leicht (0,1924 gegen
+0,1789 rel. Std bei homogenem Feld). Der Filter dämpft Poisson-
+Fluktuation bereits über die lokale `rate`-Anpassung.
+
+### 5.5 Schachbrettmuster = LOD-Gitter?
+Widerlegt. Autokorrelation der Dichte im Log-Raum zeigt **keinen** Peak
+bei der Zellperiode. Sichtbar sind großräumige diagonale Dichtebänder,
+die auch **ohne** Ausdünnung da sind (echte Struktur).
+
+### 5.6 Gröber streamen bei Zeitlupe
+Wäre falsch: Man geht ja runter, um *mehr* Details zu sehen.
 
 ---
 
-## 5. Betriebswissen
+## 6. Offen
 
-**Was wirkt wann:**
+### 6.1 Ring-Schreiben ohne Host-Kopie
+`schreibe_slot` kopiert `outs[i]` per `tobytes()` in den Shared-Memory-
+Ring — 9 % der Producer-Zeit bei leichter Last. Der D2H könnte direkt in
+den Ring gehen. Erwartbar gut 4 Tage/s im Gürtelfall, unter Last nichts.
 
-| Geändert | Wirksam durch |
-|---|---|
-| `index.html` | **Harter Reload** (Strg+Shift+R) — kein Cache-Control! |
-| `film_producer.py` | Film aus/an (neuer Prozess per `spawn`) |
-| `server.py` | Backend-Prozess muss beendet werden |
+### 6.2 Kill-Ort: letzte 2 Sternradien
+Die Berührungsprüfung läuft seit `cdf5a43` je Substep in der Feinschleife
+und trifft den Kontakt auf ~Radius/20. Der gemessene Median liegt bei
+2,0 × Sternradius — der Rest steckt in der **linearen Interpolation der
+Messung** (`test_kill_ort.py`), nicht mehr im Zeitpunkt. Im Client tragen
+die Sub-Stützpunkte die Bahn achtmal feiner. Wer es genauer wissen will,
+müsste den Test über `slot_sub` interpolieren lassen.
 
-Der Server läuft socket-aktiviert mit `--idle-exit 120`: Er beendet sich
-erst **120 s nach der letzten getrennten Verbindung**. Ein Reload reicht
-nicht. Sauber: `systemctl --user stop solar-cuda.service`.
+Nicht-heiße Körper durchlaufen die Feinschleife nicht; für sie gilt
+weiter die Streckenprüfung im Producer (Kontaktzeitpunkt aus `tt`).
 
-**Prozesse korrekt zählen** (`pgrep -af "server.py"` matcht die eigene
-Shell-Zeile mit!):
-```bash
-pgrep -c -f "SolarSystemSimulator/venv/bin/python server.py"
-```
+### 6.3 Datenlokalität GPU-zu-GPU
+**Bewertet, trägt so nicht.** `step_batch` liefert bewusst ein
+Host-Array, und das wird gebraucht — `bounce_deltas` rechnet auf der CPU,
+`apply_merges` liest Host-Positionen. Ein P2P-Transfer ersetzte nur den
+**H2D** zur Erkennungskarte, nicht den **D2H** von den Physikkarten.
 
-**Logs:** `journalctl --user -u solar-cuda.service -f`
-(Zeitanteile nur mit `--diag` in der Unit.)
+Der billigere Hebel zuerst: **Pinned Host-Puffer** für `out` in
+`step_batch`. Vorher messen — beim DOWNLOAD bringt pinned nach früherer
+Messung nichts (3,21 gegen 3,24 GB/s, der ×4-Link ist ausgereizt).
 
-**Tests und Messwerkzeuge** — Standalone-Skripte, kein pytest:
-```bash
-cd backend
-../venv/bin/python test_film_golden.py        # Ende-zu-Ende Kollisionskette
-../venv/bin/python test_erkennung_streifen.py # Streifen == eine Karte
-../venv/bin/python test_kernel.py             # Kernel + Multi-GPU
-../venv/bin/python bench_erkennung.py         # Umschaltschwelle der 2. Karte
-../venv/bin/python bench_film.py -n 250000 --szene knoedel --det-gpus 1 2
-```
+### 6.4 Abrupter Verbindungsverlust im Film
+Bricht die CUDA-Verbindung WÄHREND des Films unerwartet ab (Server-Crash,
+`systemctl stop`), nullt der `onclose`-Pfad `filmQueue`, **ohne** vorher
+`filmReconstructVelocities()` aufzurufen — die Körper landen im Worker
+mit v≈0 und stürzen in die Sonne. Der geplante Engine-Wechsel ist sauber.
+Fix wäre einzeilig, auf Nutzerwunsch nicht gebaut.
 
-**ruff** liegt nicht im Projekt-venv:
-`/home/mp/Projekte/AIfred-Intelligence/venv/bin/ruff check backend/`
+### 6.5 Rückspul-Ring in den VRAM
+Der Sample-Ring liegt in `/dev/shm` (tmpfs = RAM). Die freien
+Erkennungskarten (je 48 GB) hätten Platz für eine viel längere Historie.
+**Haken:** Der Ring entkoppelt zwei Prozesse — der Server liest ihn heute
+in µs direkt aus dem RAM. Im VRAM bräuchte es CUDA-IPC und pro
+`build_frame` ein D2H. Vor dem Bau messen.
 
-**Messfallen:**
-- Ein einzelner `nvidia-smi`-Aufruf misst in einem Stop-and-Go-System
-  zufällig eine Pause. Immer Zeitreihen nehmen.
-- **Die Kandidatenzahl ist die relevante Größe, nicht N.** Dieselben
-  250k Asteroiden ergeben als Knödel 10^9 und als Gürtel 10^5 Paare pro
-  Sample — Faktor 10^4 in der Erkennungslast. Zwei Messungen mit
-  gleicher Objektzahl sind darum **nicht** vergleichbar.
-- `bench_film.py --szene knoedel` durchläuft diese Entwicklung: Der
-  Gesamtwert am Ende ist irreführend, phasenweise nach Kandidatenzahl
-  vergleichen.
-- Vor jeder Messung prüfen, ob der laufende Prozess den geänderten Code
-  geladen hat (Startzeit gegen `stat -c '%y'` der Datei).
+### 6.6 nginx (braucht sudo)
+- `sites-available/narnia` ist seit Mai **nicht synchron** mit
+  `sites-enabled/narnia`. Aktiv ist `sites-enabled` (kein Symlink!).
+- `/solar-system/` hat **kein `Cache-Control`** — daher nach jeder
+  `index.html`-Änderung ein harter Reload nötig.
 
----
+### 6.7 Socket-Unit auf `0.0.0.0:8765`
+Testrest der Direktverbindung; das Backend ist damit ohne Auth im LAN
+erreichbar. Auf Wunsch des Nutzers vorerst so belassen.
+`?cudaws=ws://host:8765` im Client hängt den nginx-Proxy ab (Diagnose)
+und kann bleiben.
 
-## 6. Am 20.07. vormittags behoben (zur Einordnung)
-
-- **Live-Deadlock** über `_filmHeadRate` (Kante stand → Rate 0 →
-  gegenseitiges Warten).
-- **Handover-Race:** `filmStart()` legte neue `filmRefs` an, während der
-  f64-Dump der alten Session unterwegs war. Start wird jetzt aufgeschoben
-  und vom Dump ausgelöst.
-- **Neustart-Endlosschleife:** `_filmSentN` gegen `bodies.length`
-  verglichen statt gegen die gefilterte Länge.
-- **Playhead-Klemmung** im Server (`[tail, head]`).
-- **Interpolation:** Körper nur im älteren Sample galten als aktuell →
-  statische Flecken.
-- **Bandbreitenschätzung:** `_bw` maß die Dauer von `await ws.send`
-  (Socket-Puffer!). Jetzt über ein Fenster.
-- **Frame-Kosten:** Drosselung rechnete mit `sample_bytes` statt der
-  tatsächlichen Framegröße.
-- **Leichen-Filter:** Tote Asteroiden werden beim Filmstart aussortiert.
-- **Ringpuffer** per `--ring-gib` konfigurierbar (Default 8 GiB).
+### 6.8 Ereignis-Anzeige: bekannte Grenzen
+- Der Server liefert höchstens **1024 Ereignisse pro Frame**, der Client
+  zeigt höchstens **32 Blitze pro Bild**. In dichten Szenen baut sich ein
+  Rückstand auf; der Zähler springt schubweise.
+- Läuft der Rückstand über den Ereignisring (65536), springt der Server
+  vor (`ev_from = max(sent_ev, ev_total - ev_cap + 8)`) und Ereignisse
+  gehen **still verloren**. Der Badge zählt dann dauerhaft zu niedrig.
