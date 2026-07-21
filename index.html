@@ -4636,6 +4636,11 @@ let _filmLastTrailT = -1;    // Sim-Zeit des letzten Bahnspur-Samples
 // Lieferluecke schlaegt als Stocken durch.
 const FILM_PUFFER_S = 1.5;
 const FILM_BREMSE = 0.85;
+// Ab diesem ungedeckelten Frame-Abstand gilt Zeit als VERLOREN (Tab war
+// inaktiv, kein requestAnimationFrame) — nur dann darf der Playhead per
+// Snap zur Live-Kante aufholen. Normale Frames liegen bei ~17 ms, ein
+// zaeher Frame bei einigen 100 ms; 1 s trennt beides sicher.
+const FILM_SNAP_VERLUST_MS = 1000;
 // Engine-Uebergabe (Film -> Worker/CPU). Die drei Fristen haengen
 // voneinander ab und muessen in dieser Reihenfolge wachsen, sonst wird
 // die Verbindung gekappt, bevor der f64-Dump durch ist:
@@ -5535,7 +5540,12 @@ function filmTick(dtDays, slowFactor, nowMs) {
     filmStop();
     return;
   }
-  const delta = _filmPrevMs ? Math.min(nowMs - _filmPrevMs, 250) : 16.7;
+  // rohDelta = tatsaechlich vergangene Zeit. delta ist fuer den Playhead-
+  // Vorschub auf 250 ms gedeckelt (sonst reisst ein Ruckler die Zeit vor);
+  // rohDelta bleibt ungedeckelt und verraet ECHTEN Zeitverlust (Tab war
+  // inaktiv) — nur der rechtfertigt einen Aufhol-Snap (siehe unten).
+  const rohDelta = _filmPrevMs ? nowMs - _filmPrevMs : 16.7;
+  const delta = Math.min(rohDelta, 250);
   _filmPrevMs = nowMs;
   const rate = filmSpeed;                      // Tage pro Echtzeit-Sekunde
   _filmRate = rate;
@@ -5579,21 +5589,42 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // (gemessen: ph konstant, vorrat=200d, Producer laeuft weiter).
     // Die Klemme auf `kante` weiter unten verhindert, dass der Playhead
     // ueber tatsaechlich vorhandene Daten hinauslaeuft.
-    let follow = _filmHeadRate > 0 ? _filmHeadRate : rate;
-    if (follow > 0 && filmQueue.times.length) {
+    // NIE schneller als das eingestellte Tempo: _filmHeadRate ist die
+    // KANTENBEWEGUNG, also das Producer-Tempo. Rechnet der Producer
+    // schneller als abgespielt werden soll (bei Zeitlupe der Normalfall —
+    // gemessen 34 Tage/s Producer gegen 1 Tag/s Wunsch), rannte der
+    // Playhead mit Producer-Tempo los, holte die bewusst knapp gehaltene
+    // Kante (Puffer-Ziel ~5 s Playback) ein, klemmte dort und wartete auf
+    // Nachschub: sichtbar als Stufen mit Pausen statt gleichmaessiger
+    // Zeitlupe. Die Kantenrate darf nur BREMSEN, nie beschleunigen.
+    let follow = rate;
+    if (rate > 0 && filmQueue.times.length) {
       const aheadS = (filmQueue.times[filmQueue.times.length - 1] -
-                      filmPlayheadDays) / follow;
-      if (aheadS < FILM_PUFFER_S) follow *= FILM_BREMSE;
+                      filmPlayheadDays) / rate;
+      if (aheadS < FILM_PUFFER_S) {
+        // Erst HIER, dicht an der Kante, darf die Producer-Rate begrenzen:
+        // nicht schneller abspielen als nachgeliefert wird. Weiter vorn im
+        // Puffer waere sie die falsche Referenz — bei vollem Puffer sendet
+        // der Server nichts mehr, die Kante steht, und die Schaetzung
+        // faellt gegen 0 (der Playhead bliebe stehen).
+        if (_filmHeadRate > 0) follow = Math.min(rate, _filmHeadRate);
+        follow *= FILM_BREMSE;
+      }
     }
     let next = filmPlayheadDays + follow * delta / 1000;
     next = Math.min(next, kante);
     if (next < filmPlayheadDays) next = filmPlayheadDays;   // stehenbleiben
-    // Aufhol-Snap NUR bei echtem Rueckstand (z. B. Tab-Wechsel): Schwelle
-    // weit ueber dem Puffer-Ziel (10 s Playback), sonst frisst der Snap
-    // die absichtliche 1,5-s-Puffer-Luecke sofort wieder auf.
+    // Aufhol-Snap NUR bei echtem ZEITVERLUST (Tab war inaktiv). Ein grosser
+    // Abstand zur Kante allein ist KEIN Rueckstand: nach einem Wechsel von
+    // schnellem auf langsames Tempo liegt ein absichtlich grosser Vorrat
+    // bereit (der Server puffert ~5 s Playback, bei 60 Tage/s also ~300
+    // Tage). Ohne die Zeitverlust-Bedingung schlug der Snap genau dann zu
+    // und riss die Darstellung hunderte Tage in die Zukunft.
     const snapSchwelle = Math.max(60 * filmRasterDays(),
                                   (follow > 0 ? follow : _filmRate) * 10);
-    if (kante - next > snapSchwelle) next = kante;
+    if (rohDelta > FILM_SNAP_VERLUST_MS && kante - next > snapSchwelle) {
+      next = kante;
+    }
     filmPlayheadDays = next;
   } else if (!filmScrubbing && filmQueue && filmQueue.times.length) {
     // Playhead laeuft NUR, wenn Daten da sind — nach einem Sprung wartet
