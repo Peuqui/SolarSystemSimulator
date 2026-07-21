@@ -4282,7 +4282,8 @@ const NET_WORKER_SRC = `
 let ws = null;
 
 // Film-Frame zerlegen: u32 status | u32 N | u32 count | u32 evCount |
-// f64 tail, head, boxX0, boxY0, boxSpanX, boxSpanY, logFlag, mSub |
+// f64 tail, head, boxX0, boxY0, boxSpanX, boxSpanY, logFlag, mSub,
+//     verworfen |
 // count x f64 zeiten |
 // count x ( u32 visCount | u32 idx[] | u16 qx[] | u16 qy[] |
 //           u32 subCount | u32 subIdx[] | u16 sqx[subCount*mSub] |
@@ -4306,9 +4307,13 @@ function zerlegeFilm(buf) {
   // — der Server laesst ihn weg, sobald er groeber als raster-dicht
   // streamt (dann decken die Stuetzpunkte das Intervall nicht ab).
   const mSub = dv.getFloat64(72, true) | 0;
-  const times = new Float64Array(buf, 80, count);
+  // verworfen (9. Meta-f64): Ereignisse, die dem Ringueberlauf zum Opfer
+  // fielen. Ihre Blitze fehlen unwiederbringlich, im Zaehler duerfen sie
+  // nicht fehlen.
+  const verworfen = dv.getFloat64(80, true);
+  const times = new Float64Array(buf, 88, count);
   const samples = [];
-  let off = 80 + 8 * count;
+  let off = 88 + 8 * count;
   for (let i = 0; i < count; i++) {
     const visCount = dv.getUint32(off, true);
     const idx = new Uint32Array(buf, off + 4, visCount);
@@ -4338,7 +4343,7 @@ function zerlegeFilm(buf) {
     off += 32;
   }
   return { typ: 'film', n: hdr[1], tail: dv.getFloat64(16, true),
-           head: dv.getFloat64(24, true), times, samples, evs };
+           head: dv.getFloat64(24, true), times, samples, evs, verworfen };
 }
 
 self.onmessage = (e) => {
@@ -4585,6 +4590,11 @@ function initCudaBackend(urlIndex = 0) {
       lastT = msg.times[i];
     }
     for (const ev of msg.evs) filmEvents.push(ev);
+    // Kollisionen, deren Ereignis den Ringueberlauf nicht ueberlebt hat:
+    // Blitz und Ort sind weg, die Kollision hat aber stattgefunden. Der
+    // Server meldet die Gesamtzahl, hier wird sie uebernommen (nicht
+    // addiert — sie ist bereits kumuliert).
+    _filmEvVerworfen = msg.verworfen || 0;
     // Abgespielte Samples verwerfen, aber GENUG Vergangenheit fuer die
     // glatte Interpolation behalten: Catmull-Rom braucht das Sample VOR
     // dem aktuellen Intervall (i-1). Sample-basiert (mind. 3 Vergangenheit
@@ -4898,6 +4908,7 @@ function filmStart() {
   _filmEventsApplied = 0;
   collisionFlashes.length = 0;       // Flashes der alten Session verwerfen
   _filmCollBase = totalCollisions;   // Neustart: bisherige Zaehlung behalten
+  _filmEvVerworfen = 0;              // gilt je Session (Server zaehlt neu)
   _filmBaseVis = new Uint8Array(N);
   _filmBaseMass = new Float64Array(N);
   _filmEvVis = new Uint8Array(N);
@@ -5102,6 +5113,12 @@ let _filmHandover = false;   // Engine-Uebergabe: warten bis f64-Dump da ist
 let _filmRestartPending = false;   // Film-Neustart wartet auf f64-Dump
 let _filmShatterPending = null;    // { a, b, t, x, y, vx, vy } (status=7)
 let _filmCollBase = 0;             // Zaehlerstand vor der aktuellen Session
+// Vom Server gemeldete, beim Ringueberlauf verlorene Ereignisse. Sie
+// haben keinen Zeitstempel mehr, koennen also nicht zeitrichtig
+// einsortiert werden — beim Zurueckspulen zaehlt der Stand daher zu
+// hoch. Das ist der Preis dafuer, dass die GESAMTZAHL stimmt; verworfen
+// wird ohnehin nur, wenn der Client weit hinterherhinkt.
+let _filmEvVerworfen = 0;
 let _filmVtx = null;               // GL-Direktpfad: [x,y,r,g,b] aus filmApply
 let _filmVtxCount = -1;            // Punkte darin; -1 = Pfad inaktiv
 // Koerper im zuletzt angewandten Sample — also das, was der Server nach
@@ -5483,10 +5500,12 @@ function filmApplyEvents(t) {
     changed = true;
   }
   if (changed ||
-      totalCollisions !== _filmCollBase + _filmEventsApplied) {
+      totalCollisions !== _filmCollBase + _filmEventsApplied +
+                          _filmEvVerworfen) {
     // Basis + Session-Events: Zaehlerstaende ueberleben so die Film-
     // Neustarts (Inject, Zerbersten), statt auf 0 zu springen.
-    totalCollisions = _filmCollBase + _filmEventsApplied;
+    totalCollisions = _filmCollBase + _filmEventsApplied +
+                      _filmEvVerworfen;
     const cc = document.getElementById('collision-count');
     if (cc) cc.textContent = fmtDE(totalCollisions, 0);
     const cb = document.getElementById('collision-badge');

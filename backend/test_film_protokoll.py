@@ -9,8 +9,8 @@ Dieser Test dekodiert das Frame Feld fuer Feld nach demselben Schema wie
 `zerlegeFilm` in index.html (Kommentar dort haelt das Layout fest) und
 prueft die Werte gegen den bekannten Ring-Inhalt:
 
-  a) Meta-Block (Box, logFlag, mSub) und Zeiten liegen an den Offsets,
-     die der Worker liest.
+  a) Meta-Block (Box, logFlag, mSub, verworfene Ereignisse) und Zeiten
+     liegen an den Offsets, die der Worker liest.
   b) Positionen kommen quantisiert, aber richtig zurueck.
   c) Der Sub-Block enthaelt genau die heissen Koerper, die AUCH gestreamt
      werden — und ihre Stuetzpunkte in derselben Box-Quantisierung wie
@@ -78,6 +78,7 @@ def baue_session(head=40, capacity=64):
     s.ev_cap = 16
     s.ev_shm = SimpleNamespace(buf=bytearray(16 * film_producer.EV_BYTES))
     s.sent_ev = 0
+    s.ev_verworfen = 0
     s._kill_t = np.full(N, np.inf)
     s._is_ast = np.ones(N, bool)
     s._injiziert = np.zeros(N, bool)
@@ -104,9 +105,10 @@ def zerlege_film(frame):
     box = struct.unpack_from("<dddd", frame, 32)          # x0,y0,sx,sy
     log = struct.unpack_from("<d", frame, 64)[0] != 0
     m_sub = int(struct.unpack_from("<d", frame, 72)[0])
-    times = np.frombuffer(frame, "<f8", count, 80)
+    verworfen = struct.unpack_from("<d", frame, 80)[0]
+    times = np.frombuffer(frame, "<f8", count, 88)
     samples = []
-    off = 80 + 8 * count
+    off = 88 + 8 * count
     for _ in range(count):
         (vis_count,) = struct.unpack_from("<I", frame, off)
         idx = np.frombuffer(frame, "<u4", vis_count, off + 4)
@@ -126,7 +128,7 @@ def zerlege_film(frame):
     rest = len(frame) - off - ev_count * film_producer.EV_BYTES
     return SimpleNamespace(status=status, n=n, count=count, box=box,
                            log=log, m_sub=m_sub, times=times,
-                           samples=samples, rest=rest)
+                           samples=samples, rest=rest, verworfen=verworfen)
 
 
 def entpacke(q, box, achse):
@@ -155,6 +157,8 @@ def main():
                  "Kopf: status/N/count")
     ok &= pruefe(not f.log, "logFlag 0 bei gesetzter Kamera-Box")
     ok &= pruefe(f.m_sub == M_SUB, f"mSub im Meta ({f.m_sub})")
+    ok &= pruefe(f.verworfen == 0.0,
+                 "verworfene Ereignisse im Meta (hier 0)")
     ok &= pruefe(np.allclose(f.times,
                              [T0 + (i + 1) * RASTER for i in (20, 21, 22)]),
                  "Zeiten je Sample")

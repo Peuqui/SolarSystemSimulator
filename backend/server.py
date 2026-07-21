@@ -178,7 +178,13 @@ class FilmSession:
         self.capacity = max(2000, int(self.MAX_BYTES // self.sample_bytes))
         self.shm = shared_memory.SharedMemory(
             create=True, size=self.capacity * self.sample_bytes)
-        self.ev_cap = 65536
+        # Ereignisring. Muss den RUECKSTAND puffern koennen: erzeugt der
+        # Producer mehr Kollisionen, als der Stream abtransportiert,
+        # waechst er, und beim Ueberlauf gehen Ereignisse verloren. Bei
+        # einer in den Stern stuerzenden Wolke sind sechsstellige Zahlen
+        # in Sekunden erreicht — 65536 Plaetze (2 MB) waren dafuer zu
+        # knapp. 262144 sind 8 MB und puffern das Vierfache.
+        self.ev_cap = 262144
         self.ev_shm = shared_memory.SharedMemory(
             create=True, size=self.ev_cap * film_producer.EV_BYTES)
         # Zustands-Dump fuer die Engine-Uebergabe (x,y,vx,vy als f64)
@@ -311,6 +317,7 @@ class FilmSession:
     PH_EXTRAPOLATE_MAX_S = 2.0
 
     sent_ev = 0              # bereits gestreamte Ereignisse
+    ev_verworfen = 0         # beim Ringueberlauf uebersprungene (s. build_frame)
 
     def build_frame(self, idxs: list) -> bytes:
         """v4-Frame: pro Sample nur die Koerper in der Referenz-Box
@@ -321,9 +328,17 @@ class FilmSession:
         # Neue Ereignisse einsammeln + lokalen vis-Spiegel pflegen
         ev_total = int(self.ev_count_val.value)
         ev_from = max(self.sent_ev, ev_total - self.ev_cap + 8)
-        # 1024/Frame: Bounce-Stroeme (kind=1) erzeugen deutlich mehr
-        # Ereignisse als Merges — Backlog holt ueber Folgeframes auf.
-        ev_n = min(1024, ev_total - ev_from)
+        # Uebersprungene Ereignisse: der Ring ist uebergelaufen, diese
+        # Kollisionen sind unwiederbringlich weg. Sie duerfen aber nicht
+        # aus dem ZAEHLER verschwinden — der Client bekommt ihre Anzahl
+        # und rechnet sie hinzu, auch wenn ihr Blitz fehlt.
+        verworfen = max(0, ev_from - self.sent_ev)
+        self.ev_verworfen += verworfen
+        # 4096/Frame: Bounce-Stroeme (kind=1) erzeugen deutlich mehr
+        # Ereignisse als Merges. Der Rueckstand holt ueber Folgeframes
+        # auf — je hoeher diese Schranke, desto seltener laeuft der Ring
+        # ueber. 4096 x 32 B = 128 KB je Frame.
+        ev_n = min(4096, ev_total - ev_from)
         eb = film_producer.EV_BYTES
         ev_parts = []
         for e in range(ev_from, ev_from + ev_n):
@@ -437,9 +452,13 @@ class FilmSession:
         # 7. f64 = logFlag: 1 = Positionen sind log-polar kodiert (der
         # Client transformiert zurueck), 0 = Weltkoordinaten.
         # 8. f64 = mSub: Stuetzpunkte je Koerper im Sub-Block, 0 = keiner.
-        meta = struct.pack("<dddddddd", self.tail, self.head,
+        # 9. f64 = insgesamt verworfene Ereignisse. Der Client zaehlt sie
+        # mit, sonst faelle jede Kollision, deren Ereignis den Ringueberlauf
+        # nicht ueberlebt hat, still aus dem Zaehler.
+        meta = struct.pack("<ddddddddd", self.tail, self.head,
                            box[0], box[1], box[2], box[3],
-                           1.0 if log_zoom else 0.0, float(m_sub))
+                           1.0 if log_zoom else 0.0, float(m_sub),
+                           float(self.ev_verworfen))
         return head + meta + times.tobytes() + \
             b"".join(blocks) + b"".join(ev_parts)
 
