@@ -1,7 +1,8 @@
-# Übergabeprotokoll — Stand 2026-07-20 (abends)
+# Übergabeprotokoll — Stand 2026-07-21
 
-Fortschreibung nach der Umsetzung der Punkte 2.1, 2.3 und 2.4 des
-Vormittags-Protokolls. Vorherige Commits: `4916dd9`, `462d9a7`.
+Fortschreibung. Commits vom 21.07.: `231a6bb`, `ac189d0`, `b303177`
+(davor `3a83777`). Der Abschnitt **2A** beschreibt den Stand vom 21.07.,
+der laufende Umbau steht in **3.0**.
 
 ---
 
@@ -208,7 +209,149 @@ geworden (der Producer hätte sie als solche integriert, `M_MAX`!).
 
 ---
 
+## 2A. Am 21.07. umgesetzt
+
+### 2A.1 Feinschleife der heißen Astis monoton — `231a6bb`
+
+Die private Feinschleife der *heißen* (eng begegnenden) Asteroiden lief
+**dreimal** je Zeitschritt — einmal pro Yoshida-Teilschritt (w1, w0, w1).
+
+**Die zentrale Erkenntnis:** `YOSHIDA_W0 ≈ -1,702` ist **negativ**. Ein
+Yoshida-Schritt läuft 1,35×dt vor, 1,70×dt **zurück**, 1,35×dt vor. Die
+Zwischenzustände gehören damit zu **keiner physikalischen Zeit** und sind
+als Bahnpunkte unbrauchbar. Zusätzlich ist `MAX_SUB_DT_YEARS` = 0,5 Tage
+= das Standard-Raster, es gibt also nur **einen** Yoshida-Schritt je
+Sample: gültige Bahnpunkte existierten ausschließlich an den
+Sample-Grenzen.
+
+Die Feinschleife läuft jetzt **einmal monoton** über das ganze `dtH`
+(Massiv-Positionen linear über `dtH` interpoliert, `mx0` dafür vor die
+w-Schleife gezogen). Ergebnis:
+
+* Taucher-Nahbegegnung **10× genauer** (1,44e-06 → 1,45e-07 AU)
+* **1,5–1,7× schneller** (200k: 222,9 → 146,3 ms auf 1 GPU;
+  191,6 → 114,4 ms auf 3 GPUs) — ein Drittel der Feinschleifen-Arbeit
+* Physik gegen die NumPy-Referenz unverändert (2,309e-07 AU)
+
+### 2A.2 Playhead-Regelung — `ac189d0`
+
+Drei Fehler, die sich gegenseitig verdeckten:
+
+1. Der Playhead folgte `_filmHeadRate` (der Kantenbewegung = **Producer**-
+   Tempo) statt dem eingestellten. Bei Zeitlupe rannte er los (gemessen
+   **5,5 statt 1,0 Tage/s**), holte die knapp gehaltene Kante ein und
+   klemmte → *Stufen mit Pausen*.
+2. Der Aufhol-Snap wertete den bloßen Abstand zur Kante als Rückstand.
+   Nach einem Wechsel schnell→langsam liegt aber absichtlich viel Vorrat
+   (gemessen 151 Tage) → *Sprung in die Zukunft*. Er feuert jetzt nur bei
+   echtem **Zeitverlust** (Tab inaktiv), erkannt am **ungedeckelten**
+   Frame-Abstand (`rohDelta`; `delta` ist auf 250 ms gedeckelt und taugt
+   dafür nicht).
+3. Die Producer-Rate als generelle Obergrenze ließ den Playhead **stehen**,
+   sobald der Server bei vollem Puffer nichts mehr sendet (Kante steht →
+   Schätzung → 0).
+
+**Regel:** Das eingestellte Tempo führt, die Producer-Rate darf nur
+bremsen — und nur dicht an der Kante.
+
+### 2A.3 GPU-Zwischenbilder (Sub-Samples) — `b303177`
+
+Der Kernel legt für heiße Astis **M_sub Stützpunkte je Raster** ab, exakt
+auf `j*dtRaster/M_sub` (die Schrittweite wird darauf gekappt). Damit liegt
+eine Perihel-Passage als **Messwert** vor, statt im Browser geraten zu
+werden.
+
+Umsetzung bewusst schlicht: voller Puffer `subPos[K][mSub][2][nAst]` auf
+der GPU, Kompaktierung per **Gather in CuPy** (kein `atomicAdd`/Slots im
+Kernel). `subN` zählt die Stützpunkte; gültig ist nur, wer im ganzen
+Raster heiß war (**lückenlose** Bahn). `SUB_SAMPLES = 8`,
+`NBodyCuda(devices, m_sub=…)`, Ergebnis in `st["sub"]`.
+
+Verifiziert (`backend/test_subsamples.py`): Auswahl trifft ohne
+Zusatzkriterium (Taucher ja, ferner Asti nein), Stützpunkte gegen feine
+NumPy-Referenz **max 3,69e-07 AU**, Laufzeit +6 %.
+
+**Noch ungenutzt** — Ring, Protokoll und Client folgen (siehe 3.0).
+
+---
+
 ## 3. Noch offen
+
+### 3.0 Sub-Samples bis zum Bildschirm bringen (NÄCHSTER SCHRITT)
+
+Der Kernel liefert die Punkte bereits (2A.3), sie kommen aber nicht im
+Browser an. **Ring, Protokoll und Client wechseln das Datenformat
+gleichzeitig** — ein Teilstand ist nicht lauffähig, daher am Stück
+umsetzen. Reihenfolge:
+
+**a) Injektions-Bug zuerst** (klein, stört akut beim Testen):
+Injiziert man eine Wolke/Rogue, springt die Darstellung weit in die
+Zukunft. Ursache: Der Producer rechnet weit voraus (gemessen `head=462`
+bei `ph=81`); bei einer Mutation dumpt er seinen **f64-Zustand am Kopf**
+(`dump_shm`, server.py ~708), und der Client startet damit neu.
+*Fix:* beim Mutations-Neustart den Zustand zum **Playhead** aus dem Ring
+nehmen (`x|y|vx|vy` liegen dort vollständig vor, nur f32 — nach einer
+Injektion unkritisch) und die vorausgerechnete Zukunft verwerfen.
+
+**b) Ring** (`server.py` ~167, `film_producer.py` ~938):
+Slot wird `x|y` + Sub-Block (Anzahl u32 + Indizes + Positionen, feste
+Obergrenze `sub_max`, überzählige Heiße fallen auf Catmull zurück).
+`vx|vy` entfällt, sobald der v-Block weg ist — das **halbiert** den Ring
+und schafft den Platz für die Sub-Samples fast von allein.
+
+**c) Protokoll v4 + Client in EINEM Zug:**
+Sub-Block rein, v-Block raus. Im Client fliegt der komplette
+Integrationsapparat raus: `_filmTrace`, `_filmPerihel`, `_filmBahnCache`,
+`FILM_PERI_MIN`, `FILM_BAHN_M/N`, Scratch-Arrays, Hermite-Stufe,
+`_filmVPos`, Parabel-Stufe. **Hier verschwindet das „Körper werden vor der
+Sonne zur Seite gedrückt"** (bisher Perihel-Guard-Kompromiss).
+
+**d) M_sub-Regler** (einstellbar + persistiert, wie die anderen
+Film-Regler).
+
+**Wieviel Interpolation bleibt — gerechnet, nicht geraten:**
+Sehnenfehler `r·(1-cos(θ/2))`, sichtbar ab ~1e-4 AU bei nahem Zoom:
+
+| Bahn | Abstand 0,5 d | 0,0625 d (M_sub=8) | 50 d (hohes Tempo) |
+|---|---|---|---|
+| r=0,05 AU | *3,7e-3 | 5,8e-5 | *1,4e-2 |
+| r=0,3 AU  | *1,0e-4 | 1,6e-6 | *5,6e-1 |
+| r=2,5 AU  |  1,5e-6 | 2,3e-8 | *1,5e-2 |
+
+Daraus folgt der Zuschnitt — **2 Stufen statt 5**:
+* **mit** Sub-Samples → **linear** (Fehler ≤ 5,8e-5, unsichtbar)
+* **ohne** → **Catmull-Rom** (nötig, weil der Server bei hohem Tempo
+  Samples überspringt, bis ~50 d Abstand — das heilen Sub-Samples nicht,
+  sie kosten ja Bandbreite)
+* Randfall (Nachbar fehlt) → Sehne
+
+Schöner Nebenbefund: Die Sehne wird ab **r≈0,3 AU** sichtbar, und das
+GPU-Kriterium „heiß" (`dist/vrel/20 < dtH`) greift **ebenfalls** ab
+r≈0,3 AU. Beide skalieren mit der Bahnkrümmung — die heißen Körper sind
+exakt die, bei denen lineare Interpolation sonst versagt. Kein
+Zusatzkriterium nötig.
+
+### 3.0b Verworfene Irrwege (nicht erneut versuchen)
+
+* **Schachbrett = LOD-Gitter?** Widerlegt. Autokorrelation der Dichte im
+  Log-Raum zeigt **keinen** Peak bei der Zellperiode (glatter Abfall
+  0,994→0,985), die Screen-Autokorrelation ist ~0. Weder LOD-Zellen noch
+  Rendering-Raster. Sichtbar sind großräumige diagonale Dichtebänder, die
+  auch **ohne** Ausdünnung da sind (echte Struktur), von `LOD_GAMMA=0,5`
+  nur im Kontrast verstärkt.
+* **Dichte-Glättung im `_dichte_filter`** (Box-Blur der Zellbelegung):
+  bringt nichts und schadet leicht (0,1924 gegen 0,1789 rel. Std bei
+  homogenem Feld). Der Filter **dämpft** Poisson-Fluktuation bereits über
+  die lokale `rate`-Anpassung; eine Glättung nimmt ihm genau das.
+* **Client-seitige Bahnintegration** (`_filmTrace` + bidirektionaler
+  Blend): Der *Algorithmus* ist gut (Blend-Fehler ~1e-6 gegen
+  Ground-Truth, auch mit u16-Quantisierung — besser als jede
+  Alternative), aber im Browser **zu teuer**: Cache-Rebuild bei einer
+  sonnennahen Wolke 87 ms (5k Körper) bis 1,8 s (50k) → periodisches
+  Einfrieren, das als „Pumpen/Schockwelle" erscheint. Deshalb wandert er
+  auf die GPU (2A.3) und wird im Client **ersatzlos gestrichen**.
+* **Gröber streamen bei Zeitlupe** wäre falsch: Man geht ja runter, um
+  *mehr* Details zu sehen.
 
 ### 3.1 Datenlokalität GPU-zu-GPU (war 2.2)
 **Bewertet, nicht umgesetzt — der Entwurf trägt so nicht.**
@@ -227,7 +370,13 @@ Richtungen ohne Architekturänderung. Vorher messen — mit zwei aktiven
 Erkennungskarten wird pro Batch doppelt hochgeladen, der Anteil ist
 also gestiegen.
 
-### 3.1b Interpolation weiter verbessern (Ideen, nicht umgesetzt)
+### 3.1b Interpolation weiter verbessern (ÜBERHOLT durch 3.0)
+
+> **Veraltet.** Die hier skizzierten client-seitigen Hebel sind durch die
+> GPU-Sub-Samples (2A.3 / 3.0) erledigt bzw. bewusst verworfen (3.0b).
+> Nicht mehr umsetzen — der Client wird *vereinfacht*, nicht erweitert.
+> Der Abschnitt bleibt nur zur Einordnung stehen.
+
 Der Client interpoliert die Film-Positionen jetzt mit **Catmull-Rom**
 (glatte Kurve durch vier Sample-Punkte) statt linearer Sehne — behebt das
 Pumpen in Sonnennähe, gemessen 29× genauer auf einer Kreisbahn. Zwei
