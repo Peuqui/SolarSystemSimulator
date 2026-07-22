@@ -345,6 +345,49 @@ gefährlich war nur, **wo** der Fehler landete: im Film-Pfad stirbt der
 Producer damit im Kindprozess, und das blieb bis dahin unbemerkt (siehe
 `test_producer_tod.py` in Abschnitt 2).
 
+### 5.10 Zeldovich-Anfangsbedingungen fuer mehr Filamente
+Nachgemessen am 22.07. auf einer V100, N=20.000, 3.000 Schritte
+(eta ~ 0,13), vier Seeds je Variante, ausgewertet bei 40 Sim-Jahren:
+
+| Anfangsbedingung | F/K |
+|---|---|
+| neun Keime (das bestehende Szenario) | 2,39 ± 0,53 |
+| Zeldovich, Moden n=-2, A=0,12 | 2,72 ± 0,45 |
+| Zeldovich, Moden n=-2, A=0,25 | 2,03 ± 0,34 |
+
+**Die Streuung zwischen Seeds ist groesser als der Unterschied zwischen
+den Verfahren.** Ein Umbau des Szenarios auf ein gausssches Zufallsfeld
+mit Potenzspektrum lohnt nicht — das bestehende liefert dieselbe
+Netzstruktur. Der Haupthebel ist die LAUFZEIT: F/K steigt von ~1,0 bei
+15 Jahren auf 2,8-3,3 bei 60 Jahren (t_dyn liegt bei ~31 Jahren).
+
+**Messfalle, die dabei fast zu einem falschen Szenario gefuehrt haette:**
+Der erste Anlauf mass den FLAECHENanteil filamentartiger Zellen, mit
+einer Schwelle relativ zur Streuung des Feldes. Die Nullprobe entlarvte
+ihn:
+
+| Kontrollfeld | "Filament" laut erster Metrik |
+|---|---|
+| Poisson, voellig strukturlos | **37,6 %** |
+| ein echter Balken | **6,2 %** |
+
+Genau verkehrt herum — gemessen wurde Schrotrauschen. Und weil die
+FFT-Variante aus einem zufaellig ausgeduennten Gitter startet, also
+rauschiger ist, gewann sie scheinbar deutlich (18 % gegen 7 %). Erst die
+zweite Metrik taugt: MASSENanteil statt Flaechenanteil, Glaettung ueber
+mehr als den Teilchenabstand, nur ueberdichte Gebiete (delta > 1), und
+die Klassifikation ueber das VERHAELTNIS der Hesse-Eigenwerte
+(vs = 0,25). Geeicht liefert sie Poisson 0,0 %, einen Balken F/K = 25,5,
+Knoten mit Bruecken 1,1 und reine Knoten 0,7.
+
+**Wer hier weitermisst: zuerst die Nullprobe, dann die Physik.** Eine
+Strukturmetrik, die an einem Zufallsfeld nicht null ergibt, misst sich
+selbst. Und einzelne Seeds sagen nichts — die Streuung gehoert
+mitgemessen. Skripte im Scratchpad der Sitzung (`metrik2.py`,
+`streuung.py`).
+
+---
+
 ### 5.9 Filamente aus masselosen Tracern
 Prinzipiell unmöglich, unabhängig von Anfangsbedingungen, Expansion oder
 Teilchenzahl. Testteilchen ziehen sich nicht gegenseitig an; das kosmische
