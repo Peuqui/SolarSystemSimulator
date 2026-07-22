@@ -12,6 +12,7 @@ Fuenf Fragen, jede einzeln beantwortbar:
   D) Misst die Kalibrierung reproduzierbar? Schwankende Gewichte hiessen
      bei jedem Sessionstart andere Segmentgrenzen.
   E) Deckt `segmentiere` alle Koerper ab, luecken- und ueberlappungsfrei?
+  F) Folgen die TRACER (Kernel B) dem Feld, ohne zurueckzuwirken?
 
 Warum Energie und nicht Bahnen: N-Koerper ist chaotisch, zwei Laeufe mit
 minimal verschiedener Arithmetik divergieren exponentiell. Das ist
@@ -223,6 +224,40 @@ def e_segmente() -> bool:
     return ok
 
 
+def f_tracer(dev) -> bool:
+    """Kernel B: Folgen Tracer dem Feld — und wirken sie NICHT zurueck?
+
+    Beides in einem Aufbau: eine ruhende Zentralmasse, ein Tracer auf
+    exakter Kreisbahn. Nach einem vollen Umlauf muss er am Start stehen,
+    und die Masse darf sich um NICHTS bewegt haben. Bewegt sie sich,
+    uebt der Tracer eine Kraft aus — dann waere er keiner, und die
+    ganze Rechnung waere wieder O(N^2) statt O(N x M)."""
+    print("\n--- F) Tracer folgen dem Feld, ohne zurueckzuwirken")
+    m, r = 1.0, 5.0
+    v = np.sqrt(G_AU * m / r)          # Kreisbahn
+    periode = 2 * np.pi * r / v
+    schritte = 20000
+    sim = NBodySelfGrav([dev], softening_au=1e-4)
+    st = sim.load_state(np.array([0.0]), np.array([0.0]),
+                        np.array([0.0]), np.array([0.0]), np.array([m]),
+                        tracer=(np.array([r]), np.array([0.0]),
+                                np.array([0.0]), np.array([v])))
+    out = sim.step_batch(st, periode / schritte, schritte)
+    n, mt = st["N"], st["T"]
+    tx, ty = float(out[-1][4 * n]), float(out[-1][4 * n + mt])
+    mx, my = float(out[-1][0]), float(out[-1][n])
+    fehler = float(np.hypot(tx - r, ty))
+    bahn_ok = fehler < 1e-3 * r
+    ruhe_ok = abs(mx) + abs(my) == 0.0
+    print(f"    Tracer nach einem Umlauf: Abweichung {fehler:.3e} AU "
+          f"von {r} AU  {'ok' if bahn_ok else 'ZU GROSS'}")
+    print(f"    Zentralmasse bei ({mx:.1e}, {my:.1e}) — muss exakt (0,0) "
+          f"sein  {'ok' if ruhe_ok else 'HAT SICH BEWEGT'}")
+    print("    " + ("BESTANDEN" if bahn_ok and ruhe_ok
+                    else "FEHLGESCHLAGEN"))
+    return bahn_ok and ruhe_ok
+
+
 def main() -> int:
     karten = sg.waehle_karten(kraft_f32=True)
     print(f"Karten (gemessen, f32-Kraft): {karten}")
@@ -232,7 +267,7 @@ def main() -> int:
 
     ergebnisse = [a_kreisbahn(karten[0]), b_energie(karten[0]),
                   c_determinismus(karten), d_kalibrierung(karten),
-                  e_segmente()]
+                  e_segmente(), f_tracer(karten[0])]
     print()
     if all(ergebnisse):
         print("ALLE TESTS BESTANDEN")

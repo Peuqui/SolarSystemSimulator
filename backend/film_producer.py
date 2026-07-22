@@ -585,7 +585,23 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     # real_r mitgeben: damit erkennt die Feinschleife Beruehrungen mit
     # massiven Koerpern selbst — auf ~Radius/20 genau statt auf ein
     # Sample-Raster (bei einem Sonnensturz 0,07 AE).
-    st = sim.load_state(x, y, vx, vy, mass, vis, state["isAst"], real_r)
+    if selbstgrav:
+        # isAst trennt hier MASSEN von TRACERN — dasselbe Flag, das im
+        # klassischen Pfad Koerper von Asteroiden trennt. Kernel A
+        # bewegt die Massen (O(N^2)), Kernel B laesst die Tracer ihrem
+        # Feld folgen (O(N x M), keine Rueckwirkung). Damit traegt das
+        # bestehende Protokoll die Aufteilung, ohne ein weiteres Flag.
+        sg_ast = np.asarray(state["isAst"], dtype=np.uint8) != 0
+        sg_m = np.flatnonzero(~sg_ast)
+        sg_t = np.flatnonzero(sg_ast)
+        st = sim.load_state(
+            x[sg_m], y[sg_m], vx[sg_m], vy[sg_m], mass[sg_m],
+            tracer=(x[sg_t], y[sg_t], vx[sg_t], vy[sg_t])
+            if len(sg_t) else None)
+        print(f"[film] {len(sg_m)} massen, {len(sg_t)} tracer", flush=True)
+    else:
+        sg_m = sg_t = None
+        st = sim.load_state(x, y, vx, vy, mass, vis, state["isAst"], real_r)
     n = len(x)
     collisions = 0
     dt_years = raster_days / 365.25
@@ -1216,6 +1232,23 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 continue
             _t = time.monotonic()
             outs = sim.step_batch(st, dt_years, K)
+            if sg_m is not None:
+                # Kernel A/B liefern [x_m|y_m|vx_m|vy_m|x_t|y_t] — der
+                # Ring erwartet [x|y|vx|vy] in der ORIGINALREIHENFOLGE
+                # des Clients. Tracer haben dort keine Geschwindigkeit;
+                # sie bleibt null, was niemand liest (der Ring traegt
+                # ohnehin nur x|y, und die Engine-Uebergabe stellt sie
+                # aus dem Dump wieder her).
+                nm, nt = len(sg_m), len(sg_t)
+                voll = np.zeros((outs.shape[0], 4 * n), np.float32)
+                voll[:, sg_m] = outs[:, 0:nm]
+                voll[:, n + sg_m] = outs[:, nm:2 * nm]
+                voll[:, 2 * n + sg_m] = outs[:, 2 * nm:3 * nm]
+                voll[:, 3 * n + sg_m] = outs[:, 3 * nm:4 * nm]
+                if nt:
+                    voll[:, sg_t] = outs[:, 4 * nm:4 * nm + nt]
+                    voll[:, n + sg_t] = outs[:, 4 * nm + nt:4 * nm + 2 * nt]
+                outs = voll
             diag_t_step += time.monotonic() - _t
             kh = st.get("hits")
             if kh is not None and len(kh[0]):

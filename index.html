@@ -654,6 +654,10 @@ input[type=range] {
     <span data-i18n="lbl.sg-eps">Weichzeichnung</span> <span class="val" id="sg-eps-val">0,10</span>
     <input type="range" autocomplete="off" id="sg-eps" min="-1.52" max="-0.30" step="0.02" value="-1.0">
   </label>
+  <label data-i18n-title="tt.sg-t" id="lbl-sg-t" style="display:none;">
+    <span data-i18n="lbl.sg-t">Tracer</span> <span class="val" id="sg-t-val">30.000</span>
+    <input type="range" autocomplete="off" id="sg-t" min="0" max="5.7" step="0.05" value="4.48">
+  </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
@@ -946,6 +950,7 @@ const DEFAULTS = {
   filmSub: 3,           // Bahnstuetzpunkte (Reglerstufe; 0 = aus)
   // --- Selbstgravitierende Szenarien ---
   sgN: 4.7,             // Massen (log10) — 10^4.7 ~ 50.000
+  sgT: 4.48,            // Tracer (log10) — 10^4.48 ~ 30.000
   sgEps: -1.0,          // Weichzeichnung (log10 x mittlerer Abstand) —
                         // 10^-1 = 0,1, die klassische Faustregel
   // --- Guertel (Sonnensystem mit Guerteln) ---
@@ -1096,6 +1101,8 @@ const I18N = {
     'lbl.sg-n': 'Massen',
     'tt.sg-n': 'Wie viele selbstgravitierende Massen gerechnet werden. Jede spürt jede — der Aufwand wächst mit N². Weil die Weichzeichnung mit dem Teilchenabstand mitschrumpft, wird zusätzlich der Zeitschritt feiner: die Kosten steigen mit N^2,5. Gemessen auf fünf Karten: 50.000 Massen ≈ 37 Sim-Jahre pro Minute, 100.000 ≈ 9, 200.000 ≈ 2. Die Gesamtmasse bleibt gleich — mehr Teilchen heißt feiner aufgelöst, nicht schwerer.',
     'lbl.sg-eps': 'Weichzeichnung',
+    'lbl.sg-t': 'Tracer',
+    'tt.sg-t': 'Masselose Testteilchen, die dem Feld der Massen folgen. Sie erzeugen keine Struktur, sie machen sie sichtbar — und weil sie auf nichts zurückwirken, kosten sie nur N×M statt N². Gemessen: 400.000 Tracer neben 20.000 Massen laufen mit 91 Schritten/s; 400.000 zusätzliche MASSEN kämen auf etwa 8. Links am Anschlag: keine Tracer.',
     'tt.sg-eps': 'Plummer-Softening: unterhalb dieser Distanz wird die Masse als verschmiert gerechnet statt als Punkt. Ohne sie schleudern sich nahe Teilchen künstlich weg. Angegeben als Vielfaches des mittleren Teilchenabstands, damit der Wert bei jeder Teilchenzahl passt. Zu groß glättet die Filamente weg (gemessener Dichtekontrast bei 0,5 nur 3,8× gegen 7,2× bei 0,03); zu klein bringt nichts mehr und erzeugt künstliche Klumpen durch Zweikörper-Streuung. 0,1 ist die klassische Faustregel. Kleinere Werte erzwingen einen feineren Zeitschritt und kosten Tempo.',
     'cuda.fehler': 'CUDA-Backend meldet einen Fehler — zurück auf den WebWorker geschaltet: {m} (Klick zum Ausblenden)',
     'lbl.film-lod': 'Punkte im Bild',
@@ -1386,6 +1393,8 @@ const I18N = {
     'lbl.sg-n': 'Masses',
     'tt.sg-n': 'How many self-gravitating masses are computed. Every one feels every other — the work grows as N². Since the softening shrinks with the particle spacing, the timestep gets finer too: cost grows as N^2.5. Measured on five cards: 50,000 masses ≈ 37 sim-years per minute, 100,000 ≈ 9, 200,000 ≈ 2. Total mass stays fixed — more particles means finer resolution, not more matter.',
     'lbl.sg-eps': 'Softening',
+    'lbl.sg-t': 'Tracers',
+    'tt.sg-t': 'Massless test particles following the field of the masses. They do not create structure, they reveal it — and since they never act back, they cost only N×M instead of N². Measured: 400,000 tracers alongside 20,000 masses run at 91 steps/s; 400,000 additional MASSES would manage about 8. Far left: no tracers.',
     'tt.sg-eps': 'Plummer softening: below this distance mass is treated as smeared out rather than point-like. Without it, close particles fling each other away artificially. Given as a multiple of the mean particle spacing so the value works at any particle count. Too large smooths the filaments away (measured density contrast at 0.5 is only 3.8× versus 7.2× at 0.03); too small adds nothing and creates artificial clumping through two-body scattering. 0.1 is the classic rule of thumb. Smaller values force a finer timestep and cost speed.',
     'cuda.fehler': 'CUDA backend reported an error — switched back to the WebWorker: {m} (Click to dismiss)',
     'lbl.film-lod': 'Points on screen',
@@ -2112,6 +2121,16 @@ function strukturN() {
   return Math.round(Math.pow(10, el ? parseFloat(el.value) : 4.7));
 }
 
+// Masselose Tracer (Kernel B). Sie tragen keine Masse und wirken auf
+// nichts zurueck — sie fallen nur ins Feld der Massen und machen dessen
+// Struktur sichtbar. Weil sie fuer niemanden Quelle sind, kosten sie
+// N x M statt N^2: 400.000 Tracer gegen 20.000 Massen laufen mit 91
+// Schritten/s, 400.000 MASSEN kaemen auf etwa 8.
+function strukturTracer() {
+  const el = document.getElementById('sg-t');
+  return Math.round(Math.pow(10, el ? parseFloat(el.value) : 4.48));
+}
+
 // Plummer-Softening in AE, als Vielfaches des mittleren Teilchen-
 // abstands. Der Regler ist bewusst RELATIV: absolut in AE muesste man
 // ihn bei jeder Aenderung der Teilchenzahl nachziehen.
@@ -2207,6 +2226,35 @@ function buildStrukturbildung() {
       // Ausnahme sein. Wuerden die Klumpen einander gleich auffressen,
       // bliebe von der Struktur nur eine Handvoll Punkte uebrig.
       rkm: 40 * AU / 1000,
+    });
+  }
+
+  // --- Tracer: masselose Testteilchen, die dem Feld folgen ---
+  // Sie machen die Struktur sichtbar, ohne sie zu erzeugen: Weil sie auf
+  // niemanden wirken, kosten sie N x M statt N^2 — man kann also ein
+  // Vielfaches davon rechnen. `isAsteroid` markiert sie; genau dieses
+  // Flag trennt im Backend Kernel A (Massen) von Kernel B (Tracer).
+  //
+  // Verteilt wie die Massen, aber OHNE Keime: Sie sollen das Feld
+  // abtasten, nicht schon von sich aus geklumpt starten. Die Verdichtung
+  // muessen sie durch ihren Fall in die Ueberdichten selbst finden —
+  // sonst zeigten sie die Anfangsbedingung statt der Entwicklung.
+  const T = strukturTracer();
+  for (let i = 0; i < T; i++) {
+    const a = Math.random() * 2 * Math.PI;
+    const r = STRUKTUR_R * 1.2 * Math.sqrt(Math.random());
+    const x = r * Math.cos(a) - mx, y = r * Math.sin(a) - my;
+    const rr = Math.hypot(x, y) || 1;
+    const vr = hubble * rr;
+    const streu = () => (Math.random() * 2 - 1) * 0.08 * vr;
+    pushBody({
+      name: 'T' + (i + 1), mass: 0,
+      color: '#8fb4ff',
+      x, y,
+      vx: x / rr * vr + streu(),
+      vy: y / rr * vr + streu(),
+      isAsteroid: true,
+      rkm: 0,
     });
   }
 }
@@ -4902,7 +4950,7 @@ function _filmControlsAktiv() {
   for (const id of ['chk-film', 'mob-chk-film',
                     'film-raster', 'film-speed', 'mob-film-speed',
                     'film-lod', 'mob-film-lod', 'film-sub',
-                    'sg-n', 'sg-eps',
+                    'sg-n', 'sg-eps', 'sg-t',
                     'chk-film-interp', 'mob-chk-film-interp']) {
     const el = document.getElementById(id);
     if (!el) continue;
@@ -6759,9 +6807,14 @@ document.getElementById('film-sub').addEventListener('change', function() {
 
 // Teilchenzahl und Weichzeichnung: beide waehrend des Ziehens nur
 // beschriften, beim Loslassen wirken lassen.
-for (const id of ['sg-n', 'sg-eps']) {
+for (const id of ['sg-n', 'sg-eps', 'sg-t']) {
   document.getElementById(id).addEventListener('input', sgReglerAnzeige);
 }
+document.getElementById('sg-t').addEventListener('change', function() {
+  // Andere Tracerzahl = andere Szene, wie bei den Massen.
+  loadScenario(currentScenario);
+  fitZoomToSystem();
+});
 document.getElementById('sg-n').addEventListener('change', function() {
   // Eine andere Teilchenzahl ist eine ANDERE SZENE — der laufende Film
   // beschreibt Koerper, die es gleich nicht mehr gibt. Also Szenario neu
@@ -8622,7 +8675,7 @@ function sgReglerSichtbarkeit() {
   const selbstgrav = !!(sc && sc.selbstgravitierend);
   _filmControlsAktiv();   // sperrt u. a. "Punkte im Bild" szenarioabhaengig
   const zeigen = selbstgrav && cudaReady;
-  for (const id of ['lbl-sg-n', 'lbl-sg-eps']) {
+  for (const id of ['lbl-sg-n', 'lbl-sg-eps', 'lbl-sg-t']) {
     const el = document.getElementById(id);
     if (el) el.style.display = zeigen ? '' : 'none';
   }
@@ -8659,6 +8712,11 @@ function sgReglerSichtbarkeit() {
 function sgReglerAnzeige() {
   const nEl = document.getElementById('sg-n-val');
   if (nEl) nEl.textContent = fmtDE(strukturN(), 0);
+  const tEl = document.getElementById('sg-t-val');
+  if (tEl) {
+    const anz = strukturTracer();
+    tEl.textContent = anz ? fmtDE(anz, 0) : t('lbl.film-sub-aus');
+  }
   const eEl = document.getElementById('sg-eps-val');
   const el = document.getElementById('sg-eps');
   if (eEl && el) {
@@ -9859,6 +9917,7 @@ function applyDefaults() {
     // ueberleben.
     ['sg-n',             DEFAULTS.sgN],
     ['sg-eps',           DEFAULTS.sgEps],
+    ['sg-t',             DEFAULTS.sgT],
   ];
   for (const [stem, val] of sliderDefs) {
     // Slider-Persistierung: wenn ein Wert in localStorage gespeichert ist,
