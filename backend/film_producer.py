@@ -524,11 +524,19 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         from selfgrav_kernel import NBodySelfGrav, waehle_karten
         # Eigene Kartenwahl: `pick_devices` filtert nach f64-Score und
         # sortiert damit die Karten aus, die dieser Kernel mit seiner
-        # f32-Kraftschleife am besten nutzt. Unter ~30k Koerpern frisst
-        # die Barrier den Verbundgewinn (gemessen 0,83x bei 20k), darum
-        # dieselbe Schwelle wie oben.
+        # f32-Kraftschleife am besten nutzt.
+        #
+        # EIGENE Schwelle, nicht MULTI_GPU_AB: Die 30k dort sind am alten
+        # Kernel MIT Erkennungs-Pipeline gemessen. Kernel A hat ein ganz
+        # anderes Profil — die Barrier laeuft pro Zeitschritt, und der ist
+        # hier klein. Gemessen (1 Karte gegen 5):
+        #     20k 0,46x | 30k 0,86x | 40k 0,86x | 60k 1,27x
+        # Bei 30-40k ist der Verbund also 14 % LANGSAMER. Erst ab rund
+        # 50k traegt er.
+        SELFGRAV_MULTI_GPU_AB = 50_000
         alle = waehle_karten(kraft_f32=True)
-        phys_devs = alle if len(state["x"]) >= MULTI_GPU_AB else alle[:1]
+        phys_devs = alle if len(state["x"]) >= SELFGRAV_MULTI_GPU_AB \
+            else alle[:1]
         sim = NBodySelfGrav(phys_devs, softening_au=softening_au)
     else:
         phys_devs = pick_devices() if n_ast_total >= MULTI_GPU_AB \

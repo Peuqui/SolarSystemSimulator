@@ -4065,8 +4065,15 @@ function draw() {
   // bleiben dann nur noch die Sonderfaelle: Fokus-Markierung und
   // Explosionen. Ohne diesen Zweig wurde jeder Koerper ZWEIMAL
   // gezeichnet — einmal im Batch, einmal einzeln.
+  // `_filmVtxCount > 0` ist der entscheidende Teil: renderAsteroidsGL
+  // meldet auch dann Erfolg (`return true`), wenn das Vertex-Array LEER
+  // ist — etwa weil der Stream noch nicht laeuft oder das Sichtfenster
+  // alles wegcullt. Ohne diese Pruefung sprang die Einzelschleife
+  // trotzdem heraus, und es blieb ein LEERER Canvas: der Batch zeichnete
+  // nichts, und der Fallback bekam nie die Gelegenheit.
   const _batchHatGezeichnet = _sgPunkte && filmActive &&
-                              typeof astGL !== 'undefined' && astGL.enabled;
+                              typeof astGL !== 'undefined' && astGL.enabled &&
+                              _filmVtxCount > 0;
   if (_sgPunkte && !_batchHatGezeichnet) {
     // Ohne WebGL (oder ausserhalb des Films) doch einzeln — dann aber
     // klein und ADDITIV: ueberlappende Punkte addieren ihre Helligkeit,
@@ -4867,9 +4874,12 @@ function _filmControlsAktiv() {
   // `teile = [massiv]`). Bei 50.000 Massen und einem Budget von 20k
   // werden also trotzdem alle 50.000 gestreamt — der Regler waere ein
   // Versprechen, das niemand einloest.
+  // Dasselbe gilt fuer die Bahnstuetzpunkte: Kernel A hat keine
+  // Feinschleife und liefert nie welche — angefordert blaehen sie nur
+  // den Ring-Slot auf (gemessen 527,6 statt 196,2 KB je Sample).
   const sc = SCENARIOS[currentScenario];
   if (sc && sc.selbstgravitierend) {
-    for (const id of ['film-lod', 'mob-film-lod']) {
+    for (const id of ['film-lod', 'mob-film-lod', 'film-sub']) {
       const el = document.getElementById(id);
       if (!el) continue;
       el.disabled = true;
@@ -5471,6 +5481,18 @@ function filmRasterDays() {
 // druecken den Sehnenfehler bereits unter die Sichtbarkeitsschwelle,
 // zwischen 8 und 9 ist kein Unterschied zu sehen.
 function filmSubSamples() {
+  // Bahnstuetzpunkte sind Zwischenbilder aus der adaptiven Feinschleife
+  // des alten Kernels — sie zeigen enge Begegnungen zwischen zwei
+  // Sample-Rastern. Kernel A hat diese Feinschleife nicht (Softening
+  // haelt die Teilchen auf Abstand, ein fester Zeitschritt genuegt) und
+  // liefert nie welche.
+  //
+  // Angefordert kosten sie trotzdem: Sie bestimmen die Slot-Groesse des
+  // Ringpuffers. Gemessen bei 25.119 Koerpern — mSub=8 ergab 527,6 KB je
+  // Slot, mSub=0 nur 196,2 KB. Also Faktor 2,7 an RAM und Bandbreite fuer
+  // Daten, die nie kommen.
+  const sc = SCENARIOS[currentScenario];
+  if (sc && sc.selbstgravitierend) return 0;
   const v = parseInt(document.getElementById('film-sub').value, 10);
   return v <= 0 ? 0 : Math.pow(2, v);
 }
