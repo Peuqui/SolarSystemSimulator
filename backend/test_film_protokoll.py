@@ -25,6 +25,8 @@ prueft die Werte gegen den bekannten Ring-Inhalt:
 
 Laeuft ohne GPU. Aufruf: ./venv/bin/python backend/test_film_protokoll.py
 """
+import pathlib
+import re
 import struct
 import sys
 from types import SimpleNamespace
@@ -100,7 +102,11 @@ def baue_session(head=40, capacity=64):
 
 
 def zerlege_film(frame):
-    """Frame nach dem Schema von zerlegeFilm (index.html) zerlegen."""
+    """Frame nach dem Schema von zerlegeFilm (index.html) zerlegen.
+
+    Traegt wie der Worker die letzte Indexliste ueber Frame-Grenzen
+    (Attribut `letzte_idx`) — v6 laesst sie weg, solange sie gleich
+    bleibt."""
     status, n, count, ev_count = struct.unpack_from("<IIII", frame, 0)
     box = struct.unpack_from("<dddd", frame, 32)          # x0,y0,sx,sy
     log = struct.unpack_from("<d", frame, 64)[0] != 0
@@ -110,11 +116,20 @@ def zerlege_film(frame):
     samples = []
     off = 88 + 8 * count
     for _ in range(count):
-        (vis_count,) = struct.unpack_from("<I", frame, off)
-        idx = np.frombuffer(frame, "<u4", vis_count, off + 4)
-        qx = np.frombuffer(frame, "<u2", vis_count, off + 4 + 4 * vis_count)
-        qy = np.frombuffer(frame, "<u2", vis_count, off + 4 + 6 * vis_count)
-        soff = off + 4 + 8 * vis_count
+        (roh,) = struct.unpack_from("<I", frame, off)
+        # v6: Bit 31 = Indexliste wie im vorigen Sample, sie fehlt dann.
+        sel_gleich = bool(roh & 0x8000_0000)
+        vis_count = roh & 0x7FFF_FFFF
+        if sel_gleich:
+            idx = zerlege_film.letzte_idx
+            d_off = off + 4
+        else:
+            idx = np.frombuffer(frame, "<u4", vis_count, off + 4)
+            zerlege_film.letzte_idx = idx
+            d_off = off + 4 + 4 * vis_count
+        qx = np.frombuffer(frame, "<u2", vis_count, d_off)
+        qy = np.frombuffer(frame, "<u2", vis_count, d_off + 2 * vis_count)
+        soff = d_off + 4 * vis_count
         (sub_count,) = struct.unpack_from("<I", frame, soff)
         p = sub_count * m_sub
         sub_idx = np.frombuffer(frame, "<u4", sub_count, soff + 4)
@@ -123,12 +138,16 @@ def zerlege_film(frame):
                             soff + 4 + 4 * sub_count + 2 * p)
         samples.append(SimpleNamespace(idx=idx, qx=qx, qy=qy,
                                        sub_idx=sub_idx, sqx=sqx, sqy=sqy))
-        block = 4 + 8 * vis_count + 4 + 4 * sub_count + 4 * p
+        block = (4 + (0 if sel_gleich else 4 * vis_count) +
+                 4 * vis_count + 4 + 4 * sub_count + 4 * p)
         off += block + (-block) % 4
     rest = len(frame) - off - ev_count * film_producer.EV_BYTES
     return SimpleNamespace(status=status, n=n, count=count, box=box,
                            log=log, m_sub=m_sub, times=times,
                            samples=samples, rest=rest, verworfen=verworfen)
+
+
+zerlege_film.letzte_idx = None
 
 
 def entpacke(q, box, achse):
@@ -262,6 +281,57 @@ def main():
     ok &= pruefe(lz.log, "logFlag gesetzt")
     ok &= pruefe(abs(lz.box[2] - 4 * 0.01) < 1e-12,
                  f"auch im Log-Zoom = 2x Viewport ({lz.box[2]:.4f})")
+
+    print("\ng) v6: die Indexliste faellt weg, solange sie gleich bleibt")
+    # Der teuerste Posten im Strom (4 von 8 Byte je Punkt). Bei
+    # stehender Kamera und ohne LOD-Ausduennung ist die Auswahl
+    # konstant — dann darf sie NUR im ersten Sample stehen.
+    sv = baue_session()
+    roh_flags = []
+    frame_v6 = sv.build_frame([20, 21, 22, 23])
+    off = 88 + 8 * 4
+    fv = zerlege_film(frame_v6)          # fuellt letzte_idx korrekt
+    # Flags direkt aus dem Frame lesen, unabhaengig vom Dekoder
+    for smp in fv.samples:
+        (roh,) = struct.unpack_from("<I", frame_v6, off)
+        roh_flags.append(bool(roh & 0x8000_0000))
+        vis = roh & 0x7FFF_FFFF
+        sub_off = off + 4 + (0 if roh_flags[-1] else 4 * vis) + 4 * vis
+        (sub_count,) = struct.unpack_from("<I", frame_v6, sub_off)
+        blk = (4 + (0 if roh_flags[-1] else 4 * vis) + 4 * vis + 4 +
+               4 * sub_count + 4 * sub_count * fv.m_sub)
+        off += blk + (-blk) % 4
+    ok &= pruefe(roh_flags[0] is False,
+                 "erstes Sample traegt die volle Liste")
+    ok &= pruefe(all(roh_flags[1:]),
+                 f"die folgenden nicht mehr ({roh_flags})")
+    ok &= pruefe(all(np.array_equal(fv.samples[0].idx, s2.idx)
+                     for s2 in fv.samples[1:]),
+                 "dekodiert ergeben alle dieselbe Auswahl")
+    # Der eigentliche Beweis, dass die Bytes wirklich FEHLEN: Der
+    # Dekoder laeuft ueber den Frame und landet exakt am Ende. Haette
+    # der Server die Listen doch mitgeschickt (oder der Dekoder sie
+    # faelschlich uebersprungen), liefe er aus dem Tritt.
+    vis0 = len(fv.samples[0].idx)
+    ok &= pruefe(fv.rest == 0,
+                 f"Frame geht genau auf ({3 * 4 * vis0} B gespart)")
+
+    print("\nh) Client und Server nennen dieselbe Protokollversion")
+    # Die Zahl steht zwangslaeufig doppelt: server.py kennt sie als
+    # Konstante, index.html schreibt sie als Literal in den FILM_START.
+    # Laufen sie auseinander, lehnt der Server JEDEN Filmstart ab —
+    # sichtbar nur als "Film-Protokollversion veraltet" im Browser,
+    # waehrend beide Seiten fuer sich genommen fehlerfrei aussehen.
+    # (Genau so passiert, als v6 eingefuehrt wurde.)
+    html = (pathlib.Path(__file__).resolve().parent.parent /
+            "index.html").read_text(encoding="utf-8")
+    treffer = re.findall(r"\((\d+) << 4\) \| \(astAstCollisions", html)
+    ok &= pruefe(len(treffer) == 1,
+                 f"genau eine Versionsstelle im Client ({len(treffer)})")
+    if treffer:
+        ok &= pruefe(int(treffer[0]) == server.FILM_PROTO_VERSION,
+                     f"Client {treffer[0]} == Server "
+                     f"{server.FILM_PROTO_VERSION}")
 
     print("\n" + ("ALLE TESTS BESTANDEN" if ok else "FEHLGESCHLAGEN"))
     return 0 if ok else 1

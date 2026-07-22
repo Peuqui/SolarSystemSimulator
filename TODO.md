@@ -123,12 +123,24 @@ zehntausendmal feiner als das Softening.
    (selbstgravitierend)" mit Reglern für Teilchenzahl und
    Weichzeichnung. Was dabei anders kam als geplant, steht unten unter
    „Was die Messung korrigiert hat".
-2. **Kernel B** dazu, 200.000–300.000 Tracer.
+2. ~~**Kernel B**~~ — **fertig.** Masselose Tracer laufen in derselben
+   Kernel-Schleife wie die Massen (`tx/ty/tvx/tvy` in der Signatur),
+   nach dem Massen-Update im selben `grid.sync()`-Takt. Sie spüren das
+   Feld, wirken aber nicht zurück — darum kosten sie N·T statt N².
+   Regler „Tracer" im Szenario, Voreinstellung 30.000.
 3. Kollisionen nachrüsten — über ein Raumgitter, nicht alle gegen alle.
    Oder weglassen: Bei Softening verschmelzen Teilchen ohnehin nicht mehr
    sinnvoll.
-4. Film-Stream prüfen: 30.000 Körper × 8 B sind 240 KB pro Sample. Das
-   Protokoll trägt das, das LOD-System sowieso.
+4. **Film-Stream: der Index kostet die Hälfte.** Nachgemessen (UEBERGABE
+   6.14): 8 Byte je Punkt und Sample, davon 4 Byte reiner Index. Bei
+   44.212 Körpern sind das 354 KB je Sample; die Wunschrate von 20/s
+   ergäbe 7,1 MB/s. Eine Fernverbindung (RTT 66 ms) trug gemessen
+   3,45 MB/s — also 9,7 Samples/s, sichtbar als Ruckeln bei völlig
+   unbeschäftigter GPU.
+   Die LOD-Auswahl ändert sich zwischen zwei Samples kaum. Sendet man
+   die Indexliste nur bei Änderung und sonst ein Flag „unverändert",
+   halbiert sich die Nutzlast und 20 Samples/s passen durch. Erfordert
+   `FILM_PROTO_VERSION = 6` (Server und `zerlegeFilm` im Client).
 
 Zwischenschritt, der schon läuft: das Szenario „Strukturbildung
 (selbstgravitierend)" mit 500 Körpern im WebWorker.

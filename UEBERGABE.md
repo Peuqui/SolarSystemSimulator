@@ -4,7 +4,7 @@ Was hier steht, steht **nicht** im Git-Log: Betriebswissen, Messfallen,
 gescheiterte Ansätze und offene Punkte. Die Umsetzungshistorie ist
 bewusst nicht enthalten — dafür ist `git log` da.
 
-Stand: 2026-07-21, Commit `39ffb50`.
+Stand: 2026-07-22, Kernel A+B angebunden.
 
 ---
 
@@ -96,6 +96,30 @@ koppeln, steht dagegen **einmal** in `gpu_verbund.py`: System-Barrier
 (atomics-frei, siehe dort) und der Blick auf gemappten Host-Speicher.
 Die Barrier nimmt einen `unsigned int*` statt eines Struct-Zeigers,
 damit jedes Modul seinen eigenen Austauschbereich mitbringen kann.
+
+**Ein Renderpfad, nicht zwei.** Punkte zeichnet ausschliesslich WebGL —
+Canvas2D macht nur noch Text, Ringe und Verlaeufe. Vorher sprangen beide
+ein: GL uebersprang die massiven Koerper, also zeichnete Canvas2D sie
+nach, und bei 44k Koerpern kostete das zweistellige Millisekunden je
+Bild. Wer einen Koerpertyp neu einfuehrt, muss ihn im GL-Batch anmelden
+(`_punktwolke` / `_glPunktmodus`) — er wird sonst schlicht nicht
+gezeichnet, und es gibt keinen zweiten Pfad mehr, der das auffaengt.
+
+**Die Netze sind massstabsagnostisch.** Gitterringe und Koordinatenkreuz
+ziehen ihre Stufen aus einer gemeinsamen 1-2-5-Leiter (`NETZ_LEITER`) von
+1e-4 bis 1e6 AE; welche Stufe man sieht, entscheidet allein der
+Pixelabstand beim Zeichnen. Vorher standen dort feste Listen (Ringe
+0,1-32 AE, Achsen bis 5000 AE) — im kosmischen Netz mit 60.000 AE
+Ausdehnung war beides unsichtbar. Ab 1e4 AE beschriftet `netzLabel` in
+Lichtjahren, weil sechsstellige AE-Zahlen niemand liest.
+
+**Gesperrt heisst ohne Tooltip.** `bedienelementSperren` ist die einzige
+Stelle, die Bedienelemente sperrt: `disabled`, Ausgrauen und das
+Abnehmen des Tooltips gehoeren zusammen (er erklaert, was ein Regler
+stellt — gesperrt stellt er nichts). Beim Freigeben kommt er aus
+`data-i18n-title` zurueck. Die Logik lag vorher an vier Stellen getrennt.
+Wichtig dort: Sitzt das Element IM `<label>`, darf nur das Label gedimmt
+werden — Opacity multipliziert sich sonst (0,4 x 0,4 = 0,16).
 
 **ruff** liegt nicht im Projekt-venv:
 `/home/mp/Projekte/AIfred-Intelligence/venv/bin/ruff check backend/`
@@ -238,6 +262,16 @@ Produktionsrate über die Umbauten des 21.07.: 60,3 → 62,3 → 66,6 d/s
 (60k, Gürtel, eine Erkennungskarte) — Unterschiede in der Streuung
 zwischen Läufen.
 
+**Kernel A/B (selbstgravitierend), 22.07.:** 44.212 Koerper vollstaendig
+gestreamt bei 18,2 FPS und 36,1 Sim-Tagen/s, nach 7,76 Sim-Jahren klar
+ausgepraegte Knoten. Die GPU faellt dabei regelmaessig auf 0 % — der
+Producer drosselt bei 70 % Ringfuellung, das ist kein Defekt.
+
+**Fernzugriff (Klinik ueber nginx), 22.07.:** 3,45 MB/s Ende zu Ende bei
+66 ms RTT. Das traegt 9,7 Samples/s von 20 gewuenschten — siehe 6.14. Bei
+Messungen aus der Ferne ist das die erste Groesse, die man pruefen muss,
+bevor man Physik oder Rendering verdaechtigt.
+
 **Nicht gemessen:** `build_frame` im Server-Prozess (Culling, Dichte-LOD
 mit Bisektion und 512×512-`bincount`, Quantisierung, Sub-Kette) ist reine
 numpy-Arbeit für jedes gestreamte Sample. Der Server ist ein eigener
@@ -323,6 +357,11 @@ Hubble-Fluss eingebaut (Szenario „Galaxienhaufen (Expansion)", marginal
 gebunden bei Ω ≈ 1). Das ist physikalisch richtig und ändert am Ergebnis
 trotzdem nichts, weil die zweite, wichtigere Zutat weiter fehlt. Weg
 dorthin: `TODO.md`.
+
+**Kernel B widerspricht dem nicht.** Dort laufen Tracer ZUSAETZLICH zu
+selbstgravitierenden Massen: Die Struktur entsteht aus den Massen, die
+Tracer zeichnen sie nur nach und kosten dabei N*T statt N^2. Was hier
+verworfen ist, bleibt verworfen — Tracer ALLEIN bilden nichts.
 
 ---
 
@@ -417,21 +456,110 @@ Ein Merge-Ereignis setzt im Client nur `mass` und `radius` — `realR`,
 `isBlackHole` und Farbe bleiben, wie sie waren. Live und Film laufen hier
 also auseinander, unabhängig vom Szenario.
 
-### 6.13 „kein Film aktiv" beim Filmstart
-Beim Start einer Film-Session schickt der Client ein `MSG_FILM_SUB`,
-bevor der Server die Session angelegt hat — der antwortet dann mit
-„kein Film aktiv". Sichtbar in der Browser-Konsole, mehrfach je Start.
+### 6.14 Ruckeln aus der Ferne ist eine BANDBREITEN-, keine Rechenfrage
+Gemeldet als „Puffer voll, GPU idle, Animation trotzdem ruckelig" — also
+weder Physik noch Ring. Nachgemessen (22.07., Zugriff aus der Klinik über
+nginx):
 
-Folgenlos, aber nicht harmlos: Der Fehlerpfad des Clients schaltet bei
-Backend-Fehlern auf den WebWorker zurück. Bei den selbstgravitierenden
-Szenarien riss das die ganze Sitzung mit — die Szene landete im Worker
-bei 1,5 FPS, obwohl er sie gar nicht rechnen kann. Dort wird der Fehler
-deshalb jetzt ignoriert (`clientRechnetSelbst()`), was die Wurzel nicht
-beseitigt.
+| Strecke | Durchsatz |
+|---|---|
+| Server → nginx (Loopback) | 3,42 MB/s |
+| nginx → Gegenstelle | 3,45 MB/s |
 
-Sauber wäre, den ersten `filmSub` erst nach der Bestätigung des Servers
-zu senden — oder `MSG_FILM_SUB` ohne aktive Session still zu verwerfen,
-statt einen Fehler zu melden, der wie ein Defekt aussieht.
+Gleich groß, also **staut nginx nicht** — die TCP-Backpressure schlägt
+bis zum Server durch. Die Außenverbindung meldete `cwnd:213` bei
+`rtt:66,2 ms`, das sind rund 4,5 MB/s Fenstergrenze; `retrans` von 68 bis
+142 deckelt sie zusätzlich.
+
+Dagegen der Bedarf: **8 Byte je Punkt und Sample** (4 B Index + 2×2 B
+quantisierte Koordinaten, `build_frame`). Bei 44.212 gestreamten Körpern
+sind das 354 KB je Sample, bei den gewünschten 20 Samples/s also
+**7,1 MB/s — doppelt so viel, wie die Leitung trägt.** Es kommen 9,7
+Samples/s an, und die mit dem Jitter der Leitung. Genau das sieht man.
+
+**Der Hebel ist der Index: 4 der 8 Byte.** Nachgemessen an einer
+geclusterten Punktwolke mit 44.212 Punkten (Skript im Scratchpad):
+
+| Verfahren | Größe | bei 3,45 MB/s | Tempo |
+|---|---|---|---|
+| roh (heute) | 345,4 KB | 9,8 Samples/s | — |
+| zlib-1 | 233,0 KB (67 %) | 14,5 Samples/s | 73 MB/s |
+| zlib-6 | 232,9 KB | 14,5 Samples/s | 24 MB/s |
+| Index weglassen | 172,7 KB (50 %) | 19,5 Samples/s | — |
+| Delta-Index u16 + zlib-1 | 188,5 KB | 17,9 Samples/s | 87 MB/s |
+
+**Kompression ist keine Alternative zum Indexsparen, sondern greift auf
+dieselbe Ursache.** Die Koordinaten sind praktisch inkompressibel — 172,7
+auf 172,4 KB, ganze 0,2 %. Der gesamte zlib-Gewinn stammt aus den
+sortierten u32-Indizes. Nimmt man die heraus, bringt zlib danach nichts
+mehr.
+
+**Umgesetzt als Protokoll v6** (`FILM_PROTO_VERSION = 6`): Bit 31 der
+Sample-Länge heißt „Indexliste wie im vorigen Sample", die Liste fehlt
+dann. Nachher gemessen, gleiche Strecke: 3,26 MB/s bei nun 177 KB je
+Sample, also **≈18,4 statt 9,7 Samples/s**. Die Leitung bleibt der
+Deckel — sichtbar an 609 KB Send-Q und einer von 66 auf 94–108 ms
+gestiegenen RTT (Bufferbloat). Unkritisch, weil der Client 5 s
+vorpuffert.
+
+Der Bezug läuft über FRAME-Grenzen, nicht frameweise wie der Sub-Block:
+Remote passt oft nur EIN Sample in einen Frame (Budget 512 KB gegen 354
+KB Kosten), frameweise verankert hätte nie gegriffen.
+
+**Die Versionsnummer steht zwangsläufig doppelt** — als Konstante in
+`server.py` und als Literal im `FILM_START` des Clients; über die
+Sprachgrenze gibt es keine SSOT. Beim Umstieg auf v6 wurde nur der
+Server gezogen, woraufhin der Server JEDEN Filmstart ablehnte und der
+Browser „Film-Protokollversion veraltet" meldete — durch keinen Reload
+zu beheben, weil es kein Cache-Problem war. `test_film_protokoll.py`
+Fall h) vergleicht die beiden Stellen jetzt gegeneinander.
+
+Damit ist auch die alte Begründung für `compression=None` einzuordnen:
+zlib war der Durchsatz-Deckel, **solange die Leitung schnell war**. Bei
+3,45 MB/s schafft zlib-1 mit 73 MB/s das 21-fache — remote bremst es
+nichts mehr. Wer es wieder einschaltet, muss aber bedenken, dass
+permessage-deflate beim Handshake ausgehandelt wird und den LOKALEN Fall
+wieder ausbremsen würde; unterscheidbar wären die Fälle nur am
+`X-Forwarded-For` des Proxys.
+
+**Messfalle dabei:** Eine erste Messung zeigte den Stream in BEIDE
+Richtungen stillstehend — kein Byte über sechs Sekunden. Das war kein
+Fehler, sondern ein **Browser-Tab im Hintergrund**: Der Client meldet
+seinen Playhead aus dem rAF-Loop (1 Hz), und den friert der Browser in
+verdeckten Tabs ein. Ohne Playhead sendet der Server nicht mehr
+(`sent_t - ph > target`), und der Producer drosselt daraufhin auf 70 %
+Ringfüllung — die GPU fällt auf 0 %. Alles korrekt, aber von außen
+ununterscheidbar von einem Defekt. Wer den Stream vermisst, muss das
+Fenster sichtbar halten.
+
+### 6.13 „kein Film aktiv" — erledigt, Ursache war eine DOPPELTE Verbindung
+Im Betrieb lief in der Browser-Konsole endlos:
+
+    CUDA-Backend-Fehler: kein Film aktiv
+
+Die Wiedergabe stand, die GPU war untätig, und ein Reload half nur
+kurz. Zwei Fehldiagnosen führten daran vorbei — ein Wettrennen beim
+Start (plausibel, aber falsch) und Netzwerk/Client-Leistung.
+
+**Die Ursache:** Der Server hält `film` LOKAL in `handle(ws)`, also eine
+Session **pro Verbindung**. Beim Laden entstand ein Wettlauf: Die
+Auto-Erkennung baut eine Verbindung auf, und während die noch läuft,
+ruft die Szenario-Logik `applyEngine('cuda')` — dort ist `cudaSocket`
+noch null, also wurde ein zweites Mal verbunden. `FILM_START` ging über
+die eine Verbindung, `FILM_SUB` über die andere, und die kannte keine
+Session.
+
+Erkennbar war es an einem **doppelten „CUDA-Backend verbunden"** in der
+Konsole. Genau darauf zu achten wäre der kürzeste Weg gewesen.
+
+Behoben in `initCudaBackend`: Es baut nur noch eine Verbindung zur Zeit
+auf (`_cudaVerbindungLaeuft`, freigegeben bei `hallo` oder `zu`).
+
+**Als Netz bleibt** ein Selbstheilungspfad: Meldet der Server „kein Film
+aktiv", startet der Client die Sitzung genau einmal neu; scheitert auch
+das, erscheint eine klickbare Meldung, die es erneut versucht. Innerhalb
+einer Verbindung ist ein Desync nicht mehr konstruierbar — `film` wird
+nur bei `FILM_STOP` geleert, und das schickt der Client selbst.
 
 ### 6.12 Lastverteilung — Erkennung geregelt, Physik offen
 **Erledigt: die Erkennung.** `_streifengrenzen` schnitt die Szene in

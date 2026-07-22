@@ -67,7 +67,7 @@ BW_FENSTER_S = 0.2
 #     (Hermite-Interpolation schneller sonnennaher Koerper).
 # 4 = Sample = 8 B/Koerper (x|y) + Sub-Block je Frame: GEMESSENE
 #     Zwischenbilder der heissen Asteroiden statt geschaetzter Tangenten.
-FILM_PROTO_VERSION = 5
+FILM_PROTO_VERSION = 6
 
 TAGE_PRO_JAHR = 365.25
 
@@ -337,6 +337,11 @@ class FilmSession:
     # weniger Samples und der Client stockt, obwohl die Leitung leer ist.
     # None = noch nichts gemessen, dann konservativ sample_bytes.
     _sample_cost = None
+    # Zuletzt gesendete Indexliste (v6): Solange sie gleich
+    # bleibt, traegt der Frame sie nicht mit. Pro Session, weil
+    # der Bezug ueber Frame-Grenzen laeuft — ein neuer FILM_START
+    # erzeugt eine neue Session und damit einen sauberen Anfang.
+    _letzte_sel = None
     _diag_s = 0.0            # monotonic() der letzten Stream-Diagnosezeile
     _bw_bytes = 0.0          # Bytes im laufenden Bandbreiten-Messfenster
     _bw_dur = 0.0            # aufsummierte reine Sendezeit im Fenster
@@ -475,9 +480,30 @@ class FilmSession:
                                 ).astype("<u2").tobytes() + \
                         np.clip((bqy - y0) / spany * 65535.0, 0, 65535
                                 ).astype("<u2").tobytes()
-            block = struct.pack("<I", len(sel)) + \
-                sel.astype("<u4").tobytes() + qx.tobytes() + qy.tobytes() + \
-                sblock
+            # Die Indexliste ist die HAELFTE der Nutzlast (4 von 8 Byte je
+            # Punkt), aendert sich zwischen zwei Samples aber meist gar
+            # nicht: Ohne Kamerabewegung und ohne LOD-Ausduennung ist sie
+            # schlicht konstant. Also nur bei Aenderung senden und sonst
+            # Bit 31 der Laenge setzen — der Client behaelt die letzte.
+            # Das halbiert den Strom (gemessen: 9,8 -> 19,5 Samples/s auf
+            # einer 3,45-MB/s-Leitung, UEBERGABE 6.14).
+            #
+            # Der Bezug laeuft ueber FRAME-GRENZEN hinweg, anders als beim
+            # Sub-Block: Remote passt oft nur EIN Sample in einen Frame
+            # (Budget 512 KB gegen 354 KB Kosten), eine frameweise
+            # Verankerung spraenge also nie an. Tragfaehig ist das, weil
+            # der Client jedes Frame dekodiert — er verwirft keine.
+            sel_u4 = sel.astype("<u4")
+            if self._letzte_sel is not None and \
+                    len(sel_u4) == len(self._letzte_sel) and \
+                    np.array_equal(sel_u4, self._letzte_sel):
+                kopf = struct.pack("<I", len(sel) | 0x8000_0000)
+                sel_bytes = b""
+            else:
+                self._letzte_sel = sel_u4
+                kopf = struct.pack("<I", len(sel))
+                sel_bytes = sel_u4.tobytes()
+            block = kopf + sel_bytes + qx.tobytes() + qy.tobytes() + sblock
             block += b"\x00" * ((-len(block)) % 4)
             blocks.append(block)
 
