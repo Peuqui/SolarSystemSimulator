@@ -1607,6 +1607,12 @@ const STAR_MASS_THRESHOLD = 0.08;
 // Lebende Sterne koennen theoretisch bis ~300 M_sonne existieren (Pair-
 // Instability-Region 130–250), darueber direkter Kollaps zum SL.
 const BH_MASS_THRESHOLD = DEFAULTS.bhMassThreshold;
+// Fast schwarz — der Koerper selbst. Fuer die BAHNSPUR taugt das nicht:
+// auf schwarzem Grund ist sie unsichtbar, und genau das liess die Spuren
+// schwarzer Loecher verschwinden. Sie bekommen darum das Orange des
+// Akkretions-Halos (rgba(255,140,40) am Halo-Innenrand).
+const BH_COLOR = '#0a0a14';
+const BH_TRAIL_COLOR = '#ff8c28';
 
 // Ab diesem Sonnenabstand (AU) gilt ein ungebundenes Objekt als
 // "auf Fluchtkurs" — weit jenseits der Neptunbahn (~30 AU).
@@ -2366,20 +2372,27 @@ const SCENARIOS = {
   // Brauchen das CUDA-Backend: 150k Koerper sind fuer die Browser-Engines
   // zu viel. Gleicher Aufbau, unterschiedliches Geschwindigkeitsfeld —
   // siehe den Block ueber buildGalaxyCluster.
+  // `kosmologisch` unterdrueckt die Schwarze-Loch-Promotion beim Merge:
+  // die massiven Koerper sind hier Galaxien bzw. Massen-Samples des
+  // Dichtefelds, keine kompakten Objekte. Ihre Massen liegen vier bis
+  // fuenf Groessenordnungen ueber BH_MASS_THRESHOLD (230 M☉, gedacht fuer
+  // Sternreste) — ohne das Flag wuerde JEDE Verschmelzung zwangslaeufig
+  // ein Schwarzes Loch, und zwei verschmolzene Zwerggalaxien sind keines.
   'Galaxienhaufen (Kollaps)': {
     build: () => buildGalaxyCluster({ tangential: 0.7, hubble: 0 }),
-    dt: 5, slow: 0 },
+    dt: 5, slow: 0, kosmologisch: true },
   // Wenig Drehimpuls, dafuer die Expansion: 0,15 laesst dem Feld gerade
   // genug Rotation, dass der Kollaps der Ueberdichten nicht rein radial
   // in einen Punkt laeuft.
   'Galaxienhaufen (Expansion)': {
     build: () => buildGalaxyCluster({ tangential: 0.15, hubble: CLUSTER_H }),
-    dt: 5, slow: 0 },
+    dt: 5, slow: 0, kosmologisch: true },
   // Umgekehrter Zuschnitt: wenige Koerper, dafuer traegt jeder Masse und
   // spuert jeden anderen. `nurBrowser` haelt es vom CUDA-Pfad fern, dessen
   // Kernel nur 64 massive Koerper im Shared Memory fuehrt.
   'Strukturbildung (selbstgravitierend)': {
-    build: buildStrukturbildung, dt: 2, slow: 0, nurBrowser: true },
+    build: buildStrukturbildung, dt: 2, slow: 0, nurBrowser: true,
+    kosmologisch: true },
 };
 
 function initBodies() {
@@ -3781,7 +3794,7 @@ function draw() {
         if (bIdx >= K) bIdx = K - 1;
         buckets[bIdx].push(j);
       }
-      ctx.strokeStyle = b.color;
+      ctx.strokeStyle = b.isBlackHole ? BH_TRAIL_COLOR : b.color;
       for (let k = 0; k < K; k++) {
         const segs = buckets[k];
         if (segs.length === 0) continue;
@@ -6851,10 +6864,16 @@ function merge(a, b) {
   big.radius = massToRadius(mt);
   // Wenn das Endprodukt jetzt im SL-Massenbereich liegt: Promotion +
   // Schwarzschild-Radius. Sonst Volumenerhaltung wie bisher.
-  if (mt >= BH_MASS_THRESHOLD) {
+  //
+  // In kosmologischen Szenarien wird NICHT promoviert: dort stellt ein
+  // Koerper eine Galaxie bzw. ein Massen-Sample dar, kein kompaktes
+  // Objekt — und jeder von ihnen liegt weit ueber der Schwelle, die fuer
+  // Sternreste gedacht ist. Sie verschmelzen unter Volumenerhaltung.
+  const kosmo = !!(SCENARIOS[currentScenario] || {}).kosmologisch;
+  if (mt >= BH_MASS_THRESHOLD && !kosmo) {
     big.isBlackHole = true;
     big.isStar = false;
-    big.color = '#0a0a14';
+    big.color = BH_COLOR;
     big.realR = schwarzschildRadius(mt);
   } else {
     big.realR = Math.cbrt(a.realR**3 + b.realR**3);
@@ -8452,7 +8471,7 @@ function doInject() {
     vx:  speedAU * Math.sin(angleRad),
     vy: -speedAU * Math.cos(angleRad),
     ax: 0, ay: 0,
-    color: isBH ? '#0a0a14'
+    color: isBH ? BH_COLOR
          : massSun >= STAR_MASS_THRESHOLD ? '#ffdd44'
          : '#ff4444',
     radius: massToRadius(massSun),
