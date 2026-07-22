@@ -148,6 +148,19 @@ class FilmSession:
     # freie RAM (shared_memory liegt im tmpfs).
     MAX_BYTES = 8 << 30
 
+    # Zweite, ZEITLICHE Grenze des Rings (--ring-jahre). Der Ring traegt
+    # hoechstens so viel Sim-Zeit, unabhaengig davon, wie klein die
+    # Samples sind.
+    #
+    # 300 Jahre sind an der WIEDERGABEZEIT bemessen, nicht an der
+    # Sim-Zeit: Bei 186 Tagen/s Abspieltempo ergibt der 70-%-Vorlauf rund
+    # SIEBEN MINUTEN Puffer — genug, um Netz- oder Rechenaussetzer zu
+    # ueberbruecken und bequem zurueckzuspulen. Der Speicher sinkt
+    # trotzdem: 11.220 Koerper bei Raster 1,78 belegen 5,2 statt 8 GiB,
+    # und bei noch kleineren Szenen entsprechend weniger. Bei grosser
+    # Koerperzahl bleibt ohnehin das Bytebudget die bindende Grenze.
+    MAX_RING_TAGE = 300 * 365.25
+
     # Erkennungskarten pro Session (--det-gpus). Die Bounce-Suche ist der
     # Engpass und wird raeumlich auf sie aufgeteilt; mehr Karten helfen
     # nur, solange welche frei sind (Physik hat Vorrang).
@@ -176,7 +189,25 @@ class FilmSession:
             else 0
         self.sample_bytes = film_producer.slot_bytes(
             self.n, self.m_sub, self.sub_max)
-        self.capacity = max(2000, int(self.MAX_BYTES // self.sample_bytes))
+        # Ringgroesse: das KLEINERE aus Byte- und Zeitbudget.
+        #
+        # Nur nach Bytes zu gehen liefert je nach Koerperzahl voellig
+        # verschiedene Vorlaeufe — bei 8 GiB und Raster 1,78 Tage:
+        #     11.220 Koerper ->  88 KB/Sample ->  91,7 Jahre Vorlauf
+        #    400.000 Koerper -> 3,1 MB/Sample ->   2,6 Jahre
+        # Faktor 35 fuer denselben Speicher. Bei kleinem N ist der Ring
+        # sinnlos gross: Der Producer fuellt ihn in Sekunden, drosselt
+        # sich und steht dann still (die GPU wirkt "idle", obwohl alles in
+        # Ordnung ist), waehrend 8 GiB in /dev/shm liegen. Zwei
+        # gleichzeitige Sitzungen sprengen damit ein 16-GB-tmpfs — genau
+        # das hat im Betrieb einen Producer am Start scheitern lassen.
+        #
+        # Das Zeitbudget deckelt den Vorlauf auf ein Mass, das zum
+        # Zurueckspulen reicht; bei grossem N bleibt das Bytebudget die
+        # bindende Grenze und nichts aendert sich.
+        nach_bytes = int(self.MAX_BYTES // self.sample_bytes)
+        nach_zeit = int(self.MAX_RING_TAGE / self.raster_days)
+        self.capacity = max(2000, min(nach_bytes, nach_zeit))
         self.shm = shared_memory.SharedMemory(
             create=True, size=self.capacity * self.sample_bytes)
         # Ereignisring. Muss den RUECKSTAND puffern koennen: erzeugt der
@@ -1157,6 +1188,13 @@ async def main() -> None:
                     help="Groesse des Film-Ringpuffers in GiB. Begrenzt "
                          "durch den freien Platz in /dev/shm (df /dev/shm), "
                          "nicht durch den freien RAM.")
+    ap.add_argument("--ring-jahre", type=float, default=300.0,
+                    metavar="JAHRE",
+                    help="Zweite Grenze des Ringpuffers: hoechstens so "
+                         "viel SIM-ZEIT. Wirkt bei kleiner Koerperzahl, "
+                         "wo das Byte-Budget sonst absurd viel Vorlauf "
+                         "ergibt (11k Koerper bei 8 GiB: 92 Jahre). Es "
+                         "gilt immer die kleinere der beiden Grenzen.")
     ap.add_argument("--device", type=int, default=None,
                     help="CUDA-Device-Index (Default: beste f64-GPU)")
     ap.add_argument("--det-gpus", type=int, default=FilmSession.DET_GPUS,
@@ -1178,6 +1216,7 @@ async def main() -> None:
     global _device
     _device = args.device if args.device is not None else pick_device()
     FilmSession.MAX_BYTES = int(args.ring_gib * (1 << 30))
+    FilmSession.MAX_RING_TAGE = args.ring_jahre * 365.25
     FilmSession.DET_GPUS = max(1, args.det_gpus)
     FilmSession.DIAG = args.diag
     log.info("Film-Ringpuffer: %.1f GiB, Erkennungskarten: %d",

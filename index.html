@@ -5228,6 +5228,14 @@ function initCudaBackend(urlIndex = 0) {
         console.warn('[film] Server hat keine Session — Neustart');
         filmActive = false;          // sonst blockiert filmStart sich selbst
         filmQueue = null;
+        // Eine haengende Uebergabe wuerde filmStart nur AUFSCHIEBEN
+        // (_filmStartWartet) — und der ausloesende f64-Dump kommt nie,
+        // weil es serverseitig gar keine Session mehr gibt. Genau daran
+        // scheiterte der erste Neustart-Versuch: Die Meldung erschien,
+        // danach lief die Fehlerkette weiter.
+        _filmHandover = false;
+        _filmRestartPending = false;
+        _filmStartWartet = false;
         filmStart();
         return;
       }
