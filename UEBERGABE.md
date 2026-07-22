@@ -4,7 +4,7 @@ Was hier steht, steht **nicht** im Git-Log: Betriebswissen, Messfallen,
 gescheiterte Ansätze und offene Punkte. Die Umsetzungshistorie ist
 bewusst nicht enthalten — dafür ist `git log` da.
 
-Stand: 2026-07-21, Commit `dea0857`.
+Stand: 2026-07-21, Commit `39ffb50`.
 
 ---
 
@@ -46,6 +46,16 @@ sind 3 und 4. Kein Fehler.
 **PCIe:** Alle fünf Karten hängen mit **×4** an M.2-zu-Oculink- bzw.
 USB4-Adaptern (Mini-PC). Hardwarebedingt, nicht änderbar.
 
+**Hängt noch GPU-Speicher fest?**
+```bash
+nvidia-smi --query-compute-apps=pid,used_memory --format=csv
+pkill -f 'SolarSystemSimulator.*multiprocessing'   # nur im Notfall
+```
+Nicht `nvidia-smi … | xargs kill` — auf der Maschine läuft auch
+HaemoTrace mit multiprocessing. Seit `39ffb50` beendet sich der Producer
+selbst, wenn sein Server verschwindet (Elternwächter, ~0,5 s), das sollte
+also nicht mehr nötig sein.
+
 **ruff** liegt nicht im Projekt-venv:
 `/home/mp/Projekte/AIfred-Intelligence/venv/bin/ruff check backend/`
 
@@ -65,9 +75,15 @@ cd backend
 ../venv/bin/python test_playhead_state.py   # Ring-Roundtrip, Sub-Überlauf
 ../venv/bin/python test_erkennung_streifen.py  # Streifen == eine Karte
 ../venv/bin/python test_kernel.py           # Kernel + Multi-GPU
+../venv/bin/python test_waechter.py         # Runaway-Kills als kind 2
+../venv/bin/python test_waisen.py           # GPU frei nach hartem Serverstod
 ../venv/bin/python bench_erkennung.py       # Umschaltschwelle der 2. Karte
 ../venv/bin/python bench_film.py -n 60000 --det-gpus 1
 ```
+
+`test_waisen.py` startet sich selbst als Server-Ersatz und schießt ihn mit
+`SIGKILL` ab — er darf also ruhig „Prozess getötet" ins Log schreiben, das
+ist der Testgegenstand.
 
 `test_film_protokoll.py` dekodiert ein echtes Frame nach demselben Schema
 wie `zerlegeFilm` in `index.html` — dort laufen Server und Client am
@@ -92,6 +108,25 @@ aufgefallen. `test_bewegter_stern.py` schließt die Lücke.
   vergleichen.
 - Ein einzelner `nvidia-smi`-Aufruf misst in einem Stop-and-Go-System
   zufällig eine Pause. Immer Zeitreihen nehmen.
+- **`utilization.gpu` ist kein Auslastungsmaß.** Es misst den Zeitanteil,
+  in dem *mindestens ein Kernel resident* war — nicht, wie viele
+  Rechenwerke arbeiten. Gemessen: drei V100 bei 100 % Util und **42 W von
+  250 W**, bei vollem SM-Takt. Die Karten waren wach und hatten nichts zu
+  tun. Wer Auslastung wissen will, nimmt die Leistungsaufnahme oder
+  rechnet die Paare pro Sekunde gegen die FLOP-Zahl.
+- **Im Browser nie im Hauptthread messen.** `advance()` rechnet über
+  Objekt-Properties (`bodies[i].x`), der Worker über typed arrays.
+  Gemessen an 900 selbstgravitierenden Körpern: 1.754 ms gegen ~19 ms pro
+  Bild — **Faktor 70**, ohne dass sich an der Physik etwas ändert. Eine
+  Messung im CPU-Modus sagt nichts über den Betrieb aus.
+- **Headless-Chrome hat keine GPU.** WebGL fällt auf Software zurück und
+  verschmiert 150k halbtransparente Punkte zu Flächen, die im echten
+  Browser nicht existieren. Am 21.07. wurde daraus fälschlich ein
+  „Rendering-Fehler bei den Galaxien" abgeleitet. Bei Optik-Befunden aus
+  headless: erst im echten Browser gegenprüfen.
+- **Der Browser-Cache verschluckt CSS-Änderungen.** `/solar-system/` hat
+  kein `Cache-Control` (siehe 6.6). Ein Screenshot nach `navigate` zeigt
+  womöglich den alten Stand; mit `?v=<zufall>` an der URL umgehen.
 - Vor jeder Messung prüfen, ob der laufende Prozess den geänderten Code
   geladen hat (siehe Abschnitt 1).
 - Für A/B gegen einen früheren Stand: `git stash` → messen →
@@ -176,6 +211,38 @@ die auch **ohne** Ausdünnung da sind (echte Struktur).
 ### 5.6 Gröber streamen bei Zeitlupe
 Wäre falsch: Man geht ja runter, um *mehr* Details zu sehen.
 
+### 5.7 Berührungsradius senken, damit weniger Testteilchen verschluckt werden
+Bringt fast nichts. Der Einfangquerschnitt wird von **Gravitational
+Focusing** bestimmt, und das skaliert mit **√R**, nicht mit R: Bei den
+Galaxien (10⁸ M☉) ist die Fluchtgeschwindigkeit am Rand dreimal so hoch
+wie die Relativgeschwindigkeit, der effektive Radius also 1.561 AE statt
+der eingestellten 500.
+
+| R_GAL | effektiv | Halbwertszeit der Wolke |
+|---|---|---|
+| 500 AE | 1.561 AE | 61 Jahre |
+| 100 AE | 669 AE | 142 Jahre |
+| 10 AE | 209 AE | 453 Jahre |
+| 1 AE | 66 AE | 1.435 Jahre |
+
+Selbst punktförmige Massen fressen die Wolke noch auf, nur langsamer —
+und die Galaxienverschmelzung wäre dabei tot. Wer den Schwund wirklich
+loswerden will, muss Tracer×Masse-Kollisionen abschalten, nicht am
+Radius drehen.
+
+### 5.8 Filamente aus masselosen Tracern
+Prinzipiell unmöglich, unabhängig von Anfangsbedingungen, Expansion oder
+Teilchenzahl. Testteilchen ziehen sich nicht gegenseitig an; das kosmische
+Netz entsteht aber genau durch Selbstgravitation — eine Überdichte muss
+sich *selbst* zusammenziehen. Ohne das bleibt das Feld so glatt, wie es
+gestartet ist.
+
+Am 21.07. wurde erst die fehlende Expansion als Ursache vermutet und ein
+Hubble-Fluss eingebaut (Szenario „Galaxienhaufen (Expansion)", marginal
+gebunden bei Ω ≈ 1). Das ist physikalisch richtig und ändert am Ergebnis
+trotzdem nichts, weil die zweite, wichtigere Zutat weiter fehlt. Weg
+dorthin: `TODO.md`.
+
 ---
 
 ## 6. Offen
@@ -239,3 +306,34 @@ und kann bleiben.
 - Läuft der Rückstand über den Ereignisring (65536), springt der Server
   vor (`ev_from = max(sent_ev, ev_total - ev_cap + 8)`) und Ereignisse
   gehen **still verloren**. Der Badge zählt dann dauerhaft zu niedrig.
+
+### 6.9 Shared-Memory-Ringe überleben einen harten Serverstod
+Der Elternwächter (`39ffb50`) gibt die **GPU** frei, aber das `unlink()`
+der Ringpuffer steckt in `FilmSession.stop()` — stirbt der Server per
+SIGKILL, bleiben sie in `/dev/shm` liegen. Gefunden am 21.07.: drei
+Leichen vom 19.07., zusammen 287 MB RAM.
+
+Meist selbstheilend, weil Pythons `resource_tracker` beim Herunterfahren
+aufräumt (daher die „leaked shared_memory objects"-Warnungen in den
+Testläufen). Nur wenn auch der stirbt, bleiben sie. Prüfen mit
+`ls -la /dev/shm/`, löschen wenn `lsof` null Handles zeigt. Fix wäre, den
+Producer beim Verwaisen zusätzlich freigeben zu lassen.
+
+### 6.10 Schwarze-Loch-Schwelle passt nicht zu kosmologischen Massen
+`BH_MASS_THRESHOLD` steht auf **230 M☉** — sinnvoll für Sternreste. Die
+Körper im Szenario „Strukturbildung" tragen je 1,12 · 10⁷ M☉, liegen also
+48.000-fach darüber; **jede** Verschmelzung wird zwangsläufig zum
+Schwarzen Loch. Physikalisch Unsinn: 10⁷ Sonnenmassen sind eine
+Zwerggalaxie.
+
+Entweder die Schwelle wird szenarioabhängig (wie `dt` und `slow`), oder
+solche Körper werden gar nicht erst promoviert. Letzteres ist sauberer —
+bei Softening und kosmologischen Massen ist „Schwarzes Loch" die falsche
+Kategorie.
+
+### 6.11 Bahnspuren schwarzer Löcher sind unsichtbar
+Die Spur wird in `b.color` gezeichnet, und beim Aufstieg zum Schwarzen
+Loch wird die auf `#0a0a14` gesetzt — Fast-Schwarz auf schwarzem Grund.
+Die Spuren existieren und werden gezeichnet, man sieht sie nur nicht. Fix
+wäre eine Zeile: für schwarze Löcher einen Akzentton nehmen, etwa das
+Orange des Akkretions-Halos.
