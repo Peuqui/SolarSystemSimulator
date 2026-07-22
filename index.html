@@ -3701,7 +3701,13 @@ function _hexToRgb(hex) {
 function _glPunktmodus(gl) {
   if (_punktwolke) {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE);            // additiv
-    gl.uniform1f(astGL.loc.uAlpha, 0.55);
+    // 0,85 statt 0,55: Der Wert bestimmt, wie hell ein EINZELNER Punkt
+    // ist — in duennen Regionen ueberlagert sich nichts, dort blieb er
+    // vorher kaum sichtbar. Bei 0,85 traegt schon ein Punkt deutlich,
+    // und die Ueberlagerung in dichten Gebieten saettigt entsprechend
+    // frueher zu Weiss. Das ist der Kompromiss zwischen "Einzelteilchen
+    // erkennbar" und "grosser Dynamikbereich fuer die Dichte".
+    gl.uniform1f(astGL.loc.uAlpha, 0.85);
   } else {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.uniform1f(astGL.loc.uAlpha, 1.0);
@@ -4183,7 +4189,7 @@ function draw() {
     // klein und ADDITIV: ueberlappende Punkte addieren ihre Helligkeit,
     // statt einander zu ueberdecken. Erst so wird Dichte sichtbar.
     ctx.globalCompositeOperation = 'lighter';
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = 0.85;   // wie im GL-Pfad, siehe _glPunktmodus
   }
   // Hat der Batch alles gezeichnet und gibt es keinen Fokus-Koerper, ist
   // in dieser Schleife nichts mehr zu tun — dann gar nicht erst hinein.
