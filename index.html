@@ -2675,7 +2675,7 @@ function loadScenario(name) {
   collisionFlashes.length = 0;
   updateCollisionBadge();
   simTime = 0;
-  realElapsedMs = 0; lastTickMs = 0;
+  realElapsedMs = 0; _laufStartMs = 0; lastTickMs = 0;
   injectMarked = false;
   initBodies();
   rebuildBodyList(true);   // neue Szene: Klappzustand neu bestimmen
@@ -2795,7 +2795,7 @@ function restoreState(state) {
   collisionFlashes.length = 0;
   updateCollisionBadge();
   simTime = 0; injectMarked = false;
-  realElapsedMs = 0; lastTickMs = 0;
+  realElapsedMs = 0; _laufStartMs = 0; lastTickMs = 0;
   computeAccelerations();
   computeTrailInterval();
   rebuildBodyList(true);   // neue Szene: Klappzustand neu bestimmen
@@ -4565,7 +4565,8 @@ function draw() {
 // --- Simulation Loop ---
 let paused = false;
 let simTime = 0;
-let realElapsedMs = 0;   // verstrichene Echtzeit, nur waehrend die Sim laeuft
+let realElapsedMs = 0;   // Echtzeit der ABGESCHLOSSENEN Laufabschnitte
+let _laufStartMs = 0;    // Beginn des laufenden Abschnitts (0 = pausiert)
 let lastTickMs = 0;      // Zeitstempel des letzten Frames (performance.now)
 
 // Tab-Wechsel: lastTickMs verwerfen, damit der erste sichtbare Frame
@@ -8179,9 +8180,26 @@ async function simLoop() {
     centerInTransit = zoomLerping;
   }
   const effectivelyPaused = paused || document.hidden || centerInTransit;
-  if (lastTickMs && !effectivelyPaused) {
-    const delta = nowMs - lastTickMs;
-    if (delta < 250) realElapsedMs += delta;
+  // Echtzeit DIREKT von der Uhr, nicht aus aufaddierten Frame-Deltas.
+  //
+  // Vorher wurde je Bild `delta` addiert und alles ueber 250 ms
+  // verworfen — bei zehntausenden Punkten und schwankender Bildrate
+  // fiel dadurch laufend Zeit unter den Tisch (beobachtet: eine Sekunde
+  // je drei echten). Jedes Verfahren, das Zeit stueckweise aufsummiert,
+  // driftet, sobald ein Tick ausfaellt.
+  //
+  // Stattdessen: Zeitpunkt des Laufbeginns merken und die Differenz zur
+  // Uhr nehmen. `realElapsedMs` traegt die Summe der bereits beendeten
+  // Laufabschnitte, `_laufStartMs` den aktuellen. Pausen zaehlen so
+  // weiterhin nicht mit, aber innerhalb eines Abschnitts kann nichts
+  // mehr verlorengehen.
+  if (effectivelyPaused) {
+    if (_laufStartMs) {
+      realElapsedMs += nowMs - _laufStartMs;
+      _laufStartMs = 0;
+    }
+  } else if (!_laufStartMs) {
+    _laufStartMs = nowMs;
   }
   lastTickMs = nowMs;
   if (!effectivelyPaused) {
@@ -9546,7 +9564,7 @@ function updateStats() {
     : (useGPU && gpu) ? 'WebGPU' : useWorker ? 'WebWorker' : 'CPU';
   const html =
     `${t('stats.time')}: <span>${years}</span> ${t('stats.years')}<br>` +
-    `${t('stats.realtime')}: <span>${formatRealTime(realElapsedMs)}</span><br>` +
+    `${t('stats.realtime')}: <span>${formatRealTime(realElapsedMs + (_laufStartMs ? performance.now() - _laufStartMs : 0))}</span><br>` +
     `${t('stats.engine')}: <span>${engineName}</span> — ` +
     `<span>${fmtDE(_perf.fps, 1)}</span> ${t('stats.fps')}<br>` +
     `${t('stats.phys')}: <span>${fmtDE(_perf.msPhys, 1)}</span> ms — ` +
