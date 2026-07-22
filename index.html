@@ -3778,7 +3778,13 @@ function renderAsteroidsGL() {
   let drawn = 0;
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
-    if (!b.visible || !b.isAsteroid) continue;
+    // In einer Punktwolke gehoeren auch die MASSEN hierher. Sonst
+    // zeichnet sie der Canvas2D-Pfad, und es gibt zwei Darstellungen
+    // desselben Bildes mit verschiedener Helligkeit — genau der Sprung,
+    // der beim Uebergang von der Anfangsdarstellung zum laufenden Film
+    // sichtbar war. Eine Engine fuer alles, oder es sieht verschieden
+    // aus.
+    if (!b.visible || !(b.isAsteroid || _punktwolke)) continue;
     // Film-Modus: server-gecullte Koerper (nicht im aktuellen Sample)
     // haben eingefrorene Alt-Positionen — nicht zeichnen, sonst
     // erscheint beim Rauszoomen Datenmuell alter Box-Epochen.
@@ -4181,9 +4187,20 @@ function draw() {
   // alles wegcullt. Ohne diese Pruefung sprang die Einzelschleife
   // trotzdem heraus, und es blieb ein LEERER Canvas: der Batch zeichnete
   // nichts, und der Fallback bekam nie die Gelegenheit.
-  const _batchHatGezeichnet = _sgPunkte && filmActive &&
-                              typeof astGL !== 'undefined' && astGL.enabled &&
-                              _filmVtxCount > 0;
+  // Punkte zeichnet AUSSCHLIESSLICH WebGL, sobald es da ist — im Film
+  // ueber das vorgepackte Vertex-Array, sonst ueber den Objekt-Loop in
+  // renderAsteroidsGL (der nimmt bei _punktwolke auch die Massen mit).
+  //
+  // Frueher haben sich beide Systeme die Arbeit geteilt: Canvas2D vor
+  // dem Filmstart, WebGL danach. Zwei Wege heisst zwei Erscheinungen —
+  // andere Punktgroesse, andere Alpha-Rechnung, andere Saettigung. Genau
+  // deshalb sprang die Helligkeit beim Uebergang. Canvas2D bleibt fuer
+  // das zustaendig, was WebGL nicht kann: Text, Gradienten (Sonnenglut,
+  // Akkretions-Halo), Ringe, Hintergrund — und als Fallback, wenn
+  // WebGL fehlt.
+  const _glDaFuerPunkte = typeof astGL !== 'undefined' && astGL.enabled;
+  const _batchHatGezeichnet = _sgPunkte && _glDaFuerPunkte &&
+                              (!filmActive || _filmVtxCount > 0);
   if (_sgPunkte && !_batchHatGezeichnet) {
     // Ohne WebGL (oder ausserhalb des Films) doch einzeln — dann aber
     // klein und ADDITIV: ueberlappende Punkte addieren ihre Helligkeit,
