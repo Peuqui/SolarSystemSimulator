@@ -4903,8 +4903,17 @@ function initCudaBackend(urlIndex = 0) {
       // Angabe bleibt cudaMMax null und es wird nichts gesperrt.
       cudaMMax = (JSON.parse(msg.info).mMax) || null;
       console.log('CUDA-Backend verbunden:', msg.info);
-      if (useCuda) {
+      // Selbstgravitierende Szenarien KOENNEN nur hier rechnen. Beim
+      // Reload steht das Szenario aber schon, bevor diese Verbindung
+      // zustande kommt — die Engine-Wahl von eben (womoeglich der
+      // persistierte Worker) passt dann nicht zur Szene. Also hier
+      // nachziehen, sonst liefe die Szene im Worker (gemessen 1,5 FPS,
+      // 0,0 Tage/s) oder die Verbindung wuerde gleich wieder getrennt.
+      const _sc = SCENARIOS[currentScenario];
+      if (useCuda || (_sc && _sc.selbstgravitierend)) {
         applyEngine('cuda', false);   // persistierten Modus nachziehen
+        // Erst JETZT ist cudaReady wahr — der Film-Modus haengt daran.
+        sgReglerSichtbarkeit();
       } else {
         // Reine Verfuegbarkeits-Probe: Verbindung sofort wieder trennen,
         // damit der socket-aktivierte Server per Idle-Exit schlafen kann.
@@ -5009,8 +5018,20 @@ function initCudaBackend(urlIndex = 0) {
       // Film blieb der Grund frueher vollstaendig unsichtbar.
       const grund = new TextDecoder().decode(new Uint8Array(buf, 8));
       console.warn('CUDA-Backend-Fehler:', grund);
-      zeigeStoerung(t('cuda.fehler').replace('{m}', grund));
       _cudaStateStale = true;
+      // Der Rueckfall auf den Worker ist bei selbstgravitierenden
+      // Szenarien KEINE Rettung — er kann sie nicht rechnen (jeder
+      // Koerper massiv, alle gegen alle). Und der Fehler ist dort meist
+      // ein blosses Wettrennen beim Start ("kein Film aktiv": ein
+      // FILM_SUB war vor dem Film da). Frueher schaltete das die Engine
+      // weg von CUDA, der Film starb, und die Szene stand im Worker bei
+      // 1,5 FPS.
+      if (!clientRechnetSelbst()) {
+        console.warn('[film] Fehler ignoriert — selbstgravitierendes '
+                     + 'Szenario laeuft nur auf CUDA');
+        return;
+      }
+      zeigeStoerung(t('cuda.fehler').replace('{m}', grund));
       applyEngine('worker', false);
     } else {
       const refs = cudaInflightRefs || [];
@@ -8289,11 +8310,24 @@ function sgReglerSichtbarkeit() {
   // Der Live-Pfad faehrt NBodyCuda und lehnt mehr als 64 massive Koerper
   // ab. Also einschalten und die Abwahl sperren — sonst startet der
   // Nutzer eine Szene, die nur eine Fehlermeldung erzeugen kann.
+  // Die Engine WAEHLEN, nicht nur die anderen sperren — und zwar OHNE
+  // Bedingung auf cudaReady. Sonst haengt es am Zufall, ob die
+  // Backend-Verbindung vor oder nach dem Szenario steht: Beim Reload
+  // kam der Handshake teils frueher, das Szenario aus dem localStorage
+  // spaeter, und die Verbindung wurde als blosse Verfuegbarkeitsprobe
+  // gleich wieder getrennt. `applyEngine('cuda')` baut sie bei Bedarf
+  // selbst auf (initCudaBackend).
+  if (selbstgrav && !useCuda) applyEngine('cuda', true);
   if (selbstgrav && cudaReady && useCuda) {
     const el = document.getElementById('chk-film');
     if (el && !el.checked) {
       el.checked = true;
       el.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (useFilm && !filmActive && !_filmHandover) {
+      // Haken sitzt schon (Szenariowechsel weg und zurueck), also feuert
+      // kein change-Event — der Film muss trotzdem anlaufen. Ohne das
+      // stand die Szene mit gesetztem Haken still.
+      filmStart();
     }
   }
   sgReglerAnzeige();

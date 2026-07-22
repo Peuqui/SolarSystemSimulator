@@ -417,6 +417,22 @@ Ein Merge-Ereignis setzt im Client nur `mass` und `radius` — `realR`,
 `isBlackHole` und Farbe bleiben, wie sie waren. Live und Film laufen hier
 also auseinander, unabhängig vom Szenario.
 
+### 6.13 „kein Film aktiv" beim Filmstart
+Beim Start einer Film-Session schickt der Client ein `MSG_FILM_SUB`,
+bevor der Server die Session angelegt hat — der antwortet dann mit
+„kein Film aktiv". Sichtbar in der Browser-Konsole, mehrfach je Start.
+
+Folgenlos, aber nicht harmlos: Der Fehlerpfad des Clients schaltet bei
+Backend-Fehlern auf den WebWorker zurück. Bei den selbstgravitierenden
+Szenarien riss das die ganze Sitzung mit — die Szene landete im Worker
+bei 1,5 FPS, obwohl er sie gar nicht rechnen kann. Dort wird der Fehler
+deshalb jetzt ignoriert (`clientRechnetSelbst()`), was die Wurzel nicht
+beseitigt.
+
+Sauber wäre, den ersten `filmSub` erst nach der Bestätigung des Servers
+zu senden — oder `MSG_FILM_SUB` ohne aktive Session still zu verwerfen,
+statt einen Fehler zu melden, der wie ein Defekt aussieht.
+
 ### 6.12 Lastverteilung — Erkennung geregelt, Physik offen
 **Erledigt: die Erkennung.** `_streifengrenzen` schnitt die Szene in
 Streifen mit gleich vielen Asteroiden. Gleiche Körperzahl ist aber nicht
