@@ -3420,13 +3420,14 @@ function barycenter() {
 }
 
 // SSOT beider Netze: eine 1-2-5-Leiter ueber ALLE Groessenordnungen, von
-// 100 km (1e-4 AU, Kollisionsnaehe) bis 16 Lichtjahre (1e6 AU, kosmisches
-// Netz). Welche Stufe man sieht, entscheidet nicht die Leiter, sondern
+// 100 km (1e-4 AU, Kollisionsnaehe) bis 16.000 Lichtjahre (1e9 AU). Die
+// Obergrenze folgt ZOOM_MIN: Bei 1e-7 sind rund 3.800 Lichtjahre im
+// Bild, ohne die oberen Dekaden bliebe dort kein Ring uebrig. Welche Stufe man sieht, entscheidet nicht die Leiter, sondern
 // der Pixelabstand beim Zeichnen — dadurch ist das Netz maßstabsagnostisch
 // und braucht keine Fallunterscheidung pro Szenario.
 const NETZ_LEITER = (() => {
   const out = [];
-  for (let e = -4; e <= 6; e++)
+  for (let e = -4; e <= 9; e++)
     for (const m of [1, 2, 5]) out.push(m * Math.pow(10, e));
   return out;
 })();
@@ -8623,9 +8624,16 @@ let panLerpTarget = null;   // {x, y} im transformierten Kamera-Raum, oder null
 // hieraus ab.
 //
 // Die Untergrenze bestimmt, wie gross eine Szene sein darf, die noch
-// komplett ins Bild passt: bei 1e-5 sind das rund 500.000 AE Halbmesser,
-// genug fuer den Galaxienhaufen (81.000 AE) auch im linearen Modus.
-const ZOOM_MIN = 1e-5;
+// komplett ins Bild passt. 1e-5 reichte fuer den Galaxienhaufen
+// (81.000 AE) und ergab 38 Lichtjahre Bildbreite — zu wenig, sobald
+// ein schweres injiziertes Objekt Material weit nach aussen schleudert,
+// das dort weiter verklumpt. 1e-7 gibt rund 3.800 Lichtjahre.
+//
+// Die u16-Quantisierung des Films traegt das: Die Referenz-Box umfasst
+// 2x Sichtfenster, bei 3.800 Lj sind das 965 AE je Stufe — verglichen
+// mit einem Bildpunkt, der dort 125.000 AE breit ist, immer noch weit
+// feiner als die Anzeige.
+const ZOOM_MIN = 1e-7;
 const ZOOM_MAX = 500;
 
 function clampZoom(z) {
