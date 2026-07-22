@@ -321,7 +321,8 @@ def _zellschluessel(cx, cy):
     return cx * cp.int64(73856093) ^ cy * cp.int64(19349663)
 
 
-def bounce_suche(det, det_pool, rows, dt_y: float, rr_max: float):
+def bounce_suche(det, det_pool, rows, dt_y: float, rr_max: float,
+                 anteile: list[float] | None = None):
     """Asteroid-x-Asteroid-Stoesse ueber alle aktiven Erkennungskarten.
 
     Raeumlich aufgeteilt: Kollisionen sind lokal — zwei Koerper auf
@@ -335,18 +336,26 @@ def bounce_suche(det, det_pool, rows, dt_y: float, rr_max: float):
     von rows bestimmt, ueber wie viele Karten aufgeteilt wird. Streifen 0
     rechnet der aufrufende Thread selbst, die uebrigen laufen im Pool.
 
-    Rueckgabe: (treffer|None, geprueifte Kandidatenpaare, Zellgroesse)."""
+    `anteile` sind die Zielanteile der Streifen (siehe `_streifengrenzen`);
+    None bedeutet gleich gross. Zurueck kommen die FORTGESCHRIEBENEN
+    Anteile, die der Aufrufer beim naechsten Sample wieder hereingibt —
+    so bleibt diese Funktion zustandslos.
+
+    Rueckgabe: (treffer|None, Kandidatenpaare gesamt, Zellgroesse,
+    neue Anteile)."""
     gx, gy, gvx, gvy = rows[0]
     # Suchreichweite und Streifengrenzen EINMAL global bestimmen und an
     # alle Karten geben (SSOT): rechnete jede Karte ihr eigenes h aus
     # ihrer Teilmenge, waeren die Halo-Breiten verschieden und die
     # Besitz-Regel nicht mehr lueckenlos.
+    if anteile is None or len(anteile) != len(rows):
+        anteile = [1.0 / len(rows)] * len(rows)
     with cp.cuda.Device(det[0].dev):
         lebt = cp.flatnonzero(det[0].g_ast & (det[0].g_vis != 0))
         if int(lebt.size) < 2:
-            return None, 0, 0.0
+            return None, 0, 0.0, anteile
         v95 = float(cp.percentile(cp.hypot(gvx[lebt], gvy[lebt]), 95))
-        grenzen = _streifengrenzen(gx[lebt], len(rows))
+        grenzen = _streifengrenzen(gx[lebt], anteile)
     h = max(1e-4, 2.0 * v95 * dt_y)
     # Halo: NACHBARN prueft bis Zellversatz 1, ein Paar liegt also
     # hoechstens 2h auseinander — plus die beiden Beruehrungsradien.
@@ -360,27 +369,114 @@ def bounce_suche(det, det_pool, rows, dt_y: float, rr_max: float):
     teile += [f.result() for f in rest]
 
     hits = [t for t, _ in teile if t is not None]
-    kandidaten = sum(kand for _, kand in teile)
+    je_karte = [kand for _, kand in teile]
+    kandidaten = sum(je_karte)
+    # Aus der Ist-Last die Anteile fuers naechste Sample nachfuehren.
+    neu = _lastanteile(anteile, je_karte)
     if not hits:
-        return None, kandidaten, h
+        return None, kandidaten, h, neu
     return ((np.concatenate([t[0] for t in hits]),
-             np.concatenate([t[1] for t in hits])), kandidaten, h)
+             np.concatenate([t[1] for t in hits])), kandidaten, h, neu)
 
 
-def _streifengrenzen(gx_lebt, anzahl: int) -> list[tuple[float, float]]:
-    """Die Szene in `anzahl` x-Streifen mit gleich vielen lebenden
-    Asteroiden schneiden. Gleiche Koerperzahl ist nicht dasselbe wie
-    gleiche Arbeit (die Paarzahl waechst mit der Dichte quadratisch), aber
-    ein Quantil ist ein Kernel-Aufruf — eine Lastmessung waere ein
-    Rueckkanal von den Karten zum Host in einem Pfad, der ohnehin am GIL
-    haengt. Die aeusseren Grenzen sind unendlich, damit die Streifen die
-    Szene lueckenlos ueberdecken."""
-    if anzahl < 2:
+def _streifengrenzen(gx_lebt, anteile: list[float]) -> list[tuple[float, float]]:
+    """Die Szene in x-Streifen schneiden, die `anteile` der lebenden
+    Asteroiden enthalten.
+
+    Frueher waren die Anteile fest gleich gross. Gleiche Koerperzahl ist
+    aber nicht gleiche Arbeit: Die Paarzahl waechst mit der Dichte
+    QUADRATISCH. Gemessen an einer klumpigen Szene (120k Asteroiden, halb
+    im Knoedel) bekam eine von zwei Karten 81,8 Mio Kandidatenpaare, die
+    andere 42,2 Mio — die schnellere wartete 44 von 96 ms. Bei
+    gleichmaessigen Szenen und beim Guertel stimmte die Aufteilung
+    dagegen auf 1 % genau.
+
+    Die Anteile kommen darum von `_lastanteile` aus der zuletzt
+    GEMESSENEN Kandidatenzahl. Die aeusseren Grenzen bleiben unendlich,
+    damit die Streifen die Szene lueckenlos ueberdecken."""
+    if len(anteile) < 2:
         return [(-np.inf, np.inf)]
-    q = [100.0 * i / anzahl for i in range(1, anzahl)]
+    q, lauf = [], 0.0
+    for a in anteile[:-1]:
+        lauf += a
+        q.append(100.0 * lauf)
     schnitte = [float(v) for v in cp.asnumpy(cp.percentile(gx_lebt, q))]
     kanten = [-np.inf, *schnitte, np.inf]
     return list(zip(kanten[:-1], kanten[1:]))
+
+
+# Regelverstaerkung: 0 = starr, 1 = ungedaempft. 0,35 holt die Schieflage
+# in wenigen Samples ein, ohne dass die Grenzen um das Ziel schwingen.
+LAST_ALPHA = 0.35
+# Kein Streifen darf verhungern oder alles schlucken. Ohne Deckel koennte
+# ein einzelnes Sample mit extremer Schieflage eine Karte auf nahezu
+# null Breite regeln — sie faende dann nie wieder Kandidaten, und der
+# Regler saehe keinen Grund, das zurueckzunehmen.
+LAST_MIN_ANTEIL = 0.05
+
+
+def _lastanteile(anteile: list[float], last: list[int]) -> list[float]:
+    """Zielanteile aus der zuletzt gemessenen Kandidatenzahl fortschreiben.
+
+    Regelgroesse ist die KANDIDATENZAHL, nicht die Zeit — obwohl die Zeit
+    verlockender waere, weil sie die Kartenleistung gleich mit enthaelt
+    (zwei baugleiche RTX 8000 liegen in f32 21 % auseinander). Gemessen
+    im geschlossenen Regelkreis laeuft sie aber weg:
+
+        Szene           starr   nach Zeit geregelt   Endanteile
+        gleichmaessig   9,7 ms  9,3 ms               0,93 / 0,07
+        Guertel        10,1 ms 11,2 ms   (schlechter) 0,88 / 0,12
+        Knoedel        96,7 ms 76,8 ms               0,45 / 0,55
+
+    Grund: Ein schmaler Streifen behaelt seinen vollen HALO. Seine Zeit
+    sinkt darum nicht proportional zur Breite, der Regler liest daraus
+    "immer noch zu langsam", macht ihn noch schmaler — und rennt in die
+    Untergrenze. Die Kandidatenzahl kennt das nicht: Sie zaehlt nur
+    Paare, deren linkerer Partner dem Streifen gehoert, und war bei
+    gleichmaessigen Szenen und beim Guertel auf 1 % gleich.
+
+    Der Preis: Unterschiedlich schnelle Karten gleicht das nicht aus.
+    Das ist der kleinere Effekt (21 % gegen Faktor 1,9) und liesse sich
+    nur mit einem Zeitmass fassen, das den Halo herausrechnet.
+
+    Multiplikativ und gedaempft: Ein Streifen mit mehr als seinem Teil
+    der Paare wird schmaler.
+
+    Rein und ohne Seiteneffekte — `test_lastregler.py` prueft die
+    Konvergenz ohne GPU."""
+    n = len(anteile)
+    if n < 2:
+        return list(anteile)
+    ges = float(sum(last))
+    if ges <= 0 or min(last) < 0:
+        return list(anteile)
+    neu = []
+    for i in range(n):
+        ist = last[i] / ges              # Paaranteil dieser Karte
+        soll = 1.0 / n                   # alle sollen gleich viel tragen
+        # ist > soll -> Faktor < 1 -> Streifen wird schmaler.
+        faktor = (soll / max(ist, 1e-9)) ** LAST_ALPHA
+        neu.append(max(anteile[i] * faktor, 1e-6))
+    summe = sum(neu)
+    neu = [a / summe for a in neu]
+    # Untergrenze durchsetzen. ACHTUNG: Erst klemmen und dann alles neu
+    # normieren funktioniert NICHT — die Normierung drueckt den gerade
+    # geklemmten Wert sofort wieder darunter (aus 0,05 wurde 0,0477).
+    # Stattdessen die geklemmten Anteile FESTHALTEN und nur den Rest auf
+    # den verbleibenden Platz verteilen.
+    zu_klein = [a < LAST_MIN_ANTEIL for a in neu]
+    if any(zu_klein):
+        platz = 1.0 - LAST_MIN_ANTEIL * sum(zu_klein)
+        rest = sum(a for a, k in zip(neu, zu_klein) if not k)
+        if platz <= 0 or rest <= 0:
+            # Mehr Streifen als Mindestanteile hineinpassen — dann ist
+            # Gleichverteilung das einzig Sinnvolle. Bei G_MAX = 8 und
+            # 5 % Mindestanteil unerreichbar, aber nicht stillschweigend
+            # falsch werden.
+            return [1.0 / n] * n
+        neu = [LAST_MIN_ANTEIL if k else a / rest * platz
+               for a, k in zip(neu, zu_klein)]
+    return neu
 
 
 def producer_main(shm_name: str, sample_bytes: int, capacity: int,
@@ -457,10 +553,14 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     dt_years = raster_days / 365.25
 
     # Erkennungskarten: lueckenlose x-Streifen ueber die Szene. Die
-    # Streifengrenze wird pro Sample neu bestimmt (Median der lebenden
+    # Streifengrenze wird pro Sample neu bestimmt (Quantile der lebenden
     # Asteroiden) — die Szene wandert und verdichtet sich laufend, eine
     # feste Grenze liefe binnen Minuten aus dem Gleichgewicht.
     det = [Erkennungskarte(d, is_ast, -np.inf, np.inf) for d in det_devs]
+    # Zustand des Lastreglers: Anteil der lebenden Asteroiden je Streifen.
+    # Start gleichmaessig, danach aus der gemessenen ZEIT je Karte
+    # nachgefuehrt (siehe _lastanteile).
+    streifen_anteile = [[1.0 / len(det)] * len(det)]
     prev_det = None              # voriges Sample (fuer den Merge-Sweep)
     # Beruehrungsradius des groessten Asteroiden: geht in die Halo-Breite
     # ein. Wird zusammen mit den Stammdaten fortgeschrieben.
@@ -732,9 +832,15 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     def analyze_bounce(rows):
         """Bounce-Suche fuer ein Sample; Anwendung als Deltas im
         Hauptloop. Die Aufteilungs-Logik steckt in bounce_suche (SSOT mit
-        bench_erkennung.py)."""
-        hits, kandidaten, h = bounce_suche(
-            det, det_pool, rows, raster_days / 365.25, ast_rr_max[0])
+        bench_erkennung.py).
+
+        `streifen_anteile` ist der einzige Zustand des Lastreglers: Die
+        Suche liefert die fortgeschriebenen Anteile zurueck, wir geben
+        sie beim naechsten Sample wieder herein."""
+        hits, kandidaten, h, anteile = bounce_suche(
+            det, det_pool, rows, raster_days / 365.25, ast_rr_max[0],
+            streifen_anteile[0])
+        streifen_anteile[0] = anteile
         diag_kandidaten[0] += kandidaten
         diag_zellgroesse[0] = h
         kand_letzte[0] = kandidaten

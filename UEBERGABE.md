@@ -111,6 +111,7 @@ cd backend
 ../venv/bin/python test_waisen.py           # GPU frei nach hartem Serverstod
 ../venv/bin/python test_producer_tod.py     # Producer-Absturz wird gemeldet
 ../venv/bin/python test_selfgrav.py         # Kernel A (selbstgravitierend)
+../venv/bin/python test_lastregler.py       # Streifen-Lastregler (ohne GPU)
 ../venv/bin/python bench_erkennung.py       # Umschaltschwelle der 2. Karte
 ../venv/bin/python bench_film.py -n 60000 --det-gpus 1
 ```
@@ -140,6 +141,13 @@ aufgefallen. `test_bewegter_stern.py` schließt die Lücke.
 
 ## 3. Messfallen
 
+- **Eine Regelgröße muss auf das reagieren, was man stellt.** Die Zeit je
+  Erkennungskarte schien das ideale Lastmaß — sie enthält Arbeit *und*
+  Kartenleistung. Sie taugt trotzdem nicht: Ein schmalerer Streifen
+  behält seinen vollen Halo und wird darum nicht proportional schneller.
+  Ein Regler darauf schiebt endlos weiter (siehe 6.12). Vor jedem
+  Regelkreis prüfen, ob die Regelgröße auf die Stellgröße überhaupt
+  proportional antwortet.
 - **Die Kandidatenzahl ist die relevante Größe, nicht N.** Dieselben
   250k Asteroiden ergeben als Knödel 10⁹ und als Gürtel 10⁵ Paare pro
   Sample — Faktor 10⁴ in der Erkennungslast. Zwei Messungen mit gleicher
@@ -394,26 +402,42 @@ Ein Merge-Ereignis setzt im Client nur `mass` und `radius` — `realR`,
 `isBlackHole` und Farbe bleiben, wie sie waren. Live und Film laufen hier
 also auseinander, unabhängig vom Szenario.
 
-### 6.12 Lastverteilung des alten Kernels folgt dem Datenblatt
-`load_state` in `nbody_kernel.py` gewichtet die Asteroiden-Shards mit
-`f64_score` — einer Datenblatt-Metrik aus SM-Zahl × Takt × f64-Ratio. Die
-gibt allen drei V100 identische Werte, gemessen ist CUDA 2 aber 11 %
-schneller (siehe Abschnitt 1). Alle drei bekommen also gleich viele
-Asteroiden, und die Barrier wartet auf die langsamste.
+### 6.12 Lastverteilung — Erkennung geregelt, Physik offen
+**Erledigt: die Erkennung.** `_streifengrenzen` schnitt die Szene in
+Streifen mit gleich vielen Asteroiden. Gleiche Körperzahl ist aber nicht
+gleiche Arbeit — die Paarzahl wächst mit der Dichte **quadratisch**.
+Gemessen an 120k Asteroiden, halb im Knödel: 81,8 Mio Kandidaten auf der
+einen Karte, 42,2 Mio auf der anderen; die schnellere wartete 44 von
+96 ms. Bei gleichmäßigen Szenen und beim Gürtel stimmte es dagegen auf
+1 % genau.
 
+`_lastanteile` führt die Anteile jetzt aus der gemessenen Kandidatenzahl
+nach. Gemessen im geschlossenen Regelkreis: **1,27×** beim Knödel,
+unverändert bei den anderen (0,98× / 1,02× = Rauschen).
+
+**Nicht die Zeit als Regelgröße nehmen** — das war der erste Versuch und
+er lief weg: Ein schmaler Streifen behält seinen vollen **Halo**, wird
+also nie proportional schneller, der Regler schiebt weiter und landet
+bei 0,93/0,07 auf einer nachweislich ausgeglichenen Szene. Der Gürtel
+wurde damit *langsamer* als ohne Regelung. `test_lastregler.py` Fall C
+hält das fest.
+
+Der Preis der Kandidatenzahl: Sie gleicht **unterschiedlich schnelle
+Karten nicht aus** (zwei RTX 8000 liegen in f32 21 % auseinander). Das
+ist der kleinere Effekt gegen Faktor 1,9 und bräuchte ein Zeitmaß, das
+den Halo herausrechnet.
+
+**Offen: die Physik.** `load_state` in `nbody_kernel.py` gewichtet die
+Asteroiden-Shards mit `f64_score`, und der gibt allen drei V100
+identische Werte, obwohl CUDA 2 gemessen 11 % schneller ist (Abschnitt 1).
 Rechnerischer Gewinn einer gemessenen Gewichtung: rund **4 %** des
-Kernel-Anteils — auf dieser Hardware wenig, weil die drei Karten
-ähnlich sind, und der Kernel ohnehin nicht der Engpass ist (Abschnitt 4).
-Auf gemischter Hardware wäre es viel.
+Kernel-Anteils — und der Kernel ist nicht der Engpass (Abschnitt 4), also
+unterm Strich unter 1 %. Auf gemischter Hardware wäre es viel.
+`miss_gewicht` in `selfgrav_kernel.py` wäre dafür brauchbar.
 
-**Der lohnendere Hebel liegt bei der Erkennung**, denn sie *ist* der
-Taktgeber (88 % Wartezeit im dichten Ring). `pick_detect_devices`
-sortiert nach `f64_score`, obwohl die Erkennung **f32** rechnet — und
-`_streifengrenzen` teilt die Bounce-Suche räumlich auf, ohne die Karten
-zu gewichten. Die beiden RTX 8000 unterscheiden sich in f32 um 21 %.
-Ungemessen, ob eine gewichtete Streifenteilung das einholt.
-
-`miss_gewicht` ist bereits allgemein genug für beide Fälle.
+Ebenfalls offen: `pick_detect_devices` sortiert nach `f64_score`, obwohl
+die Erkennung **f32** rechnet. Auf dieser Maschine folgenlos (die Physik
+belegt die V100, es bleiben ohnehin nur die RTX), auf anderer nicht.
 
 ### 6.11 Bahnspuren schwarzer Löcher — erledigt
 Die Spur lief in `b.color`, und die ist beim Schwarzen Loch Fast-Schwarz

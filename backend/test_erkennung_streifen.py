@@ -54,7 +54,7 @@ def _pruefe(name: str, x, y, vx, vy, real_r, dev: int) -> None:
     # die Aufteilungs-Logik von jeder Nebenwirkung mehrerer GPUs.
     for anzahl in (2, 3, 5):
         with cp.cuda.Device(dev):
-            grenzen = _streifengrenzen(felder[0], anzahl)
+            grenzen = _streifengrenzen(felder[0], [1.0 / anzahl] * anzahl)
         ist: set = set()
         doppelt = []
         for lo, hi in grenzen:

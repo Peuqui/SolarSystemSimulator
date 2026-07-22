@@ -43,8 +43,13 @@ def messen(det, pool, felder_je_karte, rr_max: float,
     cp.cuda.Device(det[0].dev).synchronize()
     t0 = time.monotonic()
     kand = 0
+    # Anteile ueber die Runden mitfuehren: so misst der Benchmark den
+    # EINGEREGELTEN Zustand, nicht den Startwert. Ohne das bliebe die
+    # Aufteilung starr gleichmaessig und der Vergleich zum Betrieb schief.
+    anteile = None
     for _ in range(runden):
-        _hits, kand, _h = bounce_suche(det, pool, rows, DT_Y, rr_max)
+        _hits, kand, _h, anteile = bounce_suche(
+            det, pool, rows, DT_Y, rr_max, anteile)
     cp.cuda.Device(det[0].dev).synchronize()
     return (time.monotonic() - t0) / runden, kand
 
