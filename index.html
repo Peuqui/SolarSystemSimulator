@@ -1087,6 +1087,7 @@ const I18N = {
     'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'inject.mmax': 'Grenze erreicht: höchstens {n} massive Körper (CUDA-Kernel). Rogue nicht injiziert — Asteroiden und Wolken bleiben unbegrenzt.',
+    'film.sg-noetig': 'Dieses Szenario rechnet nur im Film-Modus — der Live-Pfad trägt höchstens 64 massive Körper. Die Szene steht, bis der Film wieder an ist.',
     'lbl.sg-n': 'Massen',
     'tt.sg-n': 'Wie viele selbstgravitierende Massen gerechnet werden. Jede spürt jede — der Aufwand wächst mit N². Weil die Weichzeichnung mit dem Teilchenabstand mitschrumpft, wird zusätzlich der Zeitschritt feiner: die Kosten steigen mit N^2,5. Gemessen auf fünf Karten: 50.000 Massen ≈ 37 Sim-Jahre pro Minute, 100.000 ≈ 9, 200.000 ≈ 2. Die Gesamtmasse bleibt gleich — mehr Teilchen heißt feiner aufgelöst, nicht schwerer.',
     'lbl.sg-eps': 'Weichzeichnung',
@@ -1375,6 +1376,7 @@ const I18N = {
     'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
     'inject.mmax': 'Limit reached: at most {n} massive bodies (CUDA kernel). Rogue not injected — asteroids and clouds stay unlimited.',
+    'film.sg-noetig': 'This scenario only runs in film mode — the live path carries at most 64 massive bodies. The scene stays frozen until film mode is back on.',
     'lbl.sg-n': 'Masses',
     'tt.sg-n': 'How many self-gravitating masses are computed. Every one feels every other — the work grows as N². Since the softening shrinks with the particle spacing, the timestep gets finer too: cost grows as N^2.5. Measured on five cards: 50,000 masses ≈ 37 sim-years per minute, 100,000 ≈ 9, 200,000 ≈ 2. Total mass stays fixed — more particles means finer resolution, not more matter.',
     'lbl.sg-eps': 'Softening',
@@ -6287,6 +6289,12 @@ function reglerSperren(id, sperren) {
       filmHandoverStart('Film-Modus ausgeschaltet');
       filmStop();
     }
+    // Selbstgravitierende Szenarien rechnen NUR im Film. Wird er
+    // abgeschaltet, steht die Szene — das sichtbar sagen, statt sie
+    // stillschweigend einfrieren zu lassen.
+    if (!useFilm && !clientRechnetSelbst()) {
+      zeigeStoerung(t('film.sg-noetig'), 8000);
+    }
   });
 });
 document.getElementById('film-live').addEventListener('click', () => {
@@ -6505,12 +6513,18 @@ async function advanceAsync(dtYears) {
   const sc = SCENARIOS[currentScenario];
   const needF64 = !!(sc && sc.precise);
   if (_filmHandover) return;   // Engine-Uebergabe: auf f64-Dump warten
-  // Selbstgravitierende Szenarien kann nur das Backend rechnen: dort ist
-  // JEDER Koerper massiv, und alle gegen alle ist im Browser O(M^2) auf
-  // einem Kern. Ohne Backend bleibt die Szene stehen und zeigt ihre
-  // Anfangsverteilung — das ist ehrlicher, als den Tab minutenlang
-  // einzufrieren.
-  if (!clientRechnetSelbst() && !(useCuda && cudaReady)) return;
+  // Selbstgravitierende Szenarien laufen AUSSCHLIESSLICH im Film-Modus.
+  //
+  // Der Browser kann sie nicht: dort ist jeder Koerper massiv, alle
+  // gegen alle ist O(M^2) auf einem Kern. Der LIVE-CUDA-Pfad kann sie
+  // ebenfalls nicht — er faehrt `NBodyCuda`, und dessen massive Koerper
+  // liegen im Shared Memory (M_MAX = 64). Ein MSG_FULL mit 50.000
+  // Massen wird darum zu Recht abgelehnt ("zu viele massive Koerper:
+  // 50119 > 64"), und der Client fiel sichtbar auf den Worker zurueck.
+  // Nur der FILM-Pfad waehlt ueber das Softening Kernel A.
+  //
+  // Ohne Film steht die Szene und zeigt ihre Anfangsverteilung.
+  if (!clientRechnetSelbst() && !filmActive) return;
   if (useCuda && cudaReady) {
     // CUDA rechnet f64 — auch fuer empfindliche Szenarien geeignet.
     // Pipelined: kein await; Ergebnis-Anwendung, Kollisionen und
@@ -8264,10 +8278,23 @@ function cudaVerfuegbarkeitPruefen() {
 // (das erledigt _filmControlsAktiv wie bei den uebrigen Film-Reglern).
 function sgReglerSichtbarkeit() {
   const sc = SCENARIOS[currentScenario];
-  const zeigen = !!(sc && sc.selbstgravitierend) && cudaReady;
+  const selbstgrav = !!(sc && sc.selbstgravitierend);
+  const zeigen = selbstgrav && cudaReady;
   for (const id of ['lbl-sg-n', 'lbl-sg-eps']) {
     const el = document.getElementById(id);
     if (el) el.style.display = zeigen ? '' : 'none';
+  }
+  // Der Film-Modus ist fuer diese Szenarien keine Option, sondern die
+  // Voraussetzung: Nur der Film-Pfad waehlt ueber das Softening Kernel A.
+  // Der Live-Pfad faehrt NBodyCuda und lehnt mehr als 64 massive Koerper
+  // ab. Also einschalten und die Abwahl sperren — sonst startet der
+  // Nutzer eine Szene, die nur eine Fehlermeldung erzeugen kann.
+  if (selbstgrav && cudaReady && useCuda) {
+    const el = document.getElementById('chk-film');
+    if (el && !el.checked) {
+      el.checked = true;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
   }
   sgReglerAnzeige();
 }
