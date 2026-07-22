@@ -3551,6 +3551,7 @@ function initAsteroidGL() {
   `;
   const fsSrc = `
     precision mediump float;
+    uniform float uAlpha;
     varying vec3 vColor;
     void main() {
       // Kreis-Cull: nur Fragmente innerhalb der Einheitskreis-Region des
@@ -3558,7 +3559,11 @@ function initAsteroidGL() {
       // Triangle-Strip-Artefakte raus.
       vec2 d = gl_PointCoord - vec2(0.5);
       if (dot(d, d) > 0.25) discard;
-      gl_FragColor = vec4(vColor, 1.0);
+      // uAlpha < 1 zusammen mit additivem Blending macht aus der Dichte
+      // eine HELLIGKEIT: Wo viele Punkte uebereinanderliegen, summiert
+      // sich das Licht, statt dass der oberste alle anderen verdeckt.
+      // Bei 1.0 (Normalfall) ist das Ergebnis wie bisher deckend.
+      gl_FragColor = vec4(vColor * uAlpha, uAlpha);
     }
   `;
 
@@ -3591,6 +3596,7 @@ function initAsteroidGL() {
   astGL.loc.uScreen   = gl.getUniformLocation(prog, 'uScreen');
   astGL.loc.uLogZoom  = gl.getUniformLocation(prog, 'uLogZoom');
   astGL.loc.uInvLog33 = gl.getUniformLocation(prog, 'uInvLog33');
+  astGL.loc.uAlpha    = gl.getUniformLocation(prog, 'uAlpha');
   astGL.buffer = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, astGL.buffer);
   gl.bufferData(gl.ARRAY_BUFFER, astGL.vertexData.byteLength, gl.DYNAMIC_DRAW);
@@ -3615,6 +3621,25 @@ function _hexToRgb(hex) {
   const g = parseInt(hex.slice(3, 5), 16) / 255;
   const b = parseInt(hex.slice(5, 7), 16) / 255;
   return [r, g, b];
+}
+
+// Blendmodus des Punkt-Batches. In einer Punktwolke ADDITIV: Wo viele
+// Teilchen uebereinanderliegen, summiert sich die Helligkeit, statt dass
+// der oberste Punkt alle darunter verdeckt. Erst dadurch wird Dichte
+// sichtbar — dichte Knoten leuchten, duenne Bruecken bleiben matt.
+//
+// Ohne das sah der laufende Film anders aus als die Anfangsdarstellung:
+// Die zeichnet der Canvas2D-Fallback, und der blendet schon immer
+// additiv. Sobald der WebGL-Batch uebernahm, kippte das Bild in harte,
+// deckende Punkte und die Schattierung ging verloren.
+function _glPunktmodus(gl) {
+  if (_punktwolke) {
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);            // additiv
+    gl.uniform1f(astGL.loc.uAlpha, 0.55);
+  } else {
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.uniform1f(astGL.loc.uAlpha, 1.0);
+  }
 }
 
 function renderAsteroidsGL() {
@@ -3647,6 +3672,8 @@ function renderAsteroidsGL() {
     gl.uniform2f(astGL.loc.uScreen, W, H);
     gl.uniform1f(astGL.loc.uLogZoom, useLogZoom ? 1 : 0);
     gl.uniform1f(astGL.loc.uInvLog33, _INV_LOG_33);
+  _glPunktmodus(gl);
+    _glPunktmodus(gl);
     gl.drawArrays(gl.POINTS, 0, _filmVtxCount);
     return true;
   }
