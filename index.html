@@ -2083,6 +2083,16 @@ function buildGalaxyCluster({ tangential, hubble }) {
 // Dazu kommen Kollisionspruefung, Spuren und Zeichnen. 500 haelt die
 // Wiedergabe fluessig und zeigt trotzdem deutliche Klumpenbildung; wer
 // feinere Struktur will, dreht hoch und nimmt das Tempo in Kauf.
+// Standardnormalverteilte Zufallszahl (Box-Muller). Math.random ist
+// gleichverteilt und ergibt in zwei Dimensionen Rechtecke mit Kanten —
+// fuer Dichtekeime ist das falsch, die laufen weich aus.
+function gaussZufall() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();   // log(0) vermeiden
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
 const STRUKTUR_R = 60000;        // AE, Radius des Anfangsgebiets
 const STRUKTUR_GESAMT = 1e8 * CLUSTER_GALAXIEN;   // Gesamtmasse wie beim
                                  // Haufen, nur feiner aufgeloest
@@ -2153,8 +2163,14 @@ function buildStrukturbildung() {
       px.push(r * Math.cos(a)); py.push(r * Math.sin(a));
     } else {
       const [kx, ky] = keime[i % keime.length];
-      px.push(kx + (Math.random() * 2 - 1) * STRUKTUR_R * 0.22);
-      py.push(ky + (Math.random() * 2 - 1) * STRUKTUR_R * 0.22);
+      // GAUSSFOERMIG um den Keim, nicht gleichverteilt: `kx + rand*d` in
+      // x und y unabhaengig fuellt ein QUADRAT mit scharfen Kanten. Bei
+      // 500 Koerpern fiel das nicht auf, bei 50.000 standen fuenf
+      // gestochen scharfe Rechtecke im Bild. Echte Ueberdichten haben
+      // kein Kantenprofil — sie laufen nach aussen weich aus, und genau
+      // dieser Gradient treibt spaeter den Kollaps.
+      px.push(kx + gaussZufall() * STRUKTUR_R * 0.11);
+      py.push(ky + gaussZufall() * STRUKTUR_R * 0.11);
     }
   }
   // Alle Koerper sind gleich schwer, der Massenschwerpunkt ist also das
