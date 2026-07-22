@@ -556,6 +556,15 @@ class FilmSession:
     # dort entsprechend grosse Zellen an, deren Dichtesprung man als
     # Rechteck sieht. 512 statt 128 viertelt die Kantenlaenge; die Kosten
     # bleiben klein (bincount ueber 512x512 Zellen, unabhaengig von n).
+    # Ab so vielen massiven Koerpern gelten sie als PUNKTWOLKE und
+    # werden bei knappem Budget mitgeduennt, statt es allein
+    # aufzubrauchen. Unterhalb bleibt der harte Vorrang: Ein paar
+    # benannte Koerper muessen immer sichtbar sein.
+    LOD_MASSEN_WOLKE_AB = 200
+    # Anteil des Budgets, den die Massen dann hoechstens bekommen. Der
+    # Rest gehoert den Tracern — sie sind es, die die Struktur zeichnen.
+    LOD_MASSEN_ANTEIL = 0.5
+
     LOD_ZELLEN = 512
     # Dichte-Kontrast. behalten ~ anzahl^GAMMA je Zelle:
     #   1,0 = wie frueher (dichte Zellen behalten proportional alles,
@@ -592,6 +601,28 @@ class FilmSession:
         massiv = sel[~ast]
         rest = budget - len(massiv)
         if rest <= 0:
+            # Die massiven Koerper sprengen das Budget allein. Im
+            # klassischen Fall ist das eine Handvoll benannter Koerper,
+            # die man sehen MUSS — dann gilt der Vorrang ohne Wenn und
+            # Aber, und das Budget wird bewusst ueberschritten.
+            #
+            # Im selbstgravitierenden Fall sind es zehntausende Punkte
+            # einer Wolke, und dann kippt die Regel ins Gegenteil: Alle
+            # Massen ungedueennt zu schicken heisst, dass fuer die Tracer
+            # NICHTS bleibt — nicht wenig, sondern null. Beobachtet bei
+            # 31.623 Massen und 20.000 Budget: kein einziger von 44.668
+            # Tracern kam durch, das Bild wurde schlagartig duenner.
+            # Hier werden die Massen darum selbst geduennt, und die
+            # Tracer bekommen einen garantierten Anteil.
+            if len(massiv) > self.LOD_MASSEN_WOLKE_AB and len(sel) > len(massiv):
+                m_budget = max(1, int(budget * self.LOD_MASSEN_ANTEIL))
+                teile = [self._dichte_filter(massiv, x, y, box, m_budget)]
+                rest = budget - len(teile[0])
+                a_sel = sel[ast]
+                if rest > 0 and len(a_sel):
+                    teile.append(
+                        self._dichte_filter(a_sel, x, y, box, rest))
+                return np.sort(np.concatenate(teile))
             return sel[~ast]
         a_sel = sel[ast]
         inj = self._injiziert[a_sel]
