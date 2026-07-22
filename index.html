@@ -4074,10 +4074,19 @@ function draw() {
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.55;
   }
-  for (let i = 0; i < bodies.length; i++) {
+  // Hat der Batch alles gezeichnet und gibt es keinen Fokus-Koerper, ist
+  // in dieser Schleife nichts mehr zu tun — dann gar nicht erst hinein.
+  // Sie ueber 50.000 Koerper laufen zu lassen, um jedes Mal `continue`
+  // zu sagen, kostet trotzdem: der Cull-Test steht HINTER worldToScreen
+  // (Trigonometrie plus Array-Allokation je Koerper).
+  const _schleifeNoetig = !_batchHatGezeichnet || !!focusBody;
+  for (let i = 0; _schleifeNoetig && i < bodies.length; i++) {
     const b = bodies[i];
     if (b.isAsteroid && !_astiSonderfaelle) continue;
     if (!b.visible) continue;
+    // Der Batch hat diesen Koerper schon — nur der Fokus-Koerper braucht
+    // hier noch etwas (Ring, Label). VOR worldToScreen aussteigen.
+    if (_batchHatGezeichnet && b !== focusBody) continue;
     // Flucht-Asteroid einzeln (mit rotem Ring) zeichnen; ohne Erkennung
     // ist unbound nie gesetzt und er bleibt im normalen Batch.
     if (b.isAsteroid && !b.unbound && b !== focusBody) continue;
@@ -4110,11 +4119,6 @@ function draw() {
       }
       continue;
     }
-
-    // Punktwolke: Der WebGL-Batch hat diesen Koerper schon gezeichnet.
-    // Nur der Fokus-Koerper wird hier noch einzeln behandelt — er braucht
-    // seinen Ring und sein Label.
-    if (_batchHatGezeichnet && b !== focusBody) continue;
 
     if (b.isBlackHole) {
       // Akkretionsdisc-Glut: orange-violetter Halo deutet die Disc
