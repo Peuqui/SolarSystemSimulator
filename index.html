@@ -4264,10 +4264,20 @@ function draw() {
   // Sie ueber 50.000 Koerper laufen zu lassen, um jedes Mal `continue`
   // zu sagen, kostet trotzdem: der Cull-Test steht HINTER worldToScreen
   // (Trigonometrie plus Array-Allokation je Koerper).
-  const _schleifeNoetig = !_batchHatGezeichnet || !!focusBody ||
-                         perturbers.length > 0;
-  for (let i = 0; _schleifeNoetig && i < bodies.length; i++) {
-    const b = bodies[i];
+  //
+  // Hat der Batch gezeichnet, brauchen nur noch der Fokus-Koerper und
+  // die selbst injizierten Massen eine Einzelbehandlung. Dann NICHT
+  // ueber `bodies` laufen: Bei 40.000 Massen sind das 160.000
+  // Property-Zugriffe je Bild, nur um am Ende einen einzigen Koerper zu
+  // zeichnen — spuerbar als zaehe Oberflaeche, weil alles im
+  // Haupt-Thread liegt.
+  let _liste = bodies;
+  if (_batchHatGezeichnet) {
+    _liste = perturbers.length ? perturbers.slice() : [];
+    if (focusBody && !_liste.includes(focusBody)) _liste.push(focusBody);
+  }
+  for (let i = 0; i < _liste.length; i++) {
+    const b = _liste[i];
     if (b.isAsteroid && !_astiSonderfaelle) continue;
     if (!b.visible) continue;
     // Der Batch hat diesen Koerper schon — nur der Fokus-Koerper und
@@ -4319,7 +4329,7 @@ function draw() {
       // Akkretionsdisc-Glut: orange-violetter Halo deutet die Disc
       // ohne sie geometrisch zu zeichnen. Reicht von Photonenring (~1×R)
       // bis ~4×R in den Hintergrund aus.
-      const haloR = Math.max(b.radius, 2) * 4;
+      const haloR = Math.max(b.radius, 2) * 2;
       const halo = ctx.createRadialGradient(sx, sy, Math.max(b.radius, 2) * 0.95, sx, sy, haloR);
       halo.addColorStop(0,    'rgba(255,140,40,0.55)');
       halo.addColorStop(0.35, 'rgba(220,90,120,0.30)');
@@ -8283,6 +8293,7 @@ async function simLoop() {
   requestAnimationFrame(simLoop);
 }
 let uiUpdateTick = 0;
+
 
 // --- UI Controls (Desktop + Mobile sync) ---
 function syncSliderTo(id, valId, parser, formatter) {

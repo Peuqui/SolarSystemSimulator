@@ -533,7 +533,17 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         #     20k 0,46x | 30k 0,86x | 40k 0,86x | 60k 1,27x
         # Bei 30-40k ist der Verbund also 14 % LANGSAMER. Erst ab rund
         # 50k traegt er.
-        SELFGRAV_MULTI_GPU_AB = 50_000
+        # Gemessen am 22.07. (V100, f32-Kraft, Schritte/s gegen
+        # eine Karte):
+        #     20.000 Massen  ->  1,65x mit vier Karten
+        #     40.000 Massen  ->  2,05x
+        #     80.000 Massen  ->  2,27x
+        # Die alte Schwelle von 50.000 verschenkte damit genau den
+        # Bereich, in dem die meisten Szenen liegen: Bei 39.811 Massen
+        # rechnete EINE Karte 1,6 Milliarden Paare je Schritt, waehrend
+        # vier danebenstanden. Unterhalb von 20.000 ueberwiegt der
+        # Aufwand der System-Barrier (ueber PCIe, atomics-frei).
+        SELFGRAV_MULTI_GPU_AB = 20_000
         alle = waehle_karten(kraft_f32=True)
         phys_devs = alle if len(state["x"]) >= SELFGRAV_MULTI_GPU_AB \
             else alle[:1]

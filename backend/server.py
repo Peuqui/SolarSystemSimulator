@@ -131,6 +131,17 @@ def _index_hash(idx: np.ndarray) -> np.ndarray:
     return (h >> np.uint64(11)).astype(np.float64) / float(1 << 53)
 
 
+def _shm_budget(anteil: float = 0.4) -> int:
+    """Wie viel /dev/shm ein einzelner Film-Ring belegen darf.
+
+    Gemessen am FREIEN Platz, nicht an der Gesamtgroesse: Laeuft schon
+    eine Sitzung, bekommt die naechste entsprechend weniger, statt den
+    tmpfs zu sprengen und den Producer beim Start scheitern zu lassen.
+    """
+    st = os.statvfs("/dev/shm")
+    return int(st.f_bavail * st.f_frsize * anteil)
+
+
 class FilmSession:
     """Proxy auf den Producer-PROZESS (film_producer.py): eigener Python-
     Prozess besitzt die GPU und schreibt in einen Shared-Memory-Ring —
@@ -205,7 +216,14 @@ class FilmSession:
         # Das Zeitbudget deckelt den Vorlauf auf ein Mass, das zum
         # Zurueckspulen reicht; bei grossem N bleibt das Bytebudget die
         # bindende Grenze und nichts aendert sich.
-        nach_bytes = int(self.MAX_BYTES // self.sample_bytes)
+        # Zusaetzlich an den TATSAECHLICH freien Platz koppeln. Ein
+        # fester Wert (8 GiB) passt sich der Maschine nicht an: Auf
+        # einem 16-GB-tmpfs belegt er die Haelfte, und die zweite
+        # Sitzung — beim Neuladen ueberlappen alte und neue kurz —
+        # findet keinen Platz mehr. 40 % lassen zwei nebeneinander
+        # zu und behalten Luft fuer den Ereignisring.
+        nach_bytes = int(min(self.MAX_BYTES, _shm_budget())
+                         // self.sample_bytes)
         nach_zeit = int(self.MAX_RING_TAGE / self.raster_days)
         self.capacity = max(2000, min(nach_bytes, nach_zeit))
         self.shm = shared_memory.SharedMemory(
