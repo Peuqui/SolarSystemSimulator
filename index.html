@@ -643,6 +643,17 @@ input[type=range] {
   <label data-i18n-title="tt.film-interp" id="lbl-film-interp" style="display:none; margin-left:20px;">
     <input type="checkbox" id="chk-film-interp" checked> <span data-i18n="lbl.film-interp">Zwischenbilder interpolieren</span>
   </label>
+  <!-- Nur fuer selbstgravitierende Szenarien. Beide Regler loesen einen
+       Filmneustart aus: Teilchenzahl aendert die Szene, Softening die
+       Physik und ueber eta auch den Zeitschritt. -->
+  <label data-i18n-title="tt.sg-n" id="lbl-sg-n" style="display:none;">
+    <span data-i18n="lbl.sg-n">Massen</span> <span class="val" id="sg-n-val">50.000</span>
+    <input type="range" autocomplete="off" id="sg-n" min="3.3" max="5.4" step="0.05" value="4.7">
+  </label>
+  <label data-i18n-title="tt.sg-eps" id="lbl-sg-eps" style="display:none;">
+    <span data-i18n="lbl.sg-eps">Weichzeichnung</span> <span class="val" id="sg-eps-val">0,10</span>
+    <input type="range" autocomplete="off" id="sg-eps" min="-1.52" max="-0.30" step="0.02" value="-1.0">
+  </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
   </label>
@@ -1076,6 +1087,10 @@ const I18N = {
     'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'inject.mmax': 'Grenze erreicht: höchstens {n} massive Körper (CUDA-Kernel). Rogue nicht injiziert — Asteroiden und Wolken bleiben unbegrenzt.',
+    'lbl.sg-n': 'Massen',
+    'tt.sg-n': 'Wie viele selbstgravitierende Massen gerechnet werden. Jede spürt jede — der Aufwand wächst mit N². Weil die Weichzeichnung mit dem Teilchenabstand mitschrumpft, wird zusätzlich der Zeitschritt feiner: die Kosten steigen mit N^2,5. Gemessen auf fünf Karten: 50.000 Massen ≈ 37 Sim-Jahre pro Minute, 100.000 ≈ 9, 200.000 ≈ 2. Die Gesamtmasse bleibt gleich — mehr Teilchen heißt feiner aufgelöst, nicht schwerer.',
+    'lbl.sg-eps': 'Weichzeichnung',
+    'tt.sg-eps': 'Plummer-Softening: unterhalb dieser Distanz wird die Masse als verschmiert gerechnet statt als Punkt. Ohne sie schleudern sich nahe Teilchen künstlich weg. Angegeben als Vielfaches des mittleren Teilchenabstands, damit der Wert bei jeder Teilchenzahl passt. Zu groß glättet die Filamente weg (gemessener Dichtekontrast bei 0,5 nur 3,8× gegen 7,2× bei 0,03); zu klein bringt nichts mehr und erzeugt künstliche Klumpen durch Zweikörper-Streuung. 0,1 ist die klassische Faustregel. Kleinere Werte erzwingen einen feineren Zeitschritt und kosten Tempo.',
     'cuda.fehler': 'CUDA-Backend meldet einen Fehler — zurück auf den WebWorker geschaltet: {m} (Klick zum Ausblenden)',
     'lbl.film-lod': 'Punkte im Bild',
     'lbl.film-lod-auto': 'Auto',
@@ -1360,6 +1375,10 @@ const I18N = {
     'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
     'inject.mmax': 'Limit reached: at most {n} massive bodies (CUDA kernel). Rogue not injected — asteroids and clouds stay unlimited.',
+    'lbl.sg-n': 'Masses',
+    'tt.sg-n': 'How many self-gravitating masses are computed. Every one feels every other — the work grows as N². Since the softening shrinks with the particle spacing, the timestep gets finer too: cost grows as N^2.5. Measured on five cards: 50,000 masses ≈ 37 sim-years per minute, 100,000 ≈ 9, 200,000 ≈ 2. Total mass stays fixed — more particles means finer resolution, not more matter.',
+    'lbl.sg-eps': 'Softening',
+    'tt.sg-eps': 'Plummer softening: below this distance mass is treated as smeared out rather than point-like. Without it, close particles fling each other away artificially. Given as a multiple of the mean particle spacing so the value works at any particle count. Too large smooths the filaments away (measured density contrast at 0.5 is only 3.8× versus 7.2× at 0.03); too small adds nothing and creates artificial clumping through two-body scattering. 0.1 is the classic rule of thumb. Smaller values force a finer timestep and cost speed.',
     'cuda.fehler': 'CUDA backend reported an error — switched back to the WebWorker: {m} (Click to dismiss)',
     'lbl.film-lod': 'Points on screen',
     'lbl.film-lod-auto': 'Auto',
@@ -2062,13 +2081,45 @@ function buildGalaxyCluster({ tangential, hubble }) {
 // Dazu kommen Kollisionspruefung, Spuren und Zeichnen. 500 haelt die
 // Wiedergabe fluessig und zeigt trotzdem deutliche Klumpenbildung; wer
 // feinere Struktur will, dreht hoch und nimmt das Tempo in Kauf.
-const STRUKTUR_N = 500;
 const STRUKTUR_R = 60000;        // AE, Radius des Anfangsgebiets
-const STRUKTUR_MASSE = 1e8 * CLUSTER_GALAXIEN / STRUKTUR_N;  // Gesamtmasse
-                                 // wie beim Haufen, nur feiner verteilt
+const STRUKTUR_GESAMT = 1e8 * CLUSTER_GALAXIEN;   // Gesamtmasse wie beim
+                                 // Haufen, nur feiner aufgeloest
+
+// Teilchenzahl kommt vom Regler. Die GESAMTMASSE bleibt fest — mehr
+// Teilchen heisst feiner aufgeloest, nicht schwerer. Sonst stiegen mit
+// N auch die Geschwindigkeiten, und der noetige Zeitschritt saenke ein
+// zweites Mal.
+function strukturN() {
+  const el = document.getElementById('sg-n');
+  return Math.round(Math.pow(10, el ? parseFloat(el.value) : 4.7));
+}
+
+// Plummer-Softening in AE, als Vielfaches des mittleren Teilchen-
+// abstands. Der Regler ist bewusst RELATIV: absolut in AE muesste man
+// ihn bei jeder Aenderung der Teilchenzahl nachziehen.
+//
+// Gemessen (Dichtekontrast nach gleicher Sim-Zeit, N=4000):
+//   eps/Abstand   0,51   0,25   0,13   0,063   0,032   0,016
+//   Kontrast      3,8x   4,2x   4,7x   5,8x    7,2x    7,1x
+// Zu gross glaettet die Filamente weg; unter ~0,03 kommt nichts mehr
+// dazu, und Zweikoerper-Streuung faengt an, kuenstlichen Kontrast zu
+// erzeugen. 0,1 ist die klassische Faustregel und der Default.
+//
+// 0 heisst "kein selbstgravitierender Kernel" — der Wert steuert im
+// Backend BEIDES, Physik und Kernelwahl (SSOT).
+function softeningAU() {
+  const sc = SCENARIOS[currentScenario];
+  if (!sc || !sc.selbstgravitierend) return 0;
+  const el = document.getElementById('sg-eps');
+  const faktor = Math.pow(10, el ? parseFloat(el.value) : -1.0);
+  // Mittlerer Abstand in einer Scheibe vom Radius R mit N Teilchen.
+  return faktor * 2 * STRUKTUR_R / Math.sqrt(strukturN());
+}
 
 function buildStrukturbildung() {
-  const gesamt = STRUKTUR_MASSE * STRUKTUR_N;
+  const STRUKTUR_N = strukturN();
+  const STRUKTUR_MASSE = STRUKTUR_GESAMT / STRUKTUR_N;
+  const gesamt = STRUKTUR_GESAMT;
 
   // Klumpige Anfangsverteilung: ohne Dichtefluktuationen gibt es nichts,
   // woran die Selbstgravitation ansetzen koennte. Die Keime sind die
@@ -2390,9 +2441,13 @@ const SCENARIOS = {
   // Umgekehrter Zuschnitt: wenige Koerper, dafuer traegt jeder Masse und
   // spuert jeden anderen. `nurBrowser` haelt es vom CUDA-Pfad fern, dessen
   // Kernel nur 64 massive Koerper im Shared Memory fuehrt.
+  // Braucht das CUDA-Backend: zehntausende Massen, die ALLE einander
+  // spueren, sind O(N^2) und im Browser nicht zu rechnen. Das Flag
+  // `selbstgravitierend` schaltet dort Kernel A ein (Tiling, Softening,
+  // fester Zeitschritt) und die Kollisionserkennung ab.
   'Strukturbildung (selbstgravitierend)': {
-    build: buildStrukturbildung, dt: 2, slow: 0, nurBrowser: true,
-    kosmologisch: true },
+    build: buildStrukturbildung, dt: 2, slow: 0,
+    selbstgravitierend: true, kosmologisch: true },
 };
 
 function initBodies() {
@@ -2501,6 +2556,10 @@ function loadScenario(name) {
   injectMarked = false;
   initBodies();
   rebuildBodyList(true);   // neue Szene: Klappzustand neu bestimmen
+  // Hier und nicht erst im Dropdown-Handler: loadScenario wird auch
+  // direkt gerufen (Reset, Teilchenzahl-Regler), und die Regler gehoeren
+  // zur SZENE, nicht zur Bedienung.
+  sgReglerSichtbarkeit();
 }
 
 // ============================================================
@@ -4675,6 +4734,7 @@ function _filmControlsAktiv() {
   for (const id of ['chk-film', 'mob-chk-film',
                     'film-raster', 'film-speed', 'mob-film-speed',
                     'film-lod', 'mob-film-lod', 'film-sub',
+                    'sg-n', 'sg-eps',
                     'chk-film-interp', 'mob-chk-film-interp']) {
     const el = document.getElementById(id);
     if (!el) continue;
@@ -5285,7 +5345,8 @@ function filmStart() {
   // ein UI-Toggle (Planeten aus-/einblenden), kein Todesmerkmal.
   const src = bodies.filter(b => b.visible || !b.isAsteroid);
   const N = src.length;
-  const buf = new ArrayBuffer(24 + N * (6 * 8 + 4) + 2);
+  // 24 Kopf + N*(6 f64 + 4 u8) + Flag-Byte + mSub-Byte + Softening (f64)
+  const buf = new ArrayBuffer(24 + N * (6 * 8 + 4) + 2 + 8);
   const dv = new DataView(buf);
   dv.setUint32(0, 3, true);                    // MSG_FILM_START
   dv.setUint32(4, N, true);
@@ -5320,15 +5381,17 @@ function filmStart() {
   // N (isAst) + N (isStarBH) + N (injiziert). (Ein frueherer
   // 49N-Tippfehler ueberschrieb isAst[0] — die SONNE wurde zum
   // Asteroiden erklaert und der Waechter killte alle Astis sofort.)
-  // Bits 4-7: Film-Protokollversion (4 — Sample 8 B/Koerper x|y plus
-  // Sub-Block je Frame: gemessene Zwischenbilder der heissen Asteroiden).
-  // Ein Server mit anderem Format lehnt ab, statt dass ein alter Tab
-  // Muell dekodiert. Bit 0: Asteroid-x-Asteroid-Bounce (UI-Toggle).
+  // Bits 4-7: Film-Protokollversion (5 — wie 4, plus Softening als f64
+  // am Ende). Ein Server mit anderem Format lehnt ab, statt dass ein
+  // alter Tab Muell dekodiert. Bit 0: Asteroid-x-Asteroid-Bounce.
   new Uint8Array(buf, 24 + 52 * N, 1)[0] =
-    (4 << 4) | (astAstCollisions ? 1 : 0);
+    (5 << 4) | (astAstCollisions ? 1 : 0);
   // Bahnstuetzpunkte je Raster: bestimmt die Ring-Slotgroesse und muss
   // deshalb beim START feststehen (der Regler loest einen Neustart aus).
   new Uint8Array(buf, 24 + 52 * N + 1, 1)[0] = filmSubSamples();
+  // Plummer-Softening in AE. > 0 waehlt im Backend den selbst-
+  // gravitierenden Kernel und schaltet die Kollisionserkennung ab.
+  new DataView(buf).setFloat64(24 + 52 * N + 2, softeningAU(), true);
   cudaSocket.send(buf);
   filmRefs = src.slice();
   filmEvents = [];
@@ -6326,6 +6389,30 @@ document.getElementById('film-sub').addEventListener('change', function() {
   filmApply(filmPlayheadDays);
   _filmRestartPending = true;
   filmHandoverStart('Neustart nach Stuetzpunkt-Wechsel');
+  filmStop(true);
+});
+
+// Teilchenzahl und Weichzeichnung: beide waehrend des Ziehens nur
+// beschriften, beim Loslassen wirken lassen.
+for (const id of ['sg-n', 'sg-eps']) {
+  document.getElementById(id).addEventListener('input', sgReglerAnzeige);
+}
+document.getElementById('sg-n').addEventListener('change', function() {
+  // Eine andere Teilchenzahl ist eine ANDERE SZENE — der laufende Film
+  // beschreibt Koerper, die es gleich nicht mehr gibt. Also Szenario neu
+  // aufbauen statt den Film zu uebernehmen.
+  loadScenario(currentScenario);
+  fitZoomToSystem();
+});
+document.getElementById('sg-eps').addEventListener('change', function() {
+  // Die Weichzeichnung aendert die Physik und ueber eta auch den
+  // Zeitschritt — der Producer muss mit dem neuen Wert neu starten. Die
+  // Koerper bleiben dieselben, der Zustand wird uebergeben.
+  sgReglerAnzeige();
+  if (!filmActive) return;
+  filmApply(filmPlayheadDays);
+  _filmRestartPending = true;
+  filmHandoverStart('Neustart nach Softening-Wechsel');
   filmStop(true);
 });
 
@@ -8133,6 +8220,36 @@ function cudaVerfuegbarkeitPruefen() {
     if (el) el.title = gesperrt ? t('tt.cuda-gesperrt') : t('tt.cuda');
   }
   if (gesperrt && useCuda) applyEngine('worker', true);
+  sgReglerSichtbarkeit();
+}
+
+// Die beiden Regler fuer Teilchenzahl und Weichzeichnung gehoeren nur zu
+// selbstgravitierenden Szenarien — anderswo stellen sie nichts ein.
+// Sichtbar ab Szenario, bedienbar erst mit verbundenem CUDA-Backend
+// (das erledigt _filmControlsAktiv wie bei den uebrigen Film-Reglern).
+function sgReglerSichtbarkeit() {
+  const sc = SCENARIOS[currentScenario];
+  const zeigen = !!(sc && sc.selbstgravitierend) && cudaReady;
+  for (const id of ['lbl-sg-n', 'lbl-sg-eps']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = zeigen ? '' : 'none';
+  }
+  sgReglerAnzeige();
+}
+
+// Beschriftung beider Regler. Die Weichzeichnung wird zusaetzlich in AE
+// gezeigt: relativ ist sie zu stellen, absolut aber zu verstehen.
+function sgReglerAnzeige() {
+  const nEl = document.getElementById('sg-n-val');
+  if (nEl) nEl.textContent = fmtDE(strukturN(), 0);
+  const eEl = document.getElementById('sg-eps-val');
+  const el = document.getElementById('sg-eps');
+  if (eEl && el) {
+    const faktor = Math.pow(10, parseFloat(el.value));
+    const au = faktor * 2 * STRUKTUR_R / Math.sqrt(strukturN());
+    eEl.textContent = fmtDE(faktor, 3) + ' × Abstand (' +
+                      fmtDE(au, 0) + ' AE)';
+  }
 }
 
 function applyEngine(mode, persist) {

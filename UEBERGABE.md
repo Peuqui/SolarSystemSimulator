@@ -129,6 +129,12 @@ cd backend
 `SIGKILL` ab — er darf also ruhig „Prozess getötet" ins Log schreiben, das
 ist der Testgegenstand.
 
+`test_selfgrav.py` misst Kartenleistung und vergleicht Läufe bitgenau —
+er verträgt darum **keine fremde GPU-Last**. Läuft nebenher noch eine
+Film-Session (etwa aus einem offenen Browser-Tab), schlagen die
+Kalibrier- und Determinismus-Fälle scheinbar grundlos fehl. Vorher
+`pgrep -c -f "SolarSystemSimulator.*multiprocessing"` prüfen.
+
 `test_producer_tod.py` deckt eine Klasse von Fehlern ab, die sich sonst
 als „der Film startet einfach nicht" zeigt: Der Producer ist ein eigener
 Prozess, sein Traceback landet nur im Server-Log, und `stream()` schleift

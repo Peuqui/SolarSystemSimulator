@@ -488,7 +488,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   shatter_flag=None, shatter_a=None, shatter_b=None,
                   shatter_t=None, det_rank: int = 0,
                   det_gpus: int = DET_MAX, diag: bool = False,
-                  m_sub: int = 0, sub_max: int = 0) -> None:
+                  m_sub: int = 0, sub_max: int = 0,
+                  softening_au: float = 0.0) -> None:
     # CUDA-Kontexte erst IM Kindprozess anlegen (spawn-Kontext!)
     from multiprocessing import shared_memory
 
@@ -496,6 +497,13 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
 
     from nbody_kernel import (G_AU, NBodyCuda, pick_detect_devices,
                               pick_devices)
+
+    # softening_au > 0 waehlt Kernel A: selbstgravitierende Massen ohne
+    # Testteilchen, ohne Kollisionen, mit geglaetteter Kraft und festem
+    # Zeitschritt (selfgrav_kernel.py). Der ganze Erkennungs-, Merge- und
+    # Bounce-Apparat entfaellt dann — es gibt nichts zu erkennen, weil
+    # bei Softening zwei Teilchen sich nie naeher als eps kommen.
+    selbstgrav = softening_au > 0.0
 
     # Multi-GPU lohnt erst, wenn die Rechenlast den Barrier-Overhead
     # (~PCIe-Roundtrips pro Substep) klar uebersteigt — gemessen ab
@@ -512,9 +520,20 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     MULTI_GPU_AB = 30_000
     n_ast_total = int(np.count_nonzero(
         np.asarray(state["isAst"], dtype=np.uint8)))
-    phys_devs = pick_devices() if n_ast_total >= MULTI_GPU_AB \
-        else pick_devices()[:1]
-    sim = NBodyCuda(phys_devs, m_sub=m_sub)
+    if selbstgrav:
+        from selfgrav_kernel import NBodySelfGrav, waehle_karten
+        # Eigene Kartenwahl: `pick_devices` filtert nach f64-Score und
+        # sortiert damit die Karten aus, die dieser Kernel mit seiner
+        # f32-Kraftschleife am besten nutzt. Unter ~30k Koerpern frisst
+        # die Barrier den Verbundgewinn (gemessen 0,83x bei 20k), darum
+        # dieselbe Schwelle wie oben.
+        alle = waehle_karten(kraft_f32=True)
+        phys_devs = alle if len(state["x"]) >= MULTI_GPU_AB else alle[:1]
+        sim = NBodySelfGrav(phys_devs, softening_au=softening_au)
+    else:
+        phys_devs = pick_devices() if n_ast_total >= MULTI_GPU_AB \
+            else pick_devices()[:1]
+        sim = NBodyCuda(phys_devs, m_sub=m_sub)
     # Kollisions-/Bounce-Erkennung auf die freien GPUs auslagern: sie
     # laeuft dann UEBERLAPPT mit dem naechsten Kernel-Step (Pipeline).
     # Preis: Erkennungs-Ergebnisse von Sample k werden erst vor Step k+2
@@ -524,15 +543,26 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     # Mehr als eine Erkennungskarte lohnt nur fuer die Bounce-Suche — sie
     # allein ist raeumlich aufgeteilt. Ohne Bounces bliebe die zweite
     # Karte untaetig und bekaeme trotzdem jeden Batch geschickt.
-    det_devs = pick_detect_devices(phys_devs, det_rank,
-                                   max(1, det_gpus) if ast_bounce else 1)
+    # Im selbstgravitierenden Modus gibt es nichts zu erkennen: Das
+    # Softening haelt die Teilchen auf Abstand, Verschmelzungen und
+    # Stoesse sind der falsche Begriff fuer Massen-Samples eines
+    # Dichtefelds. Die Erkennungskarten bleiben damit frei — und weil
+    # `waehle_karten` ohnehin ALLE brauchbaren Karten nimmt, rechnen sie
+    # dann Physik mit.
+    det_devs = [] if selbstgrav else pick_detect_devices(
+        phys_devs, det_rank, max(1, det_gpus) if ast_bounce else 1)
     ausgelagert = bool(det_devs)
     if not ausgelagert:
         det_devs = [sim.device]
     ana_dev = det_devs[0]      # Merge-Erkennung (2-4%, nicht aufgeteilt)
-    print(f"[film] physik auf gpus {phys_devs}, erkennung auf gpus "
-          f"{det_devs}" + (" (pipelined)" if ausgelagert else
-                           " (seriell, keine weitere gpu)"), flush=True)
+    if selbstgrav:
+        print(f"[film] selbstgravitierend auf gpus {phys_devs}, "
+              f"softening {softening_au:.1f} AE, keine erkennung",
+              flush=True)
+    else:
+        print(f"[film] physik auf gpus {phys_devs}, erkennung auf gpus "
+              f"{det_devs}" + (" (pipelined)" if ausgelagert else
+                               " (seriell, keine weitere gpu)"), flush=True)
     x = state["x"]
     y = state["y"]
     vx = state["vx"]
@@ -556,11 +586,14 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     # Streifengrenze wird pro Sample neu bestimmt (Quantile der lebenden
     # Asteroiden) — die Szene wandert und verdichtet sich laufend, eine
     # feste Grenze liefe binnen Minuten aus dem Gleichgewicht.
-    det = [Erkennungskarte(d, is_ast, -np.inf, np.inf) for d in det_devs]
+    # Ohne Erkennung keine Erkennungskarten — sie wuerden nur VRAM auf
+    # Karten belegen, die hier Physik rechnen.
+    det = [] if selbstgrav else \
+        [Erkennungskarte(d, is_ast, -np.inf, np.inf) for d in det_devs]
     # Zustand des Lastreglers: Anteil der lebenden Asteroiden je Streifen.
-    # Start gleichmaessig, danach aus der gemessenen ZEIT je Karte
+    # Start gleichmaessig, danach aus der gemessenen Kandidatenzahl
     # nachgefuehrt (siehe _lastanteile).
-    streifen_anteile = [[1.0 / len(det)] * len(det)]
+    streifen_anteile = [[1.0 / len(det)] * len(det)] if det else [[]]
     prev_det = None              # voriges Sample (fuer den Merge-Sweep)
     # Beruehrungsradius des groessten Asteroiden: geht in die Halo-Breite
     # ein. Wird zusammen mit den Stammdaten fortgeschrieben.
@@ -1106,6 +1139,12 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 # head laeuft daher bewusst K Raster hinter der
                 # Rohproduktion her: was gemeldet wird, ist vollstaendig.
                 head_val.value = k
+            elif selbstgrav:
+                # Keine Erkennung, also keine Ereignisse, auf die der Ring
+                # warten muesste — head folgt sofort dem Produktionsstand.
+                # Ohne diesen Zweig bliebe head auf 0 stehen und der
+                # Stream wartete auf Samples, die laengst geschrieben sind.
+                head_val.value = k
             if dump_req_val.value == 1:
                 dump_state()
                 dump_req_val.value = 2
@@ -1175,8 +1214,11 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 for a_idx, t_rel in zip(kh[0], kh[1]):
                     kernel_kontakt[int(a_idx)] = k + float(t_rel) / dt_years
             # Erkennung laeuft UEBERLAPPT auf der Erkennungs-GPU, waehrend
-            # die Physik-GPUs schon den naechsten Batch rechnen.
-            future = executor.submit(analyze_batch_timed, outs, k)
+            # die Physik-GPUs schon den naechsten Batch rechnen. Im
+            # selbstgravitierenden Modus gibt es keine — dann geht der
+            # Batch direkt in den Ring.
+            if not selbstgrav:
+                future = executor.submit(analyze_batch_timed, outs, k)
             # x|y je Koerper plus die Stuetzpunkte der heissen Asteroiden
             # (siehe schreibe_slot). Masse/Sichtbarkeit laufen weiter als
             # Ereignis. outs[i] ist [x|y|vx|vy] (4n) — der v-Teil geht

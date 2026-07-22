@@ -67,7 +67,7 @@ BW_FENSTER_S = 0.2
 #     (Hermite-Interpolation schneller sonnennaher Koerper).
 # 4 = Sample = 8 B/Koerper (x|y) + Sub-Block je Frame: GEMESSENE
 #     Zwischenbilder der heissen Asteroiden statt geschaetzter Tangenten.
-FILM_PROTO_VERSION = 4
+FILM_PROTO_VERSION = 5
 
 TAGE_PRO_JAHR = 365.25
 
@@ -160,7 +160,8 @@ class FilmSession:
 
     def __init__(self, t0_days: float, raster_days: float,
                  x, y, vx, vy, mass, real_r, visible, is_ast,
-                 is_star_bh, injiziert, ast_bounce: bool, m_sub: int):
+                 is_star_bh, injiziert, ast_bounce: bool, m_sub: int,
+                 softening_au: float = 0.0):
         self.raster_days = max(0.1, raster_days)
         self.t0 = t0_days
         self.n = len(x)
@@ -243,7 +244,8 @@ class FilmSession:
                   bool(ast_bounce),
                   self.shatter_flag, self.shatter_a, self.shatter_b,
                   self.shatter_t, _SESSION_SEQ[0], self.DET_GPUS,
-                  self.DIAG, self.m_sub, self.sub_max),
+                  self.DIAG, self.m_sub, self.sub_max,
+                  float(softening_au)),
             daemon=True)
         _SESSION_SEQ[0] += 1
         self.proc.start()
@@ -971,10 +973,15 @@ def parse_film_start(buf: bytes):
     ast_bounce = (flags & 1) != 0
     m_sub = buf[off + 1]
     off += 2
+    # Plummer-Softening in AE. > 0 waehlt den selbstgravitierenden Kernel
+    # (selfgrav_kernel.py) und schaltet die gesamte Erkennung ab. Ein
+    # eigener Wert statt Flag + Wert: 0 heisst "aus", das ist SSOT.
+    (softening_au,) = struct.unpack_from("<d", buf, off)
+    off += 8
     if off != len(buf):
         raise ValueError(f"Protokollfehler: {len(buf)} Bytes, erwartet {off}")
     return (raster_days, t0_days, arrays, visible, is_ast, is_star_bh,
-            injiziert, ast_bounce, m_sub)
+            injiziert, ast_bounce, m_sub, softening_au)
 
 
 def parse_full(buf: bytes):
@@ -1062,19 +1069,22 @@ async def handle(ws):
                 if typ == MSG_FILM_START:
                     raster_days, t0_days, (x, y, vx, vy, mass, real_r), \
                         visible, is_ast, is_star_bh, injiziert, \
-                        ast_bounce, m_sub = parse_film_start(message)
+                        ast_bounce, m_sub, softening_au = \
+                        parse_film_start(message)
                     if film:
                         film.stop()
                     film = FilmSession(t0_days, raster_days, x, y, vx, vy,
                                        mass, real_r, visible, is_ast,
                                        is_star_bh, injiziert, ast_bounce,
-                                       m_sub)
+                                       m_sub, softening_au)
                     fulls += 1
                     log.info(
                         "Film gestartet: N=%d, Raster %.2f Tage, "
-                        "mSub=%d (%d Sub-Plaetze, Slot %.1f KB)",
+                        "mSub=%d (%d Sub-Plaetze, Slot %.1f KB)%s",
                         len(x), film.raster_days, film.m_sub, film.sub_max,
-                        film.sample_bytes / 1024)
+                        film.sample_bytes / 1024,
+                        f", selbstgravitierend (eps={softening_au:.1f} AE)"
+                        if softening_au > 0 else "")
                     continue
                 if typ == MSG_FILM_STOP:
                     if film:

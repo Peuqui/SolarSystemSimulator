@@ -117,10 +117,12 @@ zehntausendmal feiner als das Softening.
 
 ### Etappen
 
-1. ~~**Kernel A allein**~~ — **gebaut** (`selfgrav_kernel.py`,
-   `test_selfgrav.py`). Was dabei anders kam als geplant, steht unten
-   unter „Was die Messung korrigiert hat". Es fehlt noch die Anbindung
-   an `film_producer` und ein Szenario im Client.
+1. ~~**Kernel A allein**~~ — **fertig und angebunden.**
+   `selfgrav_kernel.py` mit `test_selfgrav.py`, im Film-Producer über
+   das Softening im Protokoll wählbar, Szenario „Strukturbildung
+   (selbstgravitierend)" mit Reglern für Teilchenzahl und
+   Weichzeichnung. Was dabei anders kam als geplant, steht unten unter
+   „Was die Messung korrigiert hat".
 2. **Kernel B** dazu, 200.000–300.000 Tracer.
 3. Kollisionen nachrüsten — über ein Raumgitter, nicht alle gegen alle.
    Oder weglassen: Bei Softening verschmelzen Teilchen ohnehin nicht mehr
@@ -167,10 +169,26 @@ Karten weichen um 11–21 % voneinander ab (siehe UEBERGABE Abschnitt 1).
 | 200.000 | 10 | 32 | 64 |
 
 Unter ~30.000 Körpern lohnt der Verbund nicht — die Barrier frisst den
-Gewinn. Das braucht eine Schwelle wie `MULTI_GPU_AB` im alten Kernel.
+Gewinn. Der Producer nutzt dafür dieselbe Schwelle `MULTI_GPU_AB` wie
+der alte Kernel.
 
-Die Zielzahl aus der Budget-Tabelle oben (10.000 Massen) ist damit weit
-übertroffen: **200.000 laufen bei 64 Sim-Tagen/s.**
+**Was die Auslegung wirklich kostet.** Die Tabelle oben hält das
+Softening fest. Physikalisch muss es mit dem Teilchenabstand schrumpfen
+(~1/√N), und weil der Zeitschritt an ε hängt (η = v·dt/ε ≤ 0,12,
+gemessen — bei 0,25 bricht die Energieerhaltung um Faktor 40 ein),
+kosten mehr Teilchen doppelt: **N^2,5**. Gemessen mit ε = 0,1 × Abstand:
+
+| N | ε (AU) | dt (Tage) | Sim-Jahre pro Minute |
+|---|---|---|---|
+| 10.000 | 100,0 | 1,63 | 371 |
+| 50.000 | 44,7 | 0,73 | 37,5 |
+| 100.000 | 31,6 | 0,52 | 8,7 |
+| 200.000 | 22,4 | 0,37 | 2,1 |
+
+Deutliche Klumpen brauchen rund 120 Sim-Jahre. Der praktisch brauchbare
+Bereich zum Zuschauen ist damit **25.000–100.000**, nicht 200.000 — und
+genau deshalb sind Teilchenzahl und Weichzeichnung Regler: Wer ε groß
+lässt, bekommt Tempo statt Schärfe.
 
 ## Kernel-Grenze M_MAX — erledigt, aber weiterhin eng
 
