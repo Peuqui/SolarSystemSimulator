@@ -3593,7 +3593,10 @@ function initAsteroidGL() {
         1.0 - sxsy.y / uScreen.y * 2.0
       );
       gl_Position = vec4(clip, 0.0, 1.0);
-      gl_PointSize = 2.0;
+      // Gleiche sichtbare Groesse wie der Canvas2D-Pfad (arc mit
+      // r = 1,1 ergibt 2,2 px). Sonst faellt die Helligkeit beim
+      // Uebergang von der Anfangsdarstellung zum Batch zusaetzlich ab.
+      gl_PointSize = 2.2;
       vColor = aColor;
     }
   `;
@@ -3611,7 +3614,14 @@ function initAsteroidGL() {
       // eine HELLIGKEIT: Wo viele Punkte uebereinanderliegen, summiert
       // sich das Licht, statt dass der oberste alle anderen verdeckt.
       // Bei 1.0 (Normalfall) ist das Ergebnis wie bisher deckend.
-      gl_FragColor = vec4(vColor * uAlpha, uAlpha);
+      //
+      // Die Farbe NICHT zusaetzlich mit uAlpha multiplizieren: Der
+      // Blender tut das bereits (SRC_ALPHA). Beides zusammen ergaebe
+      // uAlpha^2 — mit 0,55 also 0,30, und der GL-Pfad zeichnete knapp
+      // halb so hell wie der Canvas2D-Pfad der Anfangsdarstellung. Genau
+      // so sah es aus: nach dem Laden hell, sobald der Batch uebernahm
+      // "versank es in Dunkelheit".
+      gl_FragColor = vec4(vColor, uAlpha);
     }
   `;
 
