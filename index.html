@@ -4883,17 +4883,67 @@ function _filmControlsAktiv() {
   // `teile = [massiv]`). Bei 50.000 Massen und einem Budget von 20k
   // werden also trotzdem alle 50.000 gestreamt — der Regler waere ein
   // Versprechen, das niemand einloest.
-  // Dasselbe gilt fuer die Bahnstuetzpunkte: Kernel A hat keine
+  // Dasselbe gilt fuer die Bahnstuetzpunkte (Kernel A hat keine
   // Feinschleife und liefert nie welche — angefordert blaehen sie nur
-  // den Ring-Slot auf (gemessen 527,6 statt 196,2 KB je Sample).
+  // den Ring-Slot auf, 527,6 statt 196,2 KB je Sample) und fuer die
+  // BAHNSPUREN: In einer Punktwolke werden sie nicht gezeichnet, weil
+  // zehntausende Einzelspuren kein lesbares Bild ergeben und je Bild
+  // Millionen Liniensegmente kosteten (532 ms gegen 0,2 ms).
   const sc = SCENARIOS[currentScenario];
-  if (sc && sc.selbstgravitierend) {
+  const punktwolke = !!(sc && sc.selbstgravitierend);
+  // Zwei Bauweisen im Markup: Haken sitzen IM <label>, Schieber stehen
+  // als Geschwister DANEBEN. Beide Beschriftungen wollen gedimmt werden.
+  const dimmen = (id, aus) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.disabled = aus;
+    el.style.opacity = aus ? '0.4' : '';
+    const lab = el.closest('label') ||
+      (el.previousElementSibling &&
+       el.previousElementSibling.tagName === 'LABEL'
+         ? el.previousElementSibling : null);
+    if (lab) lab.style.opacity = aus ? '0.4' : '';
+  };
+  // Diese Bedienelemente gehoeren NICHT zum Film — sie muessen beim
+  // Wechsel weg vom Szenario auch wieder freigegeben werden, sonst
+  // blieben sie fuer immer gesperrt.
+  //
+  // Warum sie in einer Punktwolke nichts stellen:
+  //   * Spuren — nicht gezeichnet, zehntausende ergeben kein lesbares
+  //     Bild und kosteten Millionen Liniensegmente je Bild.
+  //   * Asteroid x Asteroid — es GIBT keine Asteroiden, jeder Koerper
+  //     ist eine Masse. Und Kernel A erkennt ueberhaupt keine
+  //     Kollisionen: Das Softening haelt die Teilchen auf Abstand.
+  //   * Fluchterkennung Asteroiden — dito, mangels Asteroiden.
+  //   * Fluchterkennung schwere Koerper — ein expandierendes Feld ist am
+  //     Rand grossteils ungebunden. Die Markierung ergaebe hunderte
+  //     pulsierende Ringe statt eines Hinweises auf den Einzelfall,
+  //     fuer den sie gedacht ist.
+  //   * Kraftvektoren — je Koerper ein Pfeil, bei zehntausenden dasselbe
+  //     Problem wie die Spuren. Und sie zeigen ohnehin nichts: Die
+  //     Beschleunigungen stehen auf der GPU, der Client rechnet sie in
+  //     diesen Szenarien nicht (siehe clientRechnetSelbst), b.ax/b.ay
+  //     bleiben null.
+  //
+  // NICHT gesperrt und warum: Gitternetz, Sternenhintergrund,
+  // Koordinatenkreuz, logarithmischer Zoom und Schwerpunkt-Zentrierung
+  // kosten unabhaengig von der Koerperzahl (nachgemessen: gegenueber der
+  // Basis kein Unterschied) und sind gerade hier nuetzlich — der Zoom
+  // fuer die Groessenordnungen, die Zentrierung fuer ein Feld, das
+  // auseinanderlaeuft.
+  for (const id of ['chk-trails', 'mob-chk-trails', 'trail-slider',
+                    'mob-trail-slider', 'trail-ast-slider',
+                    'chk-ast-ast', 'mob-chk-ast-ast',
+                    'chk-ast-escape', 'mob-chk-ast-escape',
+                    'chk-mass-escape', 'mob-chk-mass-escape',
+                    'chk-vectors', 'mob-chk-vectors']) {
+    dimmen(id, punktwolke);
+  }
+  // Diese beiden hat die Schleife oben schon nach `aktiv` gesetzt — hier
+  // nur ZUSAETZLICH sperren, niemals freigeben.
+  if (punktwolke) {
     for (const id of ['film-lod', 'mob-film-lod', 'film-sub']) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      el.disabled = true;
-      const lab = el.closest('label');
-      if (lab) lab.style.opacity = '0.4';
+      dimmen(id, true);
     }
   }
 }
