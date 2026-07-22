@@ -9248,6 +9248,15 @@ function applyPendingChanges() {
     if (b) inp.value = formatMass(b.mass * M_SUN / M_EARTH);
   });
   updateApplyButton();
+  // Im Film-Modus reicht das Aendern der Koerper NICHT: Der Puffer ist
+  // vorausberechnet und kennt weiterhin die alten Werte, das naechste
+  // Filmbild ueberschreibt die Eingabe also sofort — sichtbar als
+  // "Knopf gedrueckt, Wert springt zurueck". Die Sitzung muss mit dem
+  // neuen Zustand neu aufsetzen, wie nach einer Injektion.
+  //
+  // Der Knopf sammelt dabei ohnehin alle offenen Aenderungen, es bleibt
+  // also bei EINEM Neustart, egal wie viele Felder man bearbeitet hat.
+  if (changed) filmNachSzenenaenderung();
 }
 
 // Hebt den Uebernehmen-Button hervor, solange Aenderungen ausstehen.
@@ -9450,6 +9459,10 @@ function doClearPerturbers() {
   perturbers = [];
   perturberCounter = 0;
   rebuildBodyList();
+  // Ohne Neustart blieben die geloeschten Koerper im vorausberechneten
+  // Film erhalten und liefen dort weiter, obwohl sie aus der Szene
+  // verschwunden sind.
+  filmNachSzenenaenderung();
 }
 
 function doReset() {
