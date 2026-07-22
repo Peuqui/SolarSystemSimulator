@@ -944,6 +944,10 @@ const DEFAULTS = {
   filmRaster: -0.3,     // Sample-Raster (log10 Tage) — 10^-0.3 ~ 0,5 Tage
   filmSpeed: 1.78,      // Abspieltempo (log10 Tage/s) — 10^1.78 ~ 60
   filmSub: 3,           // Bahnstuetzpunkte (Reglerstufe; 0 = aus)
+  // --- Selbstgravitierende Szenarien ---
+  sgN: 4.7,             // Massen (log10) — 10^4.7 ~ 50.000
+  sgEps: -1.0,          // Weichzeichnung (log10 x mittlerer Abstand) —
+                        // 10^-1 = 0,1, die klassische Faustregel
   // --- Guertel (Sonnensystem mit Guerteln) ---
   beltAB: 800,          // Anzahl Asteroidengürtel
   beltKB: 600,          // Anzahl Kuipergürtel
@@ -4853,6 +4857,22 @@ function _filmControlsAktiv() {
     const lab = el.closest('label');
     if (lab) lab.style.opacity = aktiv ? '' : '0.4';
   }
+  // "Punkte im Bild" stellt nichts ein, wenn ALLE Koerper massiv sind:
+  // Das Dichte-LOD des Servers duennt nur Asteroiden aus, massive Koerper
+  // gehen immer vollstaendig mit (`_lod_auswahl` in server.py beginnt mit
+  // `teile = [massiv]`). Bei 50.000 Massen und einem Budget von 20k
+  // werden also trotzdem alle 50.000 gestreamt — der Regler waere ein
+  // Versprechen, das niemand einloest.
+  const sc = SCENARIOS[currentScenario];
+  if (sc && sc.selbstgravitierend) {
+    for (const id of ['film-lod', 'mob-film-lod']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      el.disabled = true;
+      const lab = el.closest('label');
+      if (lab) lab.style.opacity = '0.4';
+    }
+  }
 }
 
 // Netz-Worker: besitzt den WebSocket und zerlegt die Film-Frames.
@@ -8397,6 +8417,7 @@ function cudaVerfuegbarkeitPruefen() {
 function sgReglerSichtbarkeit() {
   const sc = SCENARIOS[currentScenario];
   const selbstgrav = !!(sc && sc.selbstgravitierend);
+  _filmControlsAktiv();   // sperrt u. a. "Punkte im Bild" szenarioabhaengig
   const zeigen = selbstgrav && cudaReady;
   for (const id of ['lbl-sg-n', 'lbl-sg-eps']) {
     const el = document.getElementById(id);
@@ -9629,6 +9650,12 @@ function applyDefaults() {
     ['film-speed',       DEFAULTS.filmSpeed],
     ['film-lod',         DEFAULTS.filmLod],
     ['film-sub',         DEFAULTS.filmSub],
+    // Selbstgravitierende Szenarien: Teilchenzahl und Weichzeichnung.
+    // Beide bestimmen, was die Hardware traegt (die Kosten wachsen mit
+    // N^2,5) — eine einmal gefundene Einstellung soll den Reload
+    // ueberleben.
+    ['sg-n',             DEFAULTS.sgN],
+    ['sg-eps',           DEFAULTS.sgEps],
   ];
   for (const [stem, val] of sliderDefs) {
     // Slider-Persistierung: wenn ein Wert in localStorage gespeichert ist,
