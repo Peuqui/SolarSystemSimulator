@@ -1090,7 +1090,7 @@ const I18N = {
     'tt.film-speed': 'Wie viele Sim-Tage pro Sekunde abgespielt werden. Unabhängig davon, wie schnell die GPU rechnet — reicht der Vorrat nicht, wartet die Wiedergabe an der Rechenkante. Details: 💡 bei der Physik-Engine.',
     'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
-    'film.desync': 'Film-Sitzung im Backend verloren und Neustart fehlgeschlagen — Film aus- und wieder einschalten. (Klick zum Ausblenden)',
+    'film.desync': 'Film-Sitzung im Backend verloren — hier klicken, um sie neu zu starten.',
     'inject.mmax': 'Grenze erreicht: höchstens {n} massive Körper (CUDA-Kernel). Rogue nicht injiziert — Asteroiden und Wolken bleiben unbegrenzt.',
     'film.sg-noetig': 'Dieses Szenario rechnet nur im Film-Modus — der Live-Pfad trägt höchstens 64 massive Körper. Die Szene steht, bis der Film wieder an ist.',
     'lbl.sg-n': 'Massen',
@@ -1380,7 +1380,7 @@ const I18N = {
     'tt.film-speed': 'How many sim days are played back per second. Independent of how fast the GPU computes — if the buffer runs dry, playback waits at the production edge. Details: 💡 next to the physics engine.',
     'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
-    'film.desync': 'Film session lost in the backend and restart failed — switch film mode off and on again. (Click to dismiss)',
+    'film.desync': 'Film session lost in the backend — click here to restart it.',
     'inject.mmax': 'Limit reached: at most {n} massive bodies (CUDA kernel). Rogue not injected — asteroids and clouds stay unlimited.',
     'film.sg-noetig': 'This scenario only runs in film mode — the live path carries at most 64 massive bodies. The scene stays frozen until film mode is back on.',
     'lbl.sg-n': 'Masses',
@@ -5219,7 +5219,18 @@ function initCudaBackend(urlIndex = 0) {
       // wird sichtbar gemeldet.
       if (grund.indexOf('kein Film aktiv') >= 0 && useFilm && cudaReady) {
         if (_filmNeustartVersucht) {
-          zeigeStoerung(t('film.desync'));
+          // Klick startet den Film erneut, statt nur die Meldung
+          // wegzuwischen — das ist genau der Handgriff, den der Text
+          // sonst vom Nutzer verlangt haette.
+          zeigeStoerung(t('film.desync'), 0, () => {
+            _filmNeustartVersucht = false;
+            filmActive = false;
+            filmQueue = null;
+            _filmHandover = false;
+            _filmRestartPending = false;
+            _filmStartWartet = false;
+            filmStart();
+          });
           _filmNeustartVersucht = false;
           filmStop();
           return;
@@ -5768,13 +5779,18 @@ function filmReconstructVelocities() {
 // Zustand ankuendigen, bleiben ohne autoMs stehen, bis der Nutzer sie
 // wegklickt: sie zu ueberblaettern hiesse, die Pause nicht zu erklaeren.
 let _stoerungTimer = null;
-function zeigeStoerung(text, autoMs = 0) {
+// `aktion` macht den Klick zur REPARATUR statt zum blossen Wegwischen:
+// Wer eine Meldung liest, will meist das Problem los sein, nicht die
+// Meldung. Wo sich der Fehler mit einem Handgriff beheben laesst, gehoert
+// der Handgriff also auf den Klick — und der Text sagt das auch.
+function zeigeStoerung(text, autoMs = 0, aktion = null) {
   const el = document.getElementById('stoerung');
   if (!el) return;
   el.textContent = '⚠ ' + text;
   el.style.display = 'inline-block';
   const aus = () => { el.style.display = 'none'; };
-  el.onclick = aus;
+  el.onclick = aktion ? () => { aus(); aktion(); } : aus;
+  el.style.cursor = 'pointer';
   if (_stoerungTimer) clearTimeout(_stoerungTimer);
   _stoerungTimer = autoMs > 0 ? setTimeout(aus, autoMs) : null;
 }
@@ -6540,7 +6556,7 @@ function reglerSperren(id, sperren) {
     }
     if (useFilm && useCuda && cudaReady) {
       filmStart();
-    } else {
+    } else if (!useFilm || filmActive) {
       // Wie beim Engine-Wechsel: Physik anhalten, bis der EXAKTE f64-Dump
       // des Producers da ist (status=5 setzt _filmHandover zurueck).
       // Ohne das gilt sofort die Schaetzung aus
@@ -6552,6 +6568,19 @@ function reglerSperren(id, sperren) {
       filmHandoverStart('Film-Modus ausgeschaltet');
       filmStop();
     }
+    // Der else-Zweig lief frueher AUCH beim Einschalten, wenn das
+    // Backend noch nicht verbunden war — und genau das passiert bei
+    // jedem Seitenaufruf: Der Haken kommt gesetzt aus der letzten
+    // Sitzung (persistiert), `cudaReady` ist aber erst nach dem
+    // Handshake wahr. Dann startete filmHandoverStart eine Uebergabe auf
+    // einen f64-Dump, den niemand schickt — `_filmHandover` blieb haengen
+    // und blockierte JEDEN spaeteren filmStart, auch den automatischen
+    // nach dem Handshake. Ergebnis: Film-Haken gesetzt, filmActive false,
+    // Playhead 0, und im Server "kein Film aktiv" im Sekundentakt.
+    //
+    // Jetzt greift der Zweig nur noch, wenn wirklich abgeschaltet wird
+    // (!useFilm) oder ein Film LIEF (filmActive). Ein Einschalten ohne
+    // Backend tut schlicht nichts — der Start kommt beim Handshake.
     // Selbstgravitierende Szenarien rechnen NUR im Film. Wird er
     // abgeschaltet, steht die Szene — das sichtbar sagen, statt sie
     // stillschweigend einfrieren zu lassen.
