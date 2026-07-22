@@ -4839,6 +4839,10 @@ let cudaInflightRefs = null;
 // damit der socket-aktivierte Server per Idle-Exit beenden kann) — dann
 // im onclose weder Option ausblenden noch auf Worker zurueckfallen.
 let _cudaIntentionalClose = false;
+// Ein Verbindungsaufbau laeuft — verhindert die doppelte Verbindung
+// (siehe initCudaBackend). Wird gesetzt, wenn der Aufbau beginnt, und
+// zurueckgenommen, sobald er glueckt oder scheitert.
+let _cudaVerbindungLaeuft = false;
 let _cudaDisconnectTimer = null;
 
 function _cudaSetVisible(visible) {
@@ -5064,6 +5068,19 @@ self.onmessage = (e) => {
 
 function initCudaBackend(urlIndex = 0) {
   if (urlIndex >= CUDA_WS_URLS.length) return;
+  // Nur EINE Verbindung zur Zeit aufbauen. Sonst entsteht beim Laden ein
+  // Wettlauf: Die Auto-Erkennung verbindet, und WAEHREND das laeuft,
+  // ruft die Szenario-Logik applyEngine('cuda') — dort ist `cudaSocket`
+  // noch null, also wird ein zweites Mal verbunden.
+  //
+  // Das ist nicht bloss doppelt, sondern kaputt: Der Server haelt seine
+  // FilmSession PRO VERBINDUNG (`film` ist lokal in handle(ws)). Der
+  // FILM_START ging dann ueber die eine Verbindung, das FILM_SUB ueber
+  // die andere — und die kennt keine Session. Ergebnis: "kein Film
+  // aktiv" im Sekundentakt, Playhead 0, GPU idle. In der Konsole war es
+  // an einem doppelten "CUDA-Backend verbunden" zu erkennen.
+  if (_cudaVerbindungLaeuft) return;
+  _cudaVerbindungLaeuft = true;
   const w = new Worker(URL.createObjectURL(
     new Blob([NET_WORKER_SRC], { type: 'application/javascript' })));
   // Fassade auf den Socket im Worker: der uebrige Code spricht
@@ -5078,10 +5095,15 @@ function initCudaBackend(urlIndex = 0) {
   w.postMessage({ typ: 'verbinden', url: CUDA_WS_URLS[urlIndex] });
   w.onmessage = (e) => {
     const msg = e.data;
-    if (msg.typ === 'zu') { onSocketZu(msg.offen); return; }
+    if (msg.typ === 'zu') {
+      _cudaVerbindungLaeuft = false;
+      onSocketZu(msg.offen);
+      return;
+    }
     if (msg.typ === 'film') { onFilmFrame(msg); return; }
     if (msg.typ === 'hallo') {
       // Ping-Antwort mit Geraeteinfo — Backend ist da.
+      _cudaVerbindungLaeuft = false;
       ws.readyState = 1;
       cudaSocket = ws;
       cudaReady = true;
