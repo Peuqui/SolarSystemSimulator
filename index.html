@@ -2527,8 +2527,26 @@ function massiveKoerperZahl() {
   return bodies.reduce((n, b) => n + (b.isAsteroid ? 0 : 1), 0);
 }
 
+// Werden die massiven Koerper als PUNKTWOLKE gezeichnet statt einzeln?
+//
+// Oberhalb von LABEL_MAX_MASSIV sind sie keine einzelnen Himmelskoerper
+// mehr, sondern Massen-Samples eines Dichtefelds. Dann gehen sie durch
+// denselben WebGL-Batch wie die Asteroiden — ein Draw-Call fuer alle,
+// statt arc()+fill() je Koerper in der Canvas2D-Schleife. Genau dafuer
+// ist dieser Pfad gebaut; ihn zu umgehen war der Grund fuer 1,8 FPS bei
+// 50.000 Koerpern.
+//
+// Als Variable statt Funktionsaufruf: Die Abfrage sitzt im Dekodier-Loop
+// von filmApply, der pro Frame ueber alle gestreamten Koerper laeuft.
+// massiveKoerperZahl() ist O(N) und hat dort nichts zu suchen.
+let _punktwolke = false;
+function punktwolkeAktualisieren() {
+  _punktwolke = massiveKoerperZahl() > LABEL_MAX_MASSIV;
+}
+
 function rebuildBodyList(neueSzene = false) {
   const anzahl = massiveKoerperZahl();
+  punktwolkeAktualisieren();   // Koerperzahl hat sich geaendert
   const paare = [['bodies-details', checkDiv, 'planet-checks-count', 'desk'],
                  ['mob-bodies-details', mobCheckDiv, 'mob-planet-checks-count', 'mob']];
   for (const [detId, ziel, zaehlerId, schluessel] of paare) {
@@ -4036,16 +4054,19 @@ function draw() {
   // Szenarien ist JEDER Koerper massiv — bei 50.000 waeren das 50.000
   // fillText je Bild, und auf dem Schirm ein roter Teppich aus
   // ueberlappenden Kuerzeln, der die Szene selbst verdeckt.
-  const _labelZeigen = massiveKoerperZahl() <= LABEL_MAX_MASSIV;
-  // Dieselbe Grenze entscheidet ueber die Darstellungsart: Oberhalb sind
-  // es Massen-Samples eines Dichtefelds, keine einzelnen Himmelskoerper.
-  // Sie werden klein und ADDITIV gezeichnet — ueberlappende Punkte
-  // addieren ihre Helligkeit, statt einander zu ueberdecken. Erst so
-  // wird Dichte sichtbar: dichte Knoten leuchten, duenne Bruecken bleiben
-  // matt. Mit deckenden Punkten saettigt alles zu einer weissen Flaeche,
-  // und die Struktur, um die es in diesem Szenario geht, verschwindet.
-  const _sgPunkte = !_labelZeigen;
-  if (_sgPunkte) {
+  const _sgPunkte = _punktwolke;
+  const _labelZeigen = !_sgPunkte;
+  // Im Punktwolken-Fall hat der WebGL-Batch die Koerper bereits
+  // gezeichnet (ein Draw-Call statt arc()+fill() je Koerper). Hier
+  // bleiben dann nur noch die Sonderfaelle: Fokus-Markierung und
+  // Explosionen. Ohne diesen Zweig wurde jeder Koerper ZWEIMAL
+  // gezeichnet — einmal im Batch, einmal einzeln.
+  const _batchHatGezeichnet = _sgPunkte && filmActive &&
+                              typeof astGL !== 'undefined' && astGL.enabled;
+  if (_sgPunkte && !_batchHatGezeichnet) {
+    // Ohne WebGL (oder ausserhalb des Films) doch einzeln — dann aber
+    // klein und ADDITIV: ueberlappende Punkte addieren ihre Helligkeit,
+    // statt einander zu ueberdecken. Erst so wird Dichte sichtbar.
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.55;
   }
@@ -4085,6 +4106,11 @@ function draw() {
       }
       continue;
     }
+
+    // Punktwolke: Der WebGL-Batch hat diesen Koerper schon gezeichnet.
+    // Nur der Fokus-Koerper wird hier noch einzeln behandelt — er braucht
+    // seinen Ring und sein Label.
+    if (_batchHatGezeichnet && b !== focusBody) continue;
 
     if (b.isBlackHole) {
       // Akkretionsdisc-Glut: orange-violetter Halo deutet die Disc
@@ -4177,7 +4203,7 @@ function draw() {
       ctx.fillText(b.name, sx + b.radius + 5, sy + 4);
     }
   }
-  if (_sgPunkte) {
+  if (_sgPunkte && !_batchHatGezeichnet) {
     // Zurueck auf normales Zeichnen — sonst leuchtet alles Folgende
     // (Explosionen, Marker, Overlays) additiv mit.
     ctx.globalCompositeOperation = 'source-over';
@@ -5997,7 +6023,11 @@ function filmApply(t) {
     b.x = bx;
     b.y = by;
     _filmInView[ki] = 1;
-    if (vtx !== null && b.isAsteroid && evVis[ki] === 1 &&
+    // `_punktwolke`: dann gehen auch die MASSIVEN Koerper hier durch —
+    // sie sind Massen-Samples, keine einzelnen Himmelskoerper, und der
+    // Batch ist fuer hunderttausende Punkte gebaut. Ohne das liefen sie
+    // an diesem Pfad vorbei in die Canvas2D-Einzelschleife.
+    if (vtx !== null && (b.isAsteroid || _punktwolke) && evVis[ki] === 1 &&
         bx >= wxMin && bx <= wxMax && by >= wyMin && by <= wyMax) {
       let c = b._glColor;
       if (!c) { c = _hexToRgb(b.color); b._glColor = c; }
