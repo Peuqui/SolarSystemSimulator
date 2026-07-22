@@ -456,6 +456,37 @@ Ein Merge-Ereignis setzt im Client nur `mass` und `radius` — `realR`,
 `isBlackHole` und Farbe bleiben, wie sie waren. Live und Film laufen hier
 also auseinander, unabhängig vom Szenario.
 
+### 6.15 OFFEN: alle Punkte kollabieren auf die x-Achse
+Symptom: Nach laengerem Zoomen und Schwenken liegen samtliche Punkte auf
+einer waagerechten Linie bei y = 0, quer durchs Bild. Gitter, Schwerpunkt
+und Beschriftungen bleiben korrekt, die Zeitleiste laeuft weiter.
+
+Beobachtet am 22.07. bei 44.212 Koerpern, Full-HD-Fenster, nach mehreren
+schnellen Kamerabewegungen.
+
+**Was ausgeschlossen ist:**
+* *Kamera.* Reset und starker Zoom aendern nichts.
+* *Fenstergroesse.* `resize` fuehrt W/H korrekt nach, das Fenster war
+  regulaer gross.
+* *Degenerierte Referenz-Box.* Der Server klemmt `spanx/spany` auf
+  mindestens 1e-6, und der Client meldet das Sichtfenster im 1-Hz-Takt
+  neu — ein flacher Ausschnitt wuerde sich binnen einer Sekunde
+  korrigieren.
+* *Protokoll v6.* `test_film_protokoll.py` Fall i) faehrt genau diesen
+  Ablauf durch (Auswahl wechselt mitten im Strom, weil die Kamera
+  springt): Das Flag "Liste wie vorher" steht ausschliesslich dann,
+  wenn die Auswahl wirklich gleich ist, und der Frame geht in jedem
+  Fall exakt auf.
+
+**Was hilft:** ein Tab-Reload. Ein Reset der Kamera nicht.
+
+Damit deutet es auf einen CLIENT-Zustand, der sich ueber die Laufzeit
+aufbaut und den nur ein Neuladen raeumt — nicht auf die Daten. Wer das
+weiterverfolgt: Zuerst pruefen, ob die y-Werte schon in `filmApply`
+falsch ankommen oder erst im GL-Batch verlorengehen; das trennt
+Dekodierung von Darstellung. Ein Blick in den Ring unter `/dev/shm`
+klaert zusaetzlich, ob der Producer ueberhaupt korrekte y liefert.
+
 ### 6.14 Ruckeln aus der Ferne ist eine BANDBREITEN-, keine Rechenfrage
 Gemeldet als „Puffer voll, GPU idle, Animation trotzdem ruckelig" — also
 weder Physik noch Ring. Nachgemessen (22.07., Zugriff aus der Klinik über

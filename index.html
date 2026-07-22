@@ -1096,6 +1096,7 @@ const I18N = {
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.desync': 'Film-Sitzung im Backend verloren — hier klicken, um sie neu zu starten.',
     'inject.mmax': 'Grenze erreicht: höchstens {n} massive Körper (CUDA-Kernel). Rogue nicht injiziert — Asteroiden und Wolken bleiben unbegrenzt.',
+    'inject.filmneu': 'Szene geändert — der Film wird neu berechnet. Der bereits berechnete Vorlauf geht dabei verloren.',
     'film.sg-noetig': 'Dieses Szenario rechnet nur im Film-Modus — der Live-Pfad trägt höchstens 64 massive Körper. Die Szene steht, bis der Film wieder an ist.',
     'lbl.sg-n': 'Massen',
     'tt.sg-n': 'Wie viele selbstgravitierende Massen gerechnet werden. Jede spürt jede — der Aufwand wächst mit N². Weil die Weichzeichnung mit dem Teilchenabstand mitschrumpft, wird zusätzlich der Zeitschritt feiner: die Kosten steigen mit N^2,5. Gemessen auf fünf Karten: 50.000 Massen ≈ 37 Sim-Jahre pro Minute, 100.000 ≈ 9, 200.000 ≈ 2. Die Gesamtmasse bleibt gleich — mehr Teilchen heißt feiner aufgelöst, nicht schwerer.',
@@ -1388,6 +1389,7 @@ const I18N = {
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
     'film.desync': 'Film session lost in the backend — click here to restart it.',
     'inject.mmax': 'Limit reached: at most {n} massive bodies (CUDA kernel). Rogue not injected — asteroids and clouds stay unlimited.',
+    'inject.filmneu': 'Scene changed — the film is being recomputed. The buffer computed so far is discarded.',
     'film.sg-noetig': 'This scenario only runs in film mode — the live path carries at most 64 massive bodies. The scene stays frozen until film mode is back on.',
     'lbl.sg-n': 'Masses',
     'tt.sg-n': 'How many self-gravitating masses are computed. Every one feels every other — the work grows as N². Since the softening shrinks with the particle spacing, the timestep gets finer too: cost grows as N^2.5. Measured on five cards: 50,000 masses ≈ 37 sim-years per minute, 100,000 ≈ 9, 200,000 ≈ 2. Total mass stays fixed — more particles means finer resolution, not more matter.',
@@ -1748,8 +1750,19 @@ function fmtDExp(v, digits) {
 function injectSpeedKmS(v) {
   return v <= -1 ? 0 : Math.pow(10, v);
 }
+const C_KM_S = 299792.458;
 function fmtSpeed(kmS) {
-  return fmtDE(kmS, kmS < 10 ? 1 : 0);
+  const basis = fmtDE(kmS, kmS < 10 ? 1 : 0);
+  // Ab einem Prozent Lichtgeschwindigkeit den Anteil mitzeigen. Der
+  // Integrator rechnet rein newtonsch — was er liefert, ist dort keine
+  // Physik mehr, sondern eine Extrapolation. Das gehoert sichtbar
+  // gemacht, statt es still zu rechnen. Der Bereich ist trotzdem
+  // freigegeben: In kosmischen Szenarien (Zehntausende AE) legt ein
+  // Koerper mit 3.000 km/s nur ~21 AE im Jahr zurueck, man saehe ihn
+  // ueber die ganze Filmlaenge praktisch stillstehen.
+  if (kmS >= 0.01 * C_KM_S)
+    return basis + ' (' + fmtDE(kmS / C_KM_S, 2) + ' c)';
+  return basis;
 }
 
 // Masse-Anzeige in Erdmassen mit Sonnenmassen-Klammer:
@@ -4251,14 +4264,24 @@ function draw() {
   // Sie ueber 50.000 Koerper laufen zu lassen, um jedes Mal `continue`
   // zu sagen, kostet trotzdem: der Cull-Test steht HINTER worldToScreen
   // (Trigonometrie plus Array-Allokation je Koerper).
-  const _schleifeNoetig = !_batchHatGezeichnet || !!focusBody;
+  const _schleifeNoetig = !_batchHatGezeichnet || !!focusBody ||
+                         perturbers.length > 0;
   for (let i = 0; _schleifeNoetig && i < bodies.length; i++) {
     const b = bodies[i];
     if (b.isAsteroid && !_astiSonderfaelle) continue;
     if (!b.visible) continue;
-    // Der Batch hat diesen Koerper schon — nur der Fokus-Koerper braucht
-    // hier noch etwas (Ring, Label). VOR worldToScreen aussteigen.
-    if (_batchHatGezeichnet && b !== focusBody) continue;
+    // Der Batch hat diesen Koerper schon — nur der Fokus-Koerper und
+    // selbst injizierte Massen brauchen hier noch etwas. VOR
+    // worldToScreen aussteigen (der Test ist ein Property-Read, das
+    // Zeichnen dahinter kostet).
+    //
+    // Die Stoerkoerper sollen aussehen wie in jedem anderen Szenario:
+    // schwarze Loecher mit Akkretionsscheibe, Sterne mit Halo, dazu das
+    // Label. Ein eigener Marker dafuer waere eine zweite Darstellung
+    // derselben Sache — und der Nutzer erkennt das SL ohnehin an dem
+    // Bild, das er von ueberall sonst kennt.
+    const _stoerer = !!b.injiziert && !b.isAsteroid;
+    if (_batchHatGezeichnet && b !== focusBody && !_stoerer) continue;
     // Flucht-Asteroid einzeln (mit rotem Ring) zeichnen; ohne Erkennung
     // ist unbound nie gesetzt und er bleibt im normalen Batch.
     if (b.isAsteroid && !b.unbound && b !== focusBody) continue;
@@ -4377,8 +4400,17 @@ function draw() {
     // Der Fokus-Koerper behaelt seinen Namen auch in grossen Szenen: ihn
     // hat der Nutzer ausgewaehlt, er ist genau einer, und ohne Label
     // waere nicht erkennbar, welcher es ist.
-    if (_labelZeigen || b === focusBody) {
-      ctx.fillStyle = (b.unbound && massEscape) ? '#ff6a6a' : b.color + 'dd';
+    // Selbst injizierte Massen behalten ihren Namen aus demselben Grund
+    // wie der Fokus-Koerper: Es sind wenige, und der Nutzer hat sie
+    // bewusst gesetzt — ohne Label waere in einer Punktwolke nicht
+    // erkennbar, welcher Punkt der eigene ist.
+    if (_labelZeigen || b === focusBody || _stoerer) {
+      // Stoerkoerper NICHT in ihrer Eigenfarbe beschriften: Ein
+      // schwarzes Loch ist per Definition fast schwarz, sein Name waere
+      // auf dem dunklen Feld unlesbar.
+      ctx.fillStyle = (b.unbound && massEscape) ? '#ff6a6a'
+                    : _stoerer ? 'rgba(235,235,245,0.85)'
+                    : b.color + 'dd';
       ctx.font = '11px monospace';
       ctx.fillText(b.name, sx + b.radius + 5, sy + 4);
     }
@@ -8801,9 +8833,32 @@ function cudaVerfuegbarkeitPruefen() {
 // selbstgravitierenden Szenarien — anderswo stellen sie nichts ein.
 // Sichtbar ab Szenario, bedienbar erst mit verbundenem CUDA-Backend
 // (das erledigt _filmControlsAktiv wie bei den uebrigen Film-Reglern).
+// Obergrenze des Injektions-Tempos. 3,5 (3.162 km/s) deckt alles ab,
+// was im Sonnensystem vorkommt — dort waeren hoehere Werte sinnlos.
+// In selbstgravitierenden Szenarien misst man dagegen in Lichtjahren:
+// Mit 3.162 km/s legt ein Koerper ~21 AE im Jahr zurueck und stuende
+// ueber die ganze Filmlaenge praktisch still. 5,175 = 0,5 c.
+const SPEED_MAX_STD = 3.5;
+const SPEED_MAX_KOSMISCH = 5.175;
+
 function sgReglerSichtbarkeit() {
   const sc = SCENARIOS[currentScenario];
   const selbstgrav = !!(sc && sc.selbstgravitierend);
+  // Der Bereich haengt am Szenario, nicht am Backend-Zustand: Er soll
+  // auch dann schon passen, wenn die Verbindung noch nicht steht.
+  const speedMax = selbstgrav ? SPEED_MAX_KOSMISCH : SPEED_MAX_STD;
+  for (const id of ['p-speed', 'mob-p-speed']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.max = speedMax;
+    // Beim Wechsel ZURUECK muss ein zu hoher Wert mitgenommen werden —
+    // sonst zeigt die Beschriftung eine Geschwindigkeit an, die der
+    // Regler gar nicht mehr hergibt.
+    if (parseFloat(el.value) > speedMax) {
+      el.value = speedMax;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
   _filmControlsAktiv();   // sperrt u. a. "Punkte im Bild" szenarioabhaengig
   const zeigen = selbstgrav && cudaReady;
   for (const id of ['lbl-sg-n', 'lbl-sg-eps', 'lbl-sg-t']) {
@@ -9168,7 +9223,16 @@ function doInject() {
   // Grenze gemeldet hat — sonst baut man im Worker eine Szene auf, die
   // sich spaeter nicht mehr auf die GPU laden laesst. Asteroiden und
   // Wolken sind nicht betroffen, sie sind Testteilchen.
-  if (cudaMMax && massiveKoerperZahl() >= cudaMMax) {
+  //
+  // NICHT in selbstgravitierenden Szenarien: Dort rechnet Kernel A, und
+  // der haelt seine Massen im globalen Speicher (gekachelt), nicht im
+  // Shared Memory. Zehntausende sind dort der Normalfall — die Meldung
+  // "bereits 64" ist bei 12.589 Massen schlicht falsch und sperrt eine
+  // Injektion, die problemlos moeglich ist. cudaMMax stammt aus
+  // nbody_kernel und gilt nur fuer den Live-Pfad.
+  const _sc = SCENARIOS[currentScenario];
+  if (!(_sc && _sc.selbstgravitierend) &&
+      cudaMMax && massiveKoerperZahl() >= cudaMMax) {
     zeigeStoerung(t('inject.mmax').replace('{n}', cudaMMax), 6000);
     return;
   }
@@ -9202,6 +9266,11 @@ function doInject() {
     isStar: !isBH && massSun >= STAR_MASS_THRESHOLD,
     isBlackHole: isBH,
     escapeScore: 0,
+    // Wie bei der injizierten Wolke: nachtraeglich eingebracht. Daran
+    // haengt, dass der Koerper auch in einer Punktwolke EINZELN
+    // gezeichnet wird (Akkretionsscheibe, Halo, Label) statt als einer
+    // von zehntausenden Batch-Punkten unterzugehen.
+    injiziert: true,
     id: bodies.length
   };
 
@@ -9223,6 +9292,19 @@ function doInject() {
   injectMarked = false;   // Marker verschwindet nach Inject — folgende
                           // Klicks injizieren weiterhin bei derselben
                           // injectPos (Welt-Koord bleibt gespeichert).
+  filmNachSzenenaenderung();
+}
+
+// Im Film-Modus ist der Vorlauf VORAUSBERECHNET — er kennt einen eben
+// injizierten Koerper nicht, und der Producer kann ihn auch nicht
+// nachtraeglich einspeisen. Ohne Neustart der Sitzung bliebe die
+// Injektion also schlicht wirkungslos, was wie ein Defekt aussieht.
+// Der Neustart kostet den gesamten Vorlauf; das gehoert gesagt, statt
+// es den Nutzer am verschwundenen Puffer merken zu lassen.
+function filmNachSzenenaenderung() {
+  if (!filmActive) return;
+  zeigeStoerung(t('inject.filmneu'), 5000);
+  filmStart();
 }
 
 let asteroidCounter = 0;   // globale fortlaufende Nummer fuer Asteroid-Namen
@@ -9281,6 +9363,7 @@ function doInjectCloud() {
   }
   computeAccelerations();
   rebuildBodyList();
+  filmNachSzenenaenderung();
 }
 
 function doClearPerturbers() {

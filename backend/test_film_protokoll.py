@@ -316,6 +316,29 @@ def main():
     ok &= pruefe(fv.rest == 0,
                  f"Frame geht genau auf ({3 * 4 * vis0} B gespart)")
 
+    print("\ni) v6 haelt auch, wenn die Auswahl MITTENDRIN wechselt")
+    # Der Fall aus dem Betrieb: Der Nutzer zoomt oder schwenkt, der
+    # Server cullt daraufhin anders — mitten in einer Folge von Samples,
+    # die ihre Indexliste weglassen. Das Flag darf dann NICHT stehen,
+    # sonst legt der Client Positionen auf die falschen Koerper.
+    sw = baue_session()
+    zerlege_film.letzte_idx = None
+    vorige = None
+    for hw in (4.0, 4.0, 0.6, 600.0, 0.6):
+        sw.view = (1.0, 0.0, hw, hw)
+        fr = sw.build_frame([20])
+        (roh,) = struct.unpack_from("<I", fr, 88 + 8)
+        flag = bool(roh & 0x8000_0000)
+        d = zerlege_film(fr)
+        idx = np.asarray(d.samples[0].idx)
+        gewechselt = vorige is None or not np.array_equal(idx, vorige)
+        ok &= pruefe(not (flag and gewechselt),
+                     f"hw={hw:6.1f}: {len(idx)} sichtbar, Flag={flag}, "
+                     f"gewechselt={gewechselt}")
+        ok &= pruefe(d.rest == 0 and len(d.samples[0].qx) == len(idx),
+                     f"hw={hw:6.1f}: Frame geht auf, Laengen passen")
+        vorige = idx
+
     print("\nh) Client und Server nennen dieselbe Protokollversion")
     # Die Zahl steht zwangslaeufig doppelt: server.py kennt sie als
     # Konstante, index.html schreibt sie als Literal in den FILM_START.
