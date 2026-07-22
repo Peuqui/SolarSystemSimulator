@@ -2813,7 +2813,23 @@ function collectMassiveIndices() {
   return _massIdx;
 }
 
+// Rechnet der Browser die Physik dieses Szenarios ueberhaupt selbst?
+//
+// Bei den selbstgravitierenden Szenarien NICHT: Dort ist JEDER Koerper
+// massiv, und computeAccelerations ist ueber die massiven Koerper
+// O(M^2) — bei 50.000 sind das 1,26 MILLIARDEN Paare im Hauptthread,
+// ueber Objekt-Properties gerechnet. Gemessen an dieser Schleife rund
+// 2,8 Mio Paare/s, macht sieben Minuten Blockade beim blossen LADEN der
+// Seite. Genau das war der Fall, in dem der Browser tot wirkte.
+//
+// Die Physik macht dort das CUDA-Backend. Der Client zeigt nur an.
+function clientRechnetSelbst() {
+  const sc = SCENARIOS[currentScenario];
+  return !(sc && sc.selbstgravitierend);
+}
+
 function computeAccelerations() {
+  if (!clientRechnetSelbst()) return;
   const G = G_AU;
   const softening = 1e-6;
   const N = bodies.length;
@@ -6489,6 +6505,12 @@ async function advanceAsync(dtYears) {
   const sc = SCENARIOS[currentScenario];
   const needF64 = !!(sc && sc.precise);
   if (_filmHandover) return;   // Engine-Uebergabe: auf f64-Dump warten
+  // Selbstgravitierende Szenarien kann nur das Backend rechnen: dort ist
+  // JEDER Koerper massiv, und alle gegen alle ist im Browser O(M^2) auf
+  // einem Kern. Ohne Backend bleibt die Szene stehen und zeigt ihre
+  // Anfangsverteilung — das ist ehrlicher, als den Tab minutenlang
+  // einzufrieren.
+  if (!clientRechnetSelbst() && !(useCuda && cudaReady)) return;
   if (useCuda && cudaReady) {
     // CUDA rechnet f64 — auch fuer empfindliche Szenarien geeignet.
     // Pipelined: kein await; Ergebnis-Anwendung, Kollisionen und
@@ -8214,6 +8236,19 @@ function cudaVerfuegbarkeitPruefen() {
   for (const id of ['rad-cuda', 'mob-rad-cuda']) {
     const el = document.getElementById(id);
     if (el) el.disabled = gesperrt;
+  }
+  // Umgekehrter Fall: Selbstgravitierende Szenarien kann NUR das Backend
+  // rechnen (jeder Koerper massiv, alle gegen alle). Die Browser-Engines
+  // werden gesperrt, statt den Tab einfrieren zu lassen.
+  const nurCuda = !!(sc && sc.selbstgravitierend);
+  for (const id of ['rad-cpu', 'rad-worker', 'rad-gpu', 'rad-hybrid',
+                    'mob-rad-cpu', 'mob-rad-worker', 'mob-rad-gpu',
+                    'mob-rad-hybrid']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.disabled = nurCuda;
+    const lab = el.closest('label');
+    if (lab) lab.style.opacity = nurCuda ? '0.4' : '';
   }
   for (const id of ['lbl-engine-cuda', 'mob-lbl-engine-cuda']) {
     const el = document.getElementById(id);
