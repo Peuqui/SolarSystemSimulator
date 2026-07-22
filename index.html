@@ -3837,7 +3837,16 @@ function draw() {
   // ein einziger stroke() mit allen Segmenten. Der Fade-Effekt bleibt fein
   // genug; K=8 ist visuell kaum von 150 Einzel-Strokes zu unterscheiden.
   // Plus: worldToScreen pro Trail-Punkt nur 1x (statt 2x pro Segment).
-  if (showTrails) {
+  // Bahnspuren NICHT fuer Massen-Samples: Sie werden je Koerper einzeln
+  // gezeichnet, mit bis zu MAX_TRAIL Punkten in acht Alpha-Buckets. Bei
+  // 25.119 massiven Koerpern sind das Millionen Liniensegmente pro Bild
+  // — gemessen 532 ms je draw(), gegen 0,2 ms ohne sie. Das allein war
+  // die ruckelnde Wiedergabe; Sternenhintergrund und Gitternetz sind
+  // dagegen kostenlos (563 bzw. 573 ms, also im Rauschen).
+  //
+  // Eine Spur je Teilchen ergibt in einer Punktwolke ohnehin kein Bild,
+  // das man lesen koennte — sie gehoert zu einzelnen benannten Koerpern.
+  if (showTrails && !_punktwolke) {
     ctx.lineWidth = 1.2;
     const prevAlpha = ctx.globalAlpha;
 
@@ -5440,6 +5449,10 @@ function filmClearTrails() {
 function filmFeedTrails() {
   const q = filmQueue;
   if (!q || !filmRefs) return;
+  // In Punktwolken werden keine Spuren gezeichnet (siehe draw) — dann
+  // muessen sie auch nicht gefuettert werden. Das sparte im Test 6,8 ms
+  // je Bild und den Speicher fuer zehntausende Punktlisten.
+  if (_punktwolke) return;
   // Ruecksprung (Scrubbing/Restart): Spuren trennen statt Teleport-Linie
   if (filmPlayheadDays < _filmLastTrailT - 1e-9) {
     filmClearTrails();
