@@ -88,6 +88,15 @@ hat: sonst baut man im Worker eine Szene, die sich später nicht mehr auf
 die GPU laden lässt. Asteroiden und Wolken sind nicht betroffen — sie
 sind Testteilchen und zählen nicht gegen die Grenze.
 
+**Zwei CUDA-Kernel, eine Verbund-Mechanik.** `nbody_kernel.py` (wenige
+Massen, enge Begegnungen, f64) und `selfgrav_kernel.py` (zehntausende
+selbstgravitierende Massen, geglättete Kraft) bleiben getrennt — sie
+beantworten zwei verschiedene physikalische Fragen. Wie sie ihre Karten
+koppeln, steht dagegen **einmal** in `gpu_verbund.py`: System-Barrier
+(atomics-frei, siehe dort) und der Blick auf gemappten Host-Speicher.
+Die Barrier nimmt einen `unsigned int*` statt eines Struct-Zeigers,
+damit jedes Modul seinen eigenen Austauschbereich mitbringen kann.
+
 **ruff** liegt nicht im Projekt-venv:
 `/home/mp/Projekte/AIfred-Intelligence/venv/bin/ruff check backend/`
 

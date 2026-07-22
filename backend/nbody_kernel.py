@@ -43,6 +43,8 @@ import cupy.cuda.compiler as _cupy_compiler
 import numpy as np
 import nvidia.cuda_runtime
 
+from gpu_verbund import BARRIER_SRC, G_MAX, PAD, device_view_of_host
+
 _cupy_compiler._cudadevrt = os.path.join(
     nvidia.cuda_runtime.__path__[0], "lib", "libcudadevrt.a")
 
@@ -54,7 +56,6 @@ import warnings  # noqa: E402
 warnings.filterwarnings("ignore", message="The grid size will be reduced")
 
 M_MAX = 64
-G_MAX = 8                      # max. Physik-GPUs (GSync-Layout)
 K_MAX = 16                     # max. Samples pro Batch-Launch
 G_AU = 4 * np.pi * np.pi
 SOFTENING = 1e-6
@@ -70,24 +71,14 @@ YOSHIDA_W0 = -(2.0 ** (1.0 / 3.0)) / (2.0 - 2.0 ** (1.0 / 3.0))
 SUB_SAMPLES = 8
 SUB_SAMPLES_MAX = 32           # Puffer-Obergrenze (VRAM je Shard)
 
-_SRC = r"""
-#include <cooperative_groups.h>
-namespace cg = cooperative_groups;
-
+_SRC = BARRIER_SRC + r"""
 #define M_MAX 64
-#define G_MAX 8
 
 // Geteilter Sync-Bereich aller Physik-GPUs. Bei nGpus > 1 liegt er in
 // GEMAPPTEM Host-Speicher (jede Karte sieht dieselben Bytes ueber PCIe),
 // bei nGpus == 1 in normalem Device-Speicher (gleiche Codebahn, volle
-// Geschwindigkeit).
-// ATOMICS-FREI: System-Atomics auf gemapptem Host-Speicher sind ueber
-// PCIe nicht unterstuetzt (nur mit hostNativeAtomicSupported, d. h.
-// NVLink-Host-Kopplung) — der erste Wurf hing deshalb in der Barrier.
-// Stattdessen schreibt jede Karte AUSSCHLIESSLICH in ihre eigenen Slots
-// (Rundenzaehler, Min-Wert, Partialsummen) und liest die der anderen:
-// reine Loads/Stores, die jede PCIe-Plattform beherrscht.
-#define PAD 16   // eigene Cacheline pro Karte gegen False Sharing
+// Geschwindigkeit). Die Atomics-Freiheit und die Barrier selbst stehen
+// in gpu_verbund.py — sie sind mit selfgrav_kernel.py geteilt.
 struct GSync {
     unsigned int round_[G_MAX * PAD];       // Barrier-Rundenzaehler je GPU
     unsigned long long minEnc[G_MAX * PAD]; // lokales tEnc/20-Min je GPU
@@ -102,30 +93,6 @@ struct Ctrl {            // GPU-lokaler, replizierter Loop-Zustand
     int guard;
     unsigned long long minEncDev;   // device-lokale Min-Reduktion
 };
-
-// System-weite Barrier zwischen allen Physik-GPUs (Sense ueber
-// monoton wachsende Rundenzaehler). Ein Thread pro Karte macht den
-// PCIe-Handshake, der Rest haengt im grid.sync. Bei nGpus == 1
-// degeneriert sie zum reinen grid.sync.
-__device__ void sys_barrier(GSync* gs, const int gpuId, const int nGpus,
-                            unsigned int* barRound,
-                            cg::grid_group& grid, const int tid)
-{
-    grid.sync();
-    if (nGpus > 1 && tid == 0) {
-        // Alle vorherigen Writes dieser Karte (Partialsummen, minEnc)
-        // muessen VOR dem Rundenzaehler systemweit sichtbar sein.
-        __threadfence_system();
-        const unsigned int r = ++(*barRound);
-        ((volatile unsigned int*)gs->round_)[gpuId * PAD] = r;
-        for (int g = 0; g < nGpus; g++) {
-            volatile unsigned int* p =
-                &((volatile unsigned int*)gs->round_)[g * PAD];
-            while (*p < r) { __nanosleep(256); }
-        }
-    }
-    grid.sync();
-}
 
 extern "C" __global__ void frame_kernel(
     // Asteroiden-SHARD dieser Karte [nAst]
@@ -225,7 +192,7 @@ extern "C" __global__ void frame_kernel(
             gs->backY[gpuId * M_MAX + j] = backY[j];
         }
     }
-    sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+    sys_barrier(gs->round_, gpuId, nGpus, &barRound, grid, tid);
     if (tid == 0) {
         for (int i = 0; i < M; i++) {
             double acx = 0.0, acy = 0.0;
@@ -246,7 +213,7 @@ extern "C" __global__ void frame_kernel(
             mAccX[i] = acx; mAccY[i] = acy;
         }
     }
-    sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+    sys_barrier(gs->round_, gpuId, nGpus, &barRound, grid, tid);
 
     const double wDts[3] = { w1, w0, w1 };
 
@@ -405,7 +372,7 @@ extern "C" __global__ void frame_kernel(
                         gs->backY[gpuId * M_MAX + j] = backY[j];
                     }
                 }
-                sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+                sys_barrier(gs->round_, gpuId, nGpus, &barRound, grid, tid);
                 // Phase C: Massiv-Beschleunigung aus allen Partialsummen
                 if (tid == 0) {
                     for (int i = 0; i < M; i++) {
@@ -430,7 +397,7 @@ extern "C" __global__ void frame_kernel(
                         mAccX[i] = acx; mAccY[i] = acy;
                     }
                 }
-                sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+                sys_barrier(gs->round_, gpuId, nGpus, &barRound, grid, tid);
             }
 
             // ---- Private Feinschleife der HEISSEN Astis: EINMAL monoton
@@ -731,9 +698,9 @@ class NBodyCuda:
 
         # GSync-Bereich: gemappter Host-Speicher bei >1 Karte (alle sehen
         # dieselben Bytes), sonst normaler Device-Speicher.
-        # struct GSync: round_[G_MAX*16] u32 | minEnc[G_MAX*16] u64 |
+        # struct GSync: round_[G_MAX*PAD] u32 | minEnc[G_MAX*PAD] u64 |
         # backX/backY[G_MAX*M_MAX] f64 (+ Alignment-Polster)
-        gs_bytes = 4 * G_MAX * 16 + 8 * G_MAX * 16 + 2 * 8 * G_MAX * M_MAX
+        gs_bytes = 4 * G_MAX * PAD + 8 * G_MAX * PAD + 2 * 8 * G_MAX * M_MAX
         gs_bytes += (-gs_bytes) % 8 + 64
         if ng > 1:
             # cudaHostAllocPortable(1) | cudaHostAllocMapped(2): der
@@ -788,7 +755,7 @@ class NBodyCuda:
                     sh["snapM"] = cp.empty(K_MAX * 4 * max(m, 1),
                                            cp.float32)
                 if ng > 1:
-                    sh["gs"] = _device_view_of_host(gs_host_ptr, gs_bytes, d)
+                    sh["gs"] = device_view_of_host(gs_host_ptr, gs_bytes, d)
                 else:
                     sh["gs"] = cp.zeros(gs_bytes // 8, dtype=cp.float64)
                 shards.append(sh)
@@ -1118,15 +1085,3 @@ def _pinned(n: int, shape=None) -> np.ndarray:
     mem = cp.cuda.alloc_pinned_memory(n * 4)
     puffer = np.frombuffer(mem, dtype=np.float32, count=n)
     return puffer if shape is None else puffer.reshape(shape)
-
-
-def _device_view_of_host(host_ptr: int, nbytes: int, device: int):
-    """Gemappten Host-Speicher als Device-Pointer der jeweiligen Karte
-    ansprechen (zero-copy ueber PCIe) — Traeger der System-Barrier.
-    Unter UVA (64-bit, alle modernen Karten) ist der Host-Pointer eines
-    cudaHostAlloc(Portable|Mapped)-Bereichs direkt als Device-Pointer
-    gueltig — cudaHostGetDevicePointer waere ein No-op."""
-    with cp.cuda.Device(device):
-        mem = cp.cuda.UnownedMemory(host_ptr, nbytes, owner=None)
-        return cp.ndarray((nbytes // 8,), dtype=cp.float64,
-                          memptr=cp.cuda.MemoryPointer(mem, 0))

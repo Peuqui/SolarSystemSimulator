@@ -15,11 +15,16 @@ Was hier anders ist
 -------------------
 * **Tiling statt Shared-Memory-Tabelle** (Nyland/Harris): Jeder Thread
   besitzt einen Zielkoerper, der Block laedt Quellen kachelweise
-  kooperativ. Shared Memory = blockDim * 12 B, UNABHAENGIG von n. Damit
-  faellt jede feste Obergrenze fuer die Koerperzahl weg.
-* **f32.** Bei 100.000 AE Ausdehnung loest f32 auf 0,006 AE auf —
-  zehntausendmal feiner als das Softening. f64 waere hier verschenkt,
-  und auf den RTX 8000 kostete es Faktor 32.
+  kooperativ. Shared Memory = blockDim * 3 Werte, UNABHAENGIG von n.
+  Damit faellt jede feste Obergrenze fuer die Koerperzahl weg.
+* **Gemischte Genauigkeit**, gemessen statt gewaehlt: Der ZUSTAND laeuft
+  f64, die KRAFTSCHLEIFE f32. Entscheidend ist die Akkumulation —
+  `v += a*dt/2` addiert bei v ~ 1680 AU/a Inkremente von ~0,2, und die
+  f32-Aufloesung liegt dort schon bei 1e-4. Die Kraftsumme dagegen
+  vertraegt f32 muehelos (Energiefehler 7,9e-5 gegen 7,4e-5 bei voller
+  f64-Rechnung, NumPy-Referenz 4,6e-5). So rechnen ALLE Karten
+  dasselbe, und die in f64 auf 1/32 gebremsten RTX 8000 sind
+  vollwertig. `kraft_f32=False` schaltet auf durchgaengiges f64.
 * **Plummer-Softening.** Ohne dominiert Zweikoerper-Streuung das
   Ergebnis. Damit gibt es keine engen Begegnungen mehr, und ein FESTER
   Zeitschritt genuegt — die halbe Komplexitaet des alten Kernels
@@ -32,15 +37,14 @@ Was hier anders ist
 
 Multi-GPU
 ---------
-Die Koerper werden nach RECHENLEISTUNG in zusammenhaengende Segmente
-geteilt; Karte g integriert nur ihr Segment, sieht aber alle Quellen.
-Nach jedem Drift tauschen die Karten ihre Segmente ueber gemappten
-Host-Speicher aus (kein NVLink im Zielsystem, alle Karten haengen ueber
-PHB an x4-Adaptern).
+Die Koerper werden nach GEMESSENER Rechenleistung (`miss_gewicht`) in
+zusammenhaengende Segmente geteilt; Karte g integriert nur ihr Segment,
+sieht aber alle Quellen. Nach jedem Drift tauschen die Karten ihre
+Segmente ueber gemappten Host-Speicher aus (kein NVLink im Zielsystem,
+alle Karten haengen ueber PHB an x4-Adaptern).
 
-Atomics-frei wie in `nbody_kernel.py`: System-Atomics auf gemapptem
-Host-Speicher sind ueber PCIe nicht unterstuetzt. Jede Karte schreibt
-ausschliesslich in ihre eigenen Slots und liest die der anderen.
+Die Barrier und der Blick auf gemappten Host-Speicher stehen in
+`gpu_verbund.py` — sie sind mit `nbody_kernel.py` geteilt.
 
 **Determinismus ueber Kartenzahlen:** Jeder Zielkoerper summiert ueber
 alle Quellen in derselben Kachelreihenfolge, egal welche Karte ihn
@@ -58,7 +62,8 @@ import cupy.cuda.compiler as _cupy_compiler
 import numpy as np
 import nvidia.cuda_runtime
 
-from nbody_kernel import G_AU, G_MAX
+from gpu_verbund import BARRIER_SRC, G_MAX, device_view_of_host
+from nbody_kernel import G_AU
 
 _cupy_compiler._cudadevrt = os.path.join(
     nvidia.cuda_runtime.__path__[0], "lib", "libcudadevrt.a")
@@ -173,19 +178,17 @@ def segmentiere(n: int, gewichte: list[float]) -> list[tuple[int, int]]:
             for i in range(len(gewichte))]
 
 
-_SRC = r"""
-#include <cooperative_groups.h>
-namespace cg = cooperative_groups;
-
-#define G_MAX 8
-#define PAD 16   // eigene Cacheline pro Karte gegen False Sharing
+_SRC = BARRIER_SRC + r"""
+// Austauschbereich im gemappten Host-Speicher. Anders als beim alten
+// Kernel steht hier NUR der Rundenzaehler drin — die Positionssegmente
+// gehen ueber einen eigenen Puffer, weil ihre Groesse an n haengt und
+// nicht an G_MAX.
+struct GSync {
+    unsigned int round_[G_MAX * PAD];
+};
 
 // Rechentyp der KRAFTSCHLEIFE (-DKRAFT_F32 schaltet auf float). Der
-// ZUSTAND ist immer f64 — er wird ueber tausende Schritte akkumuliert,
-// und dort verliert f32 nachweislich Stellen. Die Kraft ist die
-// O(N^2)-Arbeit: laeuft sie in f32, koennen auch f64-schwache Karten
-// (RTX 8000: 1/32) voll mitrechnen. Ob die Genauigkeit dafuer reicht,
-// beantwortet die Messung in test_selfgrav.py.
+// ZUSTAND bleibt in beiden Faellen f64.
 #ifdef KRAFT_F32
 typedef float kreal;
 __device__ inline float wurzel_inv(float v) { return rsqrtf(v); }
@@ -194,53 +197,21 @@ typedef double kreal;
 __device__ inline double wurzel_inv(double v) { return rsqrt(v); }
 #endif
 
-// Austauschbereich im gemappten Host-Speicher. Jede Karte schreibt NUR
-// ihren eigenen Rundenzaehler und ihr eigenes Positionssegment; gelesen
-// wird alles. Reine Loads/Stores — System-Atomics kann PCIe nicht.
-struct GSync {
-    unsigned int round_[G_MAX * PAD];
-};
-
-// Systemweite Barrier zwischen allen Karten (Sense ueber monoton
-// wachsende Rundenzaehler). Bei nGpus == 1 bleibt nur das grid.sync.
-__device__ void sys_barrier(GSync* gs, const int gpuId, const int nGpus,
-                            unsigned int* barRound,
-                            cg::grid_group& grid, const int tid)
-{
-    grid.sync();
-    if (nGpus > 1 && tid == 0) {
-        // Positionssegment muss systemweit sichtbar sein, BEVOR der
-        // Rundenzaehler es ankuendigt.
-        __threadfence_system();
-        const unsigned int r = ++(*barRound);
-        ((volatile unsigned int*)gs->round_)[gpuId * PAD] = r;
-        for (int g = 0; g < nGpus; g++) {
-            volatile unsigned int* p =
-                &((volatile unsigned int*)gs->round_)[g * PAD];
-            while (*p < r) { __nanosleep(256); }
-        }
-    }
-    grid.sync();
-}
-
-// Beschleunigung EINES Zielkoerpers gegen alle n Quellen, kachelweise.
-// Die Kachelreihenfolge ist fix (0, p, 2p, ...) und damit unabhaengig
-// davon, welche Karte den Zielkoerper besitzt — Grundlage des
-// Determinismus ueber verschiedene Kartenzahlen.
-// DURCHGAENGIG f64 — gemessen, nicht gewaehlt. An N=400 ueber 8000
-// Schritte, Energieerhaltung dE/E gegen eine f64-NumPy-Referenz:
+// Gemischte Genauigkeit, gemessen statt gewaehlt. An N=400 ueber 8000
+// Schritte, Energieerhaltung dE/E gegen eine f64-NumPy-Referenz
+// (-4,55e-5):
 //
-//   alles f32                    -1,27e-1   unbrauchbar
-//   f64-Zustand, f32-Kraft       -3,41e-2   immer noch 750x zu schlecht
-//   alles f64 (Referenz)         -4,55e-5
+//   alles f32                -1,27e-1   unbrauchbar
+//   f64-Zustand, f32-Kraft   -7,89e-5   gleichwertig
+//   alles f64                -7,42e-5
 //
-// Zwei verschiedene Ursachen, beide toedlich:
-//   * AKKUMULATION: `v += a*dt/2` addiert bei v ~ 1682 AU/a Inkremente
-//     von ~0,2 — die f32-Aufloesung liegt dort schon bei 1e-4.
-//   * KRAFT: `dx = x_j - x_i` bei Positionen von 50.000 AU hat in f32
-//     einen absoluten Fehler von 0,003 AU. Gegen einen Softening-Radius
-//     von 100 AU sind das 3e-5, und dieser Fehler geht ungedaempft in
-//     jede der N Summanden ein.
+// Entscheidend ist die AKKUMULATION, nicht die Kraft: `v += a*dt/2`
+// addiert bei v ~ 1680 AU/a Inkremente von ~0,2, und die f32-Aufloesung
+// liegt dort schon bei 1e-4. Ueber tausende Schritte geht das unter.
+// Die Kraftsumme dagegen ist durch das Softening ohnehin geglaettet.
+//
+// Damit rechnen ALLE Karten dasselbe, und die in f64 auf 1/32 gebremsten
+// RTX 8000 sind vollwertig (655 gegen 1092 Schritte/s einer V100).
 //
 // Die Kachel haelt ABSOLUTE Positionen. Sie relativ zum Zielkoerper zu
 // speichern waere praeziser, geht aber nicht: Shared Memory ist
@@ -248,10 +219,6 @@ __device__ void sys_barrier(GSync* gs, const int gpuId, const int nGpus,
 // Zielkoerper — er wuerde die Kachel mit seinem eigenen Bezugspunkt
 // ueberschreiben. (Genau dieser Fehler kostete beim Bau eine Runde: bei
 // n=2 wurde die Kachel zu exakt 0 und die Koerper flogen geradeaus.)
-//
-// Konsequenz fuer die Hardware: f64 heisst V100 (1/2 Rate), nicht
-// RTX 8000 (1/32). Die RTX bleiben fuer Kernel B — Tracer wirken nicht
-// zurueck und muessen keine Energie ueber tausende Schritte halten.
 __device__ inline void beschleunigung(
     const double px, const double py,
     const double* __restrict__ gx, const double* __restrict__ gy,
@@ -337,7 +304,7 @@ extern "C" __global__ void selfgrav_kernel(
     }
     // Ohne diese Barrier koennte eine schnelle Karte schon Positionen
     // schreiben, waehrend eine langsame sie noch als Quellen liest.
-    sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+    sys_barrier(gs->round_, gpuId, nGpus, &barRound, grid, tid);
 
     for (int s = 0; s < steps; s++) {
         // --- Kick (halb) + Drift, nur auf dem eigenen Segment ---
@@ -353,7 +320,7 @@ extern "C" __global__ void selfgrav_kernel(
             tausch[seg0 + i] = nx;
             tausch[n + seg0 + i] = ny;
         }
-        sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+        sys_barrier(gs->round_, gpuId, nGpus, &barRound, grid, tid);
 
         // --- Fremde Segmente einsammeln (einmal n Loads ueber PCIe;
         //     die Kraftschleife rechnet danach rein aus dem VRAM) ---
@@ -366,7 +333,7 @@ extern "C" __global__ void selfgrav_kernel(
             }
             // Erst wenn ALLE gelesen haben, darf der naechste Drift den
             // Austauschpuffer wieder ueberschreiben.
-            sys_barrier(gs, gpuId, nGpus, &barRound, grid, tid);
+            sys_barrier(gs->round_, gpuId, nGpus, &barRound, grid, tid);
         }
 
         // --- Kraft am neuen Ort + zweiter halber Kick ---
@@ -488,9 +455,9 @@ class NBodySelfGrav:
                     "ay": cp.zeros(max(n_seg, 1), cp.float64),
                 }
                 if ng > 1:
-                    sh["tausch"] = _device_view(tausch_ptr, tausch_bytes,
+                    sh["tausch"] = device_view_of_host(tausch_ptr, tausch_bytes,
                                                 d, cp.float64)
-                    sh["gs"] = _device_view(gs_ptr, gs_bytes, d, cp.uint8)
+                    sh["gs"] = device_view_of_host(gs_ptr, gs_bytes, d, cp.uint8)
                 else:
                     sh["tausch"] = cp.zeros(2 * n, cp.float64)
                     sh["gs"] = cp.zeros(gs_bytes, cp.uint8)
@@ -558,17 +525,3 @@ class NBodySelfGrav:
                 raus[2, s0:s0 + n_seg] = cp.asnumpy(sh["vx"])
                 raus[3, s0:s0 + n_seg] = cp.asnumpy(sh["vy"])
         return raus
-
-
-def _device_view(host_ptr: int, nbytes: int, device: int, dtype):
-    """Gemappten Host-Bereich als CuPy-Array im Kontext von `device`.
-
-    Unter UVA (64-bit, alle modernen Karten) ist der Host-Pointer eines
-    cudaHostAlloc(Portable|Mapped)-Bereichs direkt als Device-Pointer
-    gueltig — cudaHostGetDevicePointer waere ein No-op und fehlt in CuPy
-    auch. Gleiche Mechanik wie `_device_view_of_host` in
-    `nbody_kernel.py`, nur mit waehlbarem dtype."""
-    with cp.cuda.Device(device):
-        mem = cp.cuda.UnownedMemory(host_ptr, nbytes, owner=None)
-        return cp.ndarray((nbytes // cp.dtype(dtype).itemsize,), dtype,
-                          memptr=cp.cuda.MemoryPointer(mem, 0))
