@@ -6485,6 +6485,29 @@ function filmApply(t) {
   }
   _filmVtxCount = vtx !== null ? (vo / 5) : -1;
   _filmStreamN = s0.idx.length;
+  // Geschwindigkeit und Kurs der Stoerkoerper aus der Ortsaenderung
+  // ableiten. Der Film uebertraegt NUR Positionen (u16, das ist der
+  // Kern des Protokolls) — ohne das zeigten die Felder ewig die Werte,
+  // mit denen der Koerper injiziert wurde, obwohl ihn das Feld laengst
+  // abgelenkt und gebremst hat.
+  //
+  // Nur fuer `perturbers`, also eine Handvoll: ueber alle Koerper waere
+  // es eine weitere O(N)-Schleife je Bild. Und erst ab einem halben Tag
+  // Abstand, sonst dominiert das Quantisierungsrauschen der u16-Gitter
+  // den Differenzenquotienten.
+  for (const b of perturbers) {
+    if (b._vT !== undefined) {
+      const dTage = t - b._vT;
+      if (dTage >= 0.5) {
+        const dJahre = dTage / 365.25;
+        b.vx = (b.x - b._vX) / dJahre;
+        b.vy = (b.y - b._vY) / dJahre;
+        b._vT = t; b._vX = b.x; b._vY = b.y;
+      }
+    } else {
+      b._vT = t; b._vX = b.x; b._vY = b.y;
+    }
+  }
   filmApplyEvents(t);
   // visible wird NUR noch bei Ereignis-Aenderungen gesetzt (in
   // filmApplyEvents) — die fruehere Jeden-Frame-Schleife kostete bei
