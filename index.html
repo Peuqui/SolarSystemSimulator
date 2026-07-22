@@ -2249,7 +2249,15 @@ function buildStrukturbildung() {
     const streu = () => (Math.random() * 2 - 1) * 0.08 * vr;
     pushBody({
       name: 'T' + (i + 1), mass: 0,
-      color: '#8fb4ff',
+      // GLEICHE Farbe wie die Massen. Ein Tracer stellt dasselbe dar —
+      // Materie an einem Ort. Die Unterscheidung ist technisch (wer
+      // Quelle ist und wer nicht), nicht physikalisch, und in einer
+      // Dichtedarstellung darf sie nicht sichtbar sein: Bei additivem
+      // Blending summiert sich jeder Farbunterschied ueber die
+      // Ueberlagerungen. Mit dem frueheren #8fb4ff waren die Tracer
+      // 16 % dunkler, und das Bild wurde matter, je mehr davon
+      // dazukamen — obwohl MEHR Punkte da waren.
+      color: '#cfe0ff',
       x, y,
       vx: x / rr * vr + streu(),
       vy: y / rr * vr + streu(),
