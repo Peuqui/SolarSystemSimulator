@@ -1107,7 +1107,7 @@ const I18N = {
     'cuda.fehler': 'CUDA-Backend meldet einen Fehler — zurück auf den WebWorker geschaltet: {m} (Klick zum Ausblenden)',
     'lbl.film-lod': 'Punkte im Bild',
     'lbl.film-lod-auto': 'Auto',
-    'tt.film-lod': 'Wie viele Punkte der Server höchstens pro Sample schickt. Der EINZIGE Regler, der die Bildrate beeinflusst — ruckelt es, hier herunter. Physik und Kollisionen laufen immer für ALLE Körper. Details: 💡 bei der Physik-Engine.',
+    'tt.film-lod': 'Wie viele Punkte der Server höchstens pro Sample schickt. Der EINZIGE Regler, der die Bildrate beeinflusst — ruckelt es, hier herunter. Physik und Kollisionen laufen immer für ALLE Körper. ACHTUNG im Netz-Szenario: Massive Körper gehen IMMER vollständig mit, ausgedünnt werden nur die Tracer. Liegt das Budget unter der Massenzahl, kommt kein einziger Tracer durch und das Bild wird schlagartig dünner — dann hier hochdrehen. Details: 💡 bei der Physik-Engine.',
     'lbl.film-interp': 'Zwischenbilder interpolieren',
     'tt.film-interp': 'Zwischen zwei gestreamten Samples interpolieren — sorgt für flüssige Darstellung. Aus = nur berechnete Positionen, exakt aber ruckelig. Details: 💡 bei der Physik-Engine.',
     'tt.film': 'Compute und Darstellung entkoppelt: die GPU rechnet mit maximalem Durchsatz voraus (Ringpuffer), der Browser spielt die Timeline wie ein Video ab — scrubben, zurückspulen, live folgen. Kollisionen verschmelzen serverseitig (immer Merge, kein Zerbersten/Abprallen).',
@@ -1399,7 +1399,7 @@ const I18N = {
     'cuda.fehler': 'CUDA backend reported an error — switched back to the WebWorker: {m} (Click to dismiss)',
     'lbl.film-lod': 'Points on screen',
     'lbl.film-lod-auto': 'Auto',
-    'tt.film-lod': 'How many points the server sends per sample at most. The ONLY slider affecting frame rate — turn it down if playback stutters. Physics and collisions always run for ALL bodies. Details: 💡 next to the physics engine.',
+    'tt.film-lod': 'How many points the server sends per sample at most. The ONLY slider affecting frame rate — turn it down if playback stutters. Physics and collisions always run for ALL bodies. NOTE in the cosmic-web scenario: massive bodies are ALWAYS sent in full, only tracers get thinned. If the budget is below the number of masses, not a single tracer gets through and the image thins out abruptly — turn this up. Details: 💡 next to the physics engine.',
     'lbl.film-interp': 'Interpolate between samples',
     'tt.film-interp': 'Interpolate between two streamed samples — keeps playback smooth. Off = computed positions only, exact but choppy. Details: 💡 next to the physics engine.',
     'tt.film': 'Compute and display decoupled: the GPU simulates ahead at full throughput (ring buffer), the browser plays the timeline like a video — scrub, rewind, follow live. Collisions merge server-side (always merge, no shattering/bouncing).',
@@ -5023,9 +5023,17 @@ function _filmControlsAktiv() {
   // Diese beiden hat die Schleife oben schon nach `aktiv` gesetzt — hier
   // nur ZUSAETZLICH sperren, niemals freigeben.
   if (punktwolke) {
-    for (const id of ['film-lod', 'mob-film-lod', 'film-sub']) {
-      dimmen(id, true);
-    }
+    // NUR die Bahnstuetzpunkte: Kernel A liefert nie welche.
+    //
+    // "Punkte im Bild" bleibt BEDIENBAR, seit es Tracer gibt. Es war
+    // wirkungslos, solange die Szene nur aus Massen bestand — die gehen
+    // immer vollstaendig mit. Tracer sind im Protokoll aber Asteroiden,
+    // und genau die duennt das Dichte-LOD aus: Bei 31.623 Massen und
+    // einem Budget von 20.000 wird `rest` negativ, und der Server
+    // schickt AUSSCHLIESSLICH die Massen. Alle Tracer fielen weg, das
+    // Bild wurde sichtbar duenner. Der Regler ist damit das wichtigste
+    // Stellrad des Szenarios.
+    dimmen('film-sub', true);
   }
 }
 
