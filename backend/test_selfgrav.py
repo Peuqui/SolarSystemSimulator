@@ -110,8 +110,9 @@ def a_kreisbahn(dev) -> bool:
     st = sim.load_state(x, y, np.zeros(2), np.array([-v, v]),
                         np.array([m, m]))
     sim.step_batch(st, periode / schritte, schritte)
+    # (4n) = x|y|vx|vy; bei n=2 also z[0]=x0, z[2]=y0.
     z = sim.export_f64(st)
-    fehler = float(np.hypot(z[0][0] - x[0], z[1][0] - y[0]))
+    fehler = float(np.hypot(z[0] - x[0], z[2] - y[0]))
     grenze = 1e-4 * 2 * r
     ok = fehler < grenze
     print(f"    Abweichung nach einem Umlauf: {fehler:.3e} AU "
@@ -133,10 +134,10 @@ def b_energie(dev) -> bool:
         sim = NBodySelfGrav([dev], softening_au=EPS)
         st = sim.load_state(x, y, vx, vy, mass)
         laufe(sim, st, dt, schritte)
-        z = sim.export_f64(st)
+        z = sim.export_f64(st).reshape(4, n)
         # Aus dem f64-ZUSTAND, nicht aus den f32-Snapshots: die
         # Gesamtenergie ist eine Differenz grosser, fast gleicher Zahlen.
-        e_gpu = energie(z[0], z[1], z[2], z[3], z[4], eps2)
+        e_gpu = energie(z[0], z[1], z[2], z[3], mass, eps2)
         rx, ry, rvx, rvy = referenz(x, y, vx, vy, mass, eps2, dt, schritte)
         e_ref = energie(rx, ry, rvx, rvy, mass, eps2)
         d_gpu = abs((e_gpu - e0) / e0)
@@ -168,7 +169,7 @@ def c_determinismus(karten) -> bool:
             ref = z
             print(f"    {k} Karte(n) {karten[:k]}: Referenz")
             continue
-        d = float(np.abs(z[:4] - ref[:4]).max())
+        d = float(np.abs(z - ref).max())
         alles_ok &= (d == 0.0)
         print(f"    {k} Karte(n) {karten[:k]}: "
               + ("bitgleich" if d == 0.0 else f"ABWEICHUNG {d:.3e}"))

@@ -406,10 +406,17 @@ class NBodySelfGrav:
 
     def load_state(self, x: np.ndarray, y: np.ndarray,
                    vx: np.ndarray, vy: np.ndarray,
-                   mass: np.ndarray, _kalibrieren: bool = False) -> dict:
+                   mass: np.ndarray, *_egal,
+                   _kalibrieren: bool = False, **_auch_egal) -> dict:
         """Vollzustand uebernehmen. Jede Karte haelt ALLE Positionen und
         Massen, integriert aber nur ihr nach GEMESSENER Leistung
         gewichtetes Segment.
+
+        Die zusaetzlichen Argumente von `NBodyCuda.load_state`
+        (Sichtbarkeit, Asteroiden-Flag, Beruehrungsradien) werden
+        angenommen und ignoriert: Hier ist jeder Koerper eine Masse, es
+        gibt keine Testteilchen und keine Beruehrungen. So kann der
+        Producer beide Kernel gleich aufrufen.
 
         `_kalibrieren` bricht die Rekursion beim Mikro-Benchmark: der
         legt selbst einen Zustand an und braucht keine Gewichtung, weil
@@ -508,20 +515,24 @@ class NBodySelfGrav:
         return out
 
     def export_f64(self, st: dict) -> np.ndarray:
-        """Aktueller Zustand als (5, n): x, y, vx, vy, mass."""
+        """Exakten f64-Zustand [x|y|vx|vy] (4n) in Originalreihenfolge.
+
+        Gleiche Form wie `NBodyCuda.export_f64` — der Film-Producer
+        dumpt damit den Zustand fuer die Engine-Uebergabe und darf nicht
+        wissen muessen, welcher Kernel gerechnet hat. Die Masse fehlt
+        bewusst: Sie aendert sich hier nie (keine Verschmelzungen)."""
         n = st["N"]
-        raus = np.empty((5, n), np.float64)
+        raus = np.empty(4 * n, dtype="<f8")
         erste = st["shards"][0]
         with cp.cuda.Device(erste["dev"]):
-            raus[0] = cp.asnumpy(erste["gx"])
-            raus[1] = cp.asnumpy(erste["gy"])
-            raus[4] = cp.asnumpy(erste["gm"])
+            raus[0:n] = cp.asnumpy(erste["gx"])
+            raus[n:2 * n] = cp.asnumpy(erste["gy"])
         for sh in st["shards"]:
             n_seg = sh["n_seg"]
             if n_seg == 0:
                 continue
             s0 = sh["seg0"]
             with cp.cuda.Device(sh["dev"]):
-                raus[2, s0:s0 + n_seg] = cp.asnumpy(sh["vx"])
-                raus[3, s0:s0 + n_seg] = cp.asnumpy(sh["vy"])
+                raus[2 * n + s0:2 * n + s0 + n_seg] = cp.asnumpy(sh["vx"])
+                raus[3 * n + s0:3 * n + s0 + n_seg] = cp.asnumpy(sh["vy"])
         return raus
