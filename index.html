@@ -2466,6 +2466,18 @@ function initBodies() {
 // grosszuegig: bis dahin ist eine offene Liste noch ueberschaubar, und
 // wer sie will, klappt sie auf.
 const KOERPERLISTE_ZU_AB = 40;
+// Ab dieser Zahl massiver Koerper werden ihre Namen im Bild nicht mehr
+// gezeichnet: Sie ueberlappen dann zu einem unlesbaren Teppich und
+// kosten je einen fillText pro Koerper und Bild (bei 50.000 also 50.000).
+//
+// Die Zahl ist nicht gegriffen, sondern dieselbe Grenze wie M_MAX im
+// CUDA-Kernel. Mehr als 64 massive Koerper KANN kein anderes Szenario
+// haben — der Kernel haelt sie im Shared Memory und lehnt darueber ab,
+// und der Client sperrt die Injektion entsprechend. Alles darueber
+// laeuft zwangslaeufig ueber den selbstgravitierenden Pfad, wo Namen
+// ohnehin sinnlos sind. Der Galaxienhaufen (56) bleibt darunter und
+// behaelt seine Beschriftung. Der Fokus-Koerper behaelt sie immer.
+const LABEL_MAX_MASSIV = 64;
 
 // Jeder Eintrag kostet zwei DOM-Knoten (Desktop + Mobil). Bei hunderten
 // massiven Koerpern ist das beim Szenario-Wechsel und nach jeder
@@ -4004,6 +4016,23 @@ function draw() {
   // paar massiven Koerper — der 250k-Scan mit 3 Property-Reads entfaellt.
   const _astiSonderfaelle = astEscape ||
                             (focusBody && focusBody.isAsteroid);
+  // Namen nur, solange sie lesbar sind. In den selbstgravitierenden
+  // Szenarien ist JEDER Koerper massiv — bei 50.000 waeren das 50.000
+  // fillText je Bild, und auf dem Schirm ein roter Teppich aus
+  // ueberlappenden Kuerzeln, der die Szene selbst verdeckt.
+  const _labelZeigen = massiveKoerperZahl() <= LABEL_MAX_MASSIV;
+  // Dieselbe Grenze entscheidet ueber die Darstellungsart: Oberhalb sind
+  // es Massen-Samples eines Dichtefelds, keine einzelnen Himmelskoerper.
+  // Sie werden klein und ADDITIV gezeichnet — ueberlappende Punkte
+  // addieren ihre Helligkeit, statt einander zu ueberdecken. Erst so
+  // wird Dichte sichtbar: dichte Knoten leuchten, duenne Bruecken bleiben
+  // matt. Mit deckenden Punkten saettigt alles zu einer weissen Flaeche,
+  // und die Struktur, um die es in diesem Szenario geht, verschwindet.
+  const _sgPunkte = !_labelZeigen;
+  if (_sgPunkte) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.55;
+  }
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (b.isAsteroid && !_astiSonderfaelle) continue;
@@ -4068,7 +4097,13 @@ function draw() {
 
     ctx.beginPath();
     ctx.fillStyle = b.color;
-    const drawR = Math.max(b.radius, 1.5);
+    // Punktgroesse NICHT aus der Masse, wenn jeder Koerper ein
+    // Massen-Sample des Dichtefelds ist: `massToRadius` deckelt bei 6 px,
+    // und kosmologische Massen (1e7 M_sonne) erreichen das Maximum
+    // muehelos. 6.500 Punkte zu 12 px Durchmesser decken mehr als den
+    // ganzen Schirm — die Szene wurde zur weissen Scheibe, in der von
+    // Filamenten nichts zu sehen war.
+    const drawR = _sgPunkte ? 1.1 : Math.max(b.radius, 1.5);
     ctx.arc(sx, sy, drawR, 0, Math.PI*2);
     ctx.fill();
 
@@ -4082,8 +4117,13 @@ function draw() {
       ctx.stroke();
     }
 
-    // Fluchtkurs-Markierung: pulsierender roter Ring
-    if (b.unbound && massEscape) {
+    // Fluchtkurs-Markierung: pulsierender roter Ring. Nicht in Szenen
+    // aus Massen-Samples: Ein expandierendes Feld ist am Rand grossteils
+    // ungebunden, das ergaebe hunderte pulsierende Ringe von je 11+ px
+    // Radius — ein roter Kranz um die Szene, der mehr verdeckt als er
+    // meldet. Die Fluchterkennung ist fuer einzelne ausgeschleuderte
+    // Koerper gedacht, nicht fuer den Hubble-Fluss.
+    if (b.unbound && massEscape && !_sgPunkte) {
       const ph = (Math.sin(performance.now() / 160) + 1) / 2;  // 0..1
       ctx.beginPath();
       ctx.strokeStyle = `rgba(255,90,90,${(0.25 + 0.7 * ph).toFixed(3)})`;
@@ -4112,9 +4152,20 @@ function draw() {
 
     // Label (Asteroiden bekommen nie ein Label — sie wurden weiter oben
     // im Pre-Pass behandelt und springen mit continue aus dieser Schleife).
-    ctx.fillStyle = (b.unbound && massEscape) ? '#ff6a6a' : b.color + 'dd';
-    ctx.font = '11px monospace';
-    ctx.fillText(b.name, sx + b.radius + 5, sy + 4);
+    // Der Fokus-Koerper behaelt seinen Namen auch in grossen Szenen: ihn
+    // hat der Nutzer ausgewaehlt, er ist genau einer, und ohne Label
+    // waere nicht erkennbar, welcher es ist.
+    if (_labelZeigen || b === focusBody) {
+      ctx.fillStyle = (b.unbound && massEscape) ? '#ff6a6a' : b.color + 'dd';
+      ctx.font = '11px monospace';
+      ctx.fillText(b.name, sx + b.radius + 5, sy + 4);
+    }
+  }
+  if (_sgPunkte) {
+    // Zurueck auf normales Zeichnen — sonst leuchtet alles Folgende
+    // (Explosionen, Marker, Overlays) additiv mit.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
   }
 
   // Kollisions-Explosionen: pro Treffer eine kleine, helle, gefuellte
