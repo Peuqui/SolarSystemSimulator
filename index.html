@@ -701,6 +701,15 @@ input[type=range] {
   <button id="btn-clear-escaping" class="danger" style="width:100%; margin-top:10px;" data-i18n="btn.clear-escaping" data-i18n-title="tt.clear-escaping">&#x1F5D1; Flüchtende entfernen</button>
   <div id="perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
+  <!-- Injizierte Stoerkoerper zuerst und getrennt: In einer Punktwolke
+       stehen darunter zehntausende Eintraege, in denen ein selbst
+       gesetzter Rogue nicht auffindbar waere — obwohl gerade er
+       veraendert werden soll. -->
+  <details class="koerperliste" id="rogue-details" style="display:none;" open>
+    <summary><span data-i18n="sec.rogues">Injizierte Störkörper:</span> <span id="rogue-checks-count"></span></summary>
+    <div id="rogue-checks"></div>
+  </details>
+
   <details class="koerperliste" id="bodies-details" open>
     <summary><span data-i18n="sec.bodies">Sichtbare Körper:</span> <span id="planet-checks-count"></span></summary>
     <div id="planet-checks"></div>
@@ -882,6 +891,11 @@ input[type=range] {
   <button id="mob-clear-escaping" class="danger" style="width:100%; margin-top:10px;" data-i18n="btn.clear-escaping">&#x1F5D1; Flüchtende entfernen</button>
   <div id="mob-perturber-list" style="font-size:11px; color:#f88; margin-top:6px;"></div>
 
+  <details class="koerperliste" id="mob-rogue-details" style="display:none;" open>
+    <summary><span data-i18n="sec.rogues">Injizierte Störkörper:</span> <span id="mob-rogue-checks-count"></span></summary>
+    <div id="mob-rogue-checks"></div>
+  </details>
+
   <details class="koerperliste" id="mob-bodies-details" open>
     <summary><span data-i18n="sec.bodies">Sichtbare Körper:</span> <span id="mob-planet-checks-count"></span></summary>
     <div id="mob-planet-checks"></div>
@@ -998,6 +1012,7 @@ const I18N = {
     'sec.inject': '🌌 Inject',
     'sec.stats': '📊 Statistik',
     'sec.bodies': 'Sichtbare Körper:',
+    'sec.rogues': 'Injizierte Störkörper:',
     'sec.rogue': '🪐 Rogue (Einzelkörper)',
     'sec.cloud': '🪨 Asteroiden-Wolke',
     // Scenarios
@@ -1295,6 +1310,7 @@ const I18N = {
     'sec.inject': '🌌 Inject',
     'sec.stats': '📊 Statistics',
     'sec.bodies': 'Visible bodies:',
+    'sec.rogues': 'Injected perturbers:',
     'sec.rogue': '🪐 Rogue (single body)',
     'sec.cloud': '🪨 Asteroid cloud',
     'sc.solarsystem': 'Solar System',
@@ -2577,7 +2593,7 @@ const LABEL_MAX_MASSIV = 64;
 // Aufklappen auf.
 let _koerperlisteOffen = { desk: true, mob: true };
 
-function fuelleKoerperliste(details, ziel, offen) {
+function fuelleKoerperliste(details, ziel, offen, filter) {
   if (!offen) { ziel.innerHTML = ''; return; }
   ziel.innerHTML = '';
   // Asteroiden NICHT einzeln auflisten — bei 100+ Wolken-Bodies sonst
@@ -2586,6 +2602,7 @@ function fuelleKoerperliste(details, ziel, offen) {
   // loeschen) gemeinsam verwaltet.
   for (const b of bodies) {
     if (b.isAsteroid) continue;
+    if (filter && !filter(b)) continue;
     addPlanetCheckbox(b, ziel);
   }
 }
@@ -2622,15 +2639,36 @@ function punktwolkeAktualisieren() {
 function rebuildBodyList(neueSzene = false) {
   const anzahl = massiveKoerperZahl();
   punktwolkeAktualisieren();   // Koerperzahl hat sich geaendert
+  // Selbst injizierte Massen stehen in einer EIGENEN Liste. In einer
+  // Punktwolke haette man sie sonst unter zehntausenden Eintraegen zu
+  // suchen — ausgerechnet die Koerper, die man veraendern will (Masse,
+  // Tempo, Richtung). Der Block bleibt verborgen, solange es keine gibt.
+  const _istStoerer = (b) => !!b.injiziert;
+  const anzahlStoerer = bodies.filter(
+    (b) => !b.isAsteroid && _istStoerer(b)).length;
+  for (const [detId, zielId, zaehlerId] of
+       [['rogue-details', 'rogue-checks', 'rogue-checks-count'],
+        ['mob-rogue-details', 'mob-rogue-checks', 'mob-rogue-checks-count']]) {
+    const det = document.getElementById(detId);
+    const ziel = document.getElementById(zielId);
+    const zaehler = document.getElementById(zaehlerId);
+    if (!det || !ziel) continue;
+    det.style.display = anzahlStoerer ? '' : 'none';
+    if (zaehler) zaehler.textContent = '(' + fmtDE(anzahlStoerer, 0) + ')';
+    fuelleKoerperliste(det, ziel, anzahlStoerer > 0, _istStoerer);
+  }
+
   const paare = [['bodies-details', checkDiv, 'planet-checks-count', 'desk'],
                  ['mob-bodies-details', mobCheckDiv, 'mob-planet-checks-count', 'mob']];
   for (const [detId, ziel, zaehlerId, schluessel] of paare) {
     const det = document.getElementById(detId);
     const zaehler = document.getElementById(zaehlerId);
-    if (zaehler) zaehler.textContent = '(' + fmtDE(anzahl, 0) + ')';
+    if (zaehler) zaehler.textContent =
+      '(' + fmtDE(anzahl - anzahlStoerer, 0) + ')';
     if (det && neueSzene) det.open = anzahl <= KOERPERLISTE_ZU_AB;
     _koerperlisteOffen[schluessel] = det ? det.open : true;
-    fuelleKoerperliste(det, ziel, _koerperlisteOffen[schluessel]);
+    fuelleKoerperliste(det, ziel, _koerperlisteOffen[schluessel],
+                       (b) => !_istStoerer(b));
   }
   updatePerturberList();
   updateApplyButton();
