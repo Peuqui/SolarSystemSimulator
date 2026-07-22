@@ -117,10 +117,10 @@ zehntausendmal feiner als das Softening.
 
 ### Etappen
 
-1. **Kernel A allein**, f32, festes Softening, fester Zeitschritt, keine
-   Kollisionen. Ein neues Szenario mit 10.000 Massen und **ohne** Tracer.
-   Das ist schon das Zwanzigfache dessen, was heute im Worker läuft — und
-   erst danach weiß man, ob das Netz wirklich entsteht.
+1. ~~**Kernel A allein**~~ — **gebaut** (`selfgrav_kernel.py`,
+   `test_selfgrav.py`). Was dabei anders kam als geplant, steht unten
+   unter „Was die Messung korrigiert hat". Es fehlt noch die Anbindung
+   an `film_producer` und ein Szenario im Client.
 2. **Kernel B** dazu, 200.000–300.000 Tracer.
 3. Kollisionen nachrüsten — über ein Raumgitter, nicht alle gegen alle.
    Oder weglassen: Bei Softening verschmelzen Teilchen ohnehin nicht mehr
@@ -130,6 +130,47 @@ zehntausendmal feiner als das Softening.
 
 Zwischenschritt, der schon läuft: das Szenario „Strukturbildung
 (selbstgravitierend)" mit 500 Körpern im WebWorker.
+
+### Was die Messung an diesem Konzept korrigiert hat
+
+**Die Hardware-Aufteilung oben (f64-Massen auf V100, f32-Tracer auf RTX)
+gilt so nicht für Kernel A.** Gemessen an N=400 über 8.000 Schritte,
+Energieerhaltung gegen eine f64-NumPy-Referenz (4,6·10⁻⁵):
+
+| | dE/E |
+|---|---|
+| alles f32 | 1,3·10⁻¹ |
+| f64-Zustand, **f32-Kraft** | 7,9·10⁻⁵ |
+| alles f64 | 7,4·10⁻⁵ |
+
+Entscheidend ist der **Zustand**, nicht die Kraft: `v += a·dt/2` addiert
+bei v ≈ 1.680 AU/a Inkremente von ~0,2, und die f32-Auflösung liegt dort
+schon bei 1·10⁻⁴. Die Kraftsumme dagegen verträgt f32 mühelos — das
+Softening glättet sie ohnehin.
+
+Damit rechnen **alle** Karten dasselbe (f64-Zustand, f32-Kraft), und die
+RTX 8000 sind vollwertig statt mit 1/32 unbrauchbar: 655 gegen 1.092
+Schritte/s einer V100. Über fünf Karten ist das Faktor 4,2 gegenüber f64
+auf drei V100.
+
+**Die Kartenwahl misst, statt zu schätzen** (`miss_gewicht`). Eine
+Datenblatt-Metrik lag nachweislich falsch herum, und selbst baugleiche
+Karten weichen um 11–21 % voneinander ab (siehe UEBERGABE Abschnitt 1).
+
+**Gemessene Skalierung** (fünf Karten, f32-Kraft):
+
+| N | 1 Karte | 5 Karten | Sim-Tage/s |
+|---|---|---|---|
+| 20.000 | 993 | 825 | 1.657 |
+| 50.000 | 147 | 311 | 625 |
+| 100.000 | 41 | 91 | 183 |
+| 200.000 | 10 | 32 | 64 |
+
+Unter ~30.000 Körpern lohnt der Verbund nicht — die Barrier frisst den
+Gewinn. Das braucht eine Schwelle wie `MULTI_GPU_AB` im alten Kernel.
+
+Die Zielzahl aus der Budget-Tabelle oben (10.000 Massen) ist damit weit
+übertroffen: **200.000 laufen bei 64 Sim-Tagen/s.**
 
 ## Kernel-Grenze M_MAX — erledigt, aber weiterhin eng
 

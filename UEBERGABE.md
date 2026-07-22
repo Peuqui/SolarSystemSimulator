@@ -46,6 +46,30 @@ sind 3 und 4. Kein Fehler.
 **PCIe:** Alle fünf Karten hängen mit **×4** an M.2-zu-Oculink- bzw.
 USB4-Adaptern (Mini-PC). Hardwarebedingt, nicht änderbar.
 
+**Die Karten sind nicht identisch — und das Datenblatt verrät es nicht.**
+Eine der drei V100 (CUDA-Index 1, PCI 07:00.0) ist eine **SXM2-Karte im
+PCIe-Umbau**, erkennbar am abweichenden VBIOS `88.00.7E.00.03` gegen
+`88.00.48.00.02` der beiden anderen.
+
+Gemessen (`miss_gewicht` in `selfgrav_kernel.py`, mehrfach und in beiden
+Reihenfolgen gegengeprüft):
+
+| | f32 | f64 |
+|---|---|---|
+| CUDA 0 (V100) | 4.759 | 1.490 |
+| CUDA 1 (V100, SXM2-Umbau) | 4.739 | 1.486 |
+| CUDA 2 (V100) | 4.840 | **1.655** |
+| CUDA 3 (RTX 8000) | 5.294 | 155 |
+| CUDA 4 (RTX 8000) | 4.174 | 154 |
+
+Der Umbau kostet **nichts** — CUDA 1 liegt gleichauf mit CUDA 0. Auffällig
+ist stattdessen **CUDA 2: in f64 elf Prozent schneller** als die beiden
+anderen V100, in f32 nur zwei. Und die beiden RTX 8000 unterscheiden sich
+in f32 um **21 %**, obwohl baugleich.
+
+`f64_score` gibt allen drei V100 exakt denselben Wert und sieht davon
+nichts. Wo Lasten verteilt werden, gehört darum gemessen — siehe 6.12.
+
 **Hängt noch GPU-Speicher fest?**
 ```bash
 nvidia-smi --query-compute-apps=pid,used_memory --format=csv
@@ -86,6 +110,7 @@ cd backend
 ../venv/bin/python test_waechter.py         # Runaway-Kills als kind 2
 ../venv/bin/python test_waisen.py           # GPU frei nach hartem Serverstod
 ../venv/bin/python test_producer_tod.py     # Producer-Absturz wird gemeldet
+../venv/bin/python test_selfgrav.py         # Kernel A (selbstgravitierend)
 ../venv/bin/python bench_erkennung.py       # Umschaltschwelle der 2. Karte
 ../venv/bin/python bench_film.py -n 60000 --det-gpus 1
 ```
@@ -124,6 +149,16 @@ aufgefallen. `test_bewegter_stern.py` schließt die Lücke.
   vergleichen.
 - Ein einzelner `nvidia-smi`-Aufruf misst in einem Stop-and-Go-System
   zufällig eine Pause. Immer Zeitreihen nehmen.
+- **Eine ruhende GPU misst zu langsam.** Sie steht in einer
+  Idle-Taktstufe und braucht Sekundenbruchteile auf vollen Takt. In einer
+  Messreihe über fünf Karten lag deshalb die *jeweils zuerst gemessene*
+  10–20 % unter allen folgenden — die erste Fassung von `miss_gewicht`
+  (`selfgrav_kernel.py`) bildete damit die Messreihenfolge ab statt der
+  Leistung und hätte einer baugleichen Karte ein um ein Fünftel kleineres
+  Segment gegeben. Daraus wurde fälschlich geschlossen, die V100 seien
+  untereinander 20 % verschieden. Gegenmittel: mehrere Runden, und die
+  **beste** zählt — Störungen (kalte Karte, fremde Last) wirken nur nach
+  unten, das Maximum ist der robuste Schätzer, nicht der Mittelwert.
 - **`utilization.gpu` ist kein Auslastungsmaß.** Es misst den Zeitanteil,
   in dem *mindestens ein Kernel resident* war — nicht, wie viele
   Rechenwerke arbeiten. Gemessen: drei V100 bei 100 % Util und **42 W von
@@ -342,21 +377,46 @@ Testläufen). Nur wenn auch der stirbt, bleiben sie. Prüfen mit
 `ls -la /dev/shm/`, löschen wenn `lsof` null Handles zeigt. Fix wäre, den
 Producer beim Verwaisen zusätzlich freigeben zu lassen.
 
-### 6.10 Schwarze-Loch-Schwelle passt nicht zu kosmologischen Massen
-`BH_MASS_THRESHOLD` steht auf **230 M☉** — sinnvoll für Sternreste. Die
-Körper im Szenario „Strukturbildung" tragen je 1,12 · 10⁷ M☉, liegen also
-48.000-fach darüber; **jede** Verschmelzung wird zwangsläufig zum
-Schwarzen Loch. Physikalisch Unsinn: 10⁷ Sonnenmassen sind eine
-Zwerggalaxie.
+### 6.10 Schwarze-Loch-Schwelle bei kosmologischen Massen — erledigt
+`BH_MASS_THRESHOLD` steht auf **230 M☉** — sinnvoll für Sternreste, aber
+die Körper der kosmologischen Szenarien liegen vier bis fünf Größen-
+ordnungen darüber. **Jede** Verschmelzung wurde dort zwangsläufig zum
+Schwarzen Loch.
 
-Entweder die Schwelle wird szenarioabhängig (wie `dt` und `slow`), oder
-solche Körper werden gar nicht erst promoviert. Letzteres ist sauberer —
-bei Softening und kosmologischen Massen ist „Schwarzes Loch" die falsche
-Kategorie.
+Gelöst über ein Szenario-Flag `kosmologisch` (wie `precise` und
+`nurBrowser`), nicht über eine szenarioabhängige Schwelle: Es hängt nicht
+an der Masse, sondern daran, was ein Körper **darstellt** — eine Galaxie
+bzw. ein Massen-Sample des Dichtefelds ist kein kompaktes Objekt, egal
+wie schwer. Dort verschmelzen sie unter Volumenerhaltung.
 
-### 6.11 Bahnspuren schwarzer Löcher sind unsichtbar
-Die Spur wird in `b.color` gezeichnet, und beim Aufstieg zum Schwarzen
-Loch wird die auf `#0a0a14` gesetzt — Fast-Schwarz auf schwarzem Grund.
-Die Spuren existieren und werden gezeichnet, man sieht sie nur nicht. Fix
-wäre eine Zeile: für schwarze Löcher einen Akzentton nehmen, etwa das
-Orange des Akkretions-Halos.
+**Nebenbefund, weiter offen:** Der Film-Pfad promoviert überhaupt nie.
+Ein Merge-Ereignis setzt im Client nur `mass` und `radius` — `realR`,
+`isBlackHole` und Farbe bleiben, wie sie waren. Live und Film laufen hier
+also auseinander, unabhängig vom Szenario.
+
+### 6.12 Lastverteilung des alten Kernels folgt dem Datenblatt
+`load_state` in `nbody_kernel.py` gewichtet die Asteroiden-Shards mit
+`f64_score` — einer Datenblatt-Metrik aus SM-Zahl × Takt × f64-Ratio. Die
+gibt allen drei V100 identische Werte, gemessen ist CUDA 2 aber 11 %
+schneller (siehe Abschnitt 1). Alle drei bekommen also gleich viele
+Asteroiden, und die Barrier wartet auf die langsamste.
+
+Rechnerischer Gewinn einer gemessenen Gewichtung: rund **4 %** des
+Kernel-Anteils — auf dieser Hardware wenig, weil die drei Karten
+ähnlich sind, und der Kernel ohnehin nicht der Engpass ist (Abschnitt 4).
+Auf gemischter Hardware wäre es viel.
+
+**Der lohnendere Hebel liegt bei der Erkennung**, denn sie *ist* der
+Taktgeber (88 % Wartezeit im dichten Ring). `pick_detect_devices`
+sortiert nach `f64_score`, obwohl die Erkennung **f32** rechnet — und
+`_streifengrenzen` teilt die Bounce-Suche räumlich auf, ohne die Karten
+zu gewichten. Die beiden RTX 8000 unterscheiden sich in f32 um 21 %.
+Ungemessen, ob eine gewichtete Streifenteilung das einholt.
+
+`miss_gewicht` ist bereits allgemein genug für beide Fälle.
+
+### 6.11 Bahnspuren schwarzer Löcher — erledigt
+Die Spur lief in `b.color`, und die ist beim Schwarzen Loch Fast-Schwarz
+auf schwarzem Grund. Jetzt zeichnet sie in `BH_TRAIL_COLOR` (`#ff8c28`,
+das Orange des Akkretions-Halos); der Körper selbst bleibt `BH_COLOR`.
+Beide Farben sind Konstanten statt dreifach eingestreuter Literale.

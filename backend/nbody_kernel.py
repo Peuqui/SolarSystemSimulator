@@ -599,7 +599,7 @@ _FP64_RATIO = {
 }
 
 
-def _f64_score(i: int) -> float:
+def f64_score(i: int) -> float:
     p = cp.cuda.runtime.getDeviceProperties(i)
     ratio = _FP64_RATIO.get((p["major"], p["minor"]), 1 / 32)
     return p["multiProcessorCount"] * p["clockRate"] * ratio
@@ -608,7 +608,7 @@ def _f64_score(i: int) -> float:
 def pick_device() -> int:
     """GPU mit der hoechsten f64-Leistung waehlen (V100 vor RTX 8000)."""
     n = cp.cuda.runtime.getDeviceCount()
-    return max(range(n), key=_f64_score)
+    return max(range(n), key=f64_score)
 
 
 def pick_devices() -> list[int]:
@@ -618,7 +618,7 @@ def pick_devices() -> list[int]:
     wartet auf den langsamsten Shard). Absteigend nach Score sortiert;
     Karte [0] integriert die Massiven."""
     n = cp.cuda.runtime.getDeviceCount()
-    scores = {i: _f64_score(i) for i in range(n)}
+    scores = {i: f64_score(i) for i in range(n)}
     best = max(scores.values())
     devs = sorted((i for i in range(n) if scores[i] >= 0.25 * best),
                   key=lambda i: -scores[i])
@@ -640,7 +640,7 @@ def pick_detect_devices(exclude, rank: int = 0,
         else {exclude}
     n = cp.cuda.runtime.getDeviceCount()
     cands = sorted((i for i in range(n) if i not in excl),
-                   key=lambda i: -_f64_score(i))
+                   key=lambda i: -f64_score(i))
     if not cands:
         return []
     count = min(count, len(cands))
@@ -721,7 +721,7 @@ class NBodyCuda:
         # Indexbloecke) verteilen sich so gleichmaessig auf alle Karten,
         # sonst traegt EIN Shard alle heissen Feinschleifen und der Rest
         # wartet an der Segment-Barrier.
-        weights = np.array([_f64_score(d) for d in self.devices])
+        weights = np.array([f64_score(d) for d in self.devices])
         quanta = np.maximum(1, np.round(
             weights / weights.max() * 16).astype(np.int64))
         wheel = np.concatenate([np.full(q, g, np.int64)
