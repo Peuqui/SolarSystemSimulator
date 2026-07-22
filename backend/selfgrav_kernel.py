@@ -270,6 +270,15 @@ extern "C" __global__ void selfgrav_kernel(
     double* __restrict__ tausch,
     GSync* gs,
     float* __restrict__ snap,      // Ausgabe [steps][4][nSeg]
+    // TRACER (Kernel B): masselose Testteilchen, die dem Feld der Massen
+    // folgen. Nur das eigene Segment, keine Vollkopie — sie sind fuer
+    // niemanden Quelle. Deshalb auch kein Austausch und keine eigene
+    // Barrier: Ein Tracer schreibt ausschliesslich seine eigenen Werte.
+    double* __restrict__ tx, double* __restrict__ ty,
+    double* __restrict__ tvx, double* __restrict__ tvy,
+    double* __restrict__ tax, double* __restrict__ tay,
+    float* __restrict__ tsnap,     // Ausgabe [steps][2][tSeg] (nur x|y)
+    const int tSeg,
     const int seg0, const int nSeg, const int n,
     const int gpuId, const int nGpus,
     const double G, const double eps2, const double dt, const int steps)
@@ -301,6 +310,21 @@ extern "C" __global__ void selfgrav_kernel(
                        aktiv ? gy[seg0 + i] : 0.0,
                        gx, gy, gm, n, G, eps2, sx, sy, sm, block, a0, a1);
         if (aktiv) { ax[i] = a0; ay[i] = a1; }
+    }
+    // Startbeschleunigung der Tracer — dieselbe Kachelschleife ueber
+    // dieselben Massen. Sie laufen NACH den Massen und im selben Kernel:
+    // Ein eigener Launch bekaeme die Positionen der Zwischenschritte nie
+    // zu sehen (der Massen-Launch rechnet `steps` Schritte am Stueck),
+    // und pro Schritt zu synchronisieren waere genau die Barrier, die
+    // sich bei kleiner Koerperzahl schon als teurer erwiesen hat als die
+    // Rechnung selbst.
+    for (int basis = 0; basis < tSeg; basis += schritt) {
+        const int i = basis + tid;
+        const bool aktiv = (i < tSeg);
+        double a0, a1;
+        beschleunigung(aktiv ? tx[i] : 0.0, aktiv ? ty[i] : 0.0,
+                       gx, gy, gm, n, G, eps2, sx, sy, sm, block, a0, a1);
+        if (aktiv) { tax[i] = a0; tay[i] = a1; }
     }
     // Ohne diese Barrier koennte eine schnelle Karte schon Positionen
     // schreiben, waehrend eine langsame sie noch als Quellen liest.
@@ -359,6 +383,38 @@ extern "C" __global__ void selfgrav_kernel(
             z[2 * nSeg + i] = (float)vx[i];
             z[3 * nSeg + i] = (float)vy[i];
         }
+
+        // --- TRACER, kompletter Leapfrog-Schritt am Stueck ---
+        // Sie duerfen erst hier laufen: Die Massen stehen jetzt an ihren
+        // NEUEN Orten, und genau dagegen sollen die Tracer fallen. Weil
+        // sie fuer niemanden Quelle sind, braucht es weder Austausch noch
+        // Barrier — Kick, Drift und Kick passen in eine Schleife.
+        //
+        // Nur x|y in die Ausgabe: Die Geschwindigkeit der Tracer
+        // interessiert niemanden. Sie halbiert die Ausgabemenge, und bei
+        // hunderttausenden Tracern ist die Ausgabe der teure Teil.
+        for (int basis = 0; basis < tSeg; basis += schritt) {
+            const int i = basis + tid;
+            const bool aktiv = (i < tSeg);
+            double px = 0.0, py = 0.0;
+            if (aktiv) {
+                tvx[i] += tax[i] * (0.5 * dt);
+                tvy[i] += tay[i] * (0.5 * dt);
+                tx[i] += tvx[i] * dt;
+                ty[i] += tvy[i] * dt;
+                px = tx[i]; py = ty[i];
+            }
+            double a0, a1;
+            beschleunigung(px, py, gx, gy, gm, n, G, eps2,
+                           sx, sy, sm, block, a0, a1);
+            if (!aktiv) continue;
+            tax[i] = a0; tay[i] = a1;
+            tvx[i] += a0 * (0.5 * dt);
+            tvy[i] += a1 * (0.5 * dt);
+            float* zt = tsnap + (size_t)s * 2 * tSeg;
+            zt[i]        = (float)tx[i];
+            zt[tSeg + i] = (float)ty[i];
+        }
         grid.sync();
     }
 }
@@ -407,6 +463,7 @@ class NBodySelfGrav:
     def load_state(self, x: np.ndarray, y: np.ndarray,
                    vx: np.ndarray, vy: np.ndarray,
                    mass: np.ndarray, *_egal,
+                   tracer: tuple | None = None,
                    _kalibrieren: bool = False, **_auch_egal) -> dict:
         """Vollzustand uebernehmen. Jede Karte haelt ALLE Positionen und
         Massen, integriert aber nur ihr nach GEMESSENER Leistung
@@ -448,9 +505,25 @@ class NBodySelfGrav:
         else:
             tausch_ptr = gs_ptr = None
 
+        # Tracer: masselose Testteilchen. Sie werden GLEICHMAESSIG
+        # aufgeteilt und nicht nach den Massen-Segmenten — ihre Kosten
+        # haengen nur an ihrer eigenen Zahl, nicht daran, welche Masse wo
+        # liegt. Jede Karte rechnet ihren Block gegen ALLE Massen.
+        if tracer is not None:
+            tx64 = np.ascontiguousarray(tracer[0], np.float64)
+            ty64 = np.ascontiguousarray(tracer[1], np.float64)
+            tvx64 = np.ascontiguousarray(tracer[2], np.float64)
+            tvy64 = np.ascontiguousarray(tracer[3], np.float64)
+            n_tracer = len(tx64)
+            t_segmente = segmentiere(n_tracer, gewichte)
+        else:
+            n_tracer = 0
+            t_segmente = [(0, 0)] * ng
+
         shards = []
         for g, d in enumerate(self.devices):
             seg0, n_seg = segmente[g]
+            t0, t_seg = t_segmente[g]
             with cp.cuda.Device(d):
                 sh = {
                     "dev": d, "gpu_id": g, "seg0": seg0, "n_seg": n_seg,
@@ -460,6 +533,17 @@ class NBodySelfGrav:
                     "vy": cp.asarray(vy64[seg0:seg0 + n_seg]),
                     "ax": cp.zeros(max(n_seg, 1), cp.float64),
                     "ay": cp.zeros(max(n_seg, 1), cp.float64),
+                    "t0": t0, "t_seg": t_seg,
+                    "tx": cp.asarray(tx64[t0:t0 + t_seg]) if t_seg
+                          else cp.zeros(1, cp.float64),
+                    "ty": cp.asarray(ty64[t0:t0 + t_seg]) if t_seg
+                          else cp.zeros(1, cp.float64),
+                    "tvx": cp.asarray(tvx64[t0:t0 + t_seg]) if t_seg
+                           else cp.zeros(1, cp.float64),
+                    "tvy": cp.asarray(tvy64[t0:t0 + t_seg]) if t_seg
+                           else cp.zeros(1, cp.float64),
+                    "tax": cp.zeros(max(t_seg, 1), cp.float64),
+                    "tay": cp.zeros(max(t_seg, 1), cp.float64),
                 }
                 if ng > 1:
                     sh["tausch"] = device_view_of_host(tausch_ptr, tausch_bytes,
@@ -469,7 +553,8 @@ class NBodySelfGrav:
                     sh["tausch"] = cp.zeros(2 * n, cp.float64)
                     sh["gs"] = cp.zeros(gs_bytes, cp.uint8)
                 shards.append(sh)
-        return {"N": n, "shards": shards, "segmente": segmente,
+        return {"N": n, "T": n_tracer, "shards": shards,
+                "segmente": segmente,
                 "_host": (tausch_ptr, gs_ptr)}
 
     def step_batch(self, st: dict, dt_years: float,
@@ -491,12 +576,22 @@ class NBodySelfGrav:
                 continue
             with cp.cuda.Device(sh["dev"]):
                 sh["snap"] = cp.empty(steps * 4 * n_seg, cp.float32)
-                grid = max(1, (n_seg + self._block - 1) // self._block)
+                t_seg = sh["t_seg"]
+                sh["tsnap"] = cp.empty(steps * 2 * max(t_seg, 1), cp.float32)
+                # Grid nach dem GROESSEREN der beiden Segmente: Massen und
+                # Tracer laufen im selben Kernel, und beide Schleifen
+                # brauchen genug Threads. Bei 400.000 Tracern gegen 20.000
+                # Massen bestimmen die Tracer das Grid.
+                grid = max(1, (max(n_seg, t_seg) + self._block - 1)
+                           // self._block)
                 self._kerns[sh["dev"]](
                     (grid,), (self._block,),
                     (sh["gx"], sh["gy"], sh["gm"],
                      sh["vx"], sh["vy"], sh["ax"], sh["ay"],
                      sh["tausch"], sh["gs"], sh["snap"],
+                     sh["tx"], sh["ty"], sh["tvx"], sh["tvy"],
+                     sh["tax"], sh["tay"], sh["tsnap"],
+                     cp.int32(sh["t_seg"]),
                      cp.int32(sh["seg0"]), cp.int32(n_seg), cp.int32(n),
                      cp.int32(sh["gpu_id"]), cp.int32(ng),
                      cp.float64(G_AU), cp.float64(self.eps2),
@@ -512,7 +607,24 @@ class NBodySelfGrav:
             s0 = sh["seg0"]
             for f in range(4):
                 out[:, f * n + s0:f * n + s0 + n_seg] = snap[:, f, :]
-        return out
+        if not st["T"]:
+            return out
+        # Tracer hinten anhaengen: [x_massen | y_.. | vx | vy | x_tracer |
+        # y_tracer]. Der Producer schreibt ohnehin nur x|y in den Ring,
+        # und die Tracer-Geschwindigkeit braucht niemand.
+        m = st["T"]
+        raus = np.empty((steps, 4 * n + 2 * m), np.float32)
+        raus[:, :4 * n] = out
+        for sh in st["shards"]:
+            t_seg = sh["t_seg"]
+            if t_seg == 0:
+                continue
+            with cp.cuda.Device(sh["dev"]):
+                ts = cp.asnumpy(sh["tsnap"]).reshape(steps, 2, t_seg)
+            t0 = sh["t0"]
+            raus[:, 4 * n + t0:4 * n + t0 + t_seg] = ts[:, 0, :]
+            raus[:, 4 * n + m + t0:4 * n + m + t0 + t_seg] = ts[:, 1, :]
+        return raus
 
     def export_f64(self, st: dict) -> np.ndarray:
         """Exakten f64-Zustand [x|y|vx|vy] (4n) in Originalreihenfolge.
