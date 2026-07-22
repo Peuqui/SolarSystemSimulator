@@ -107,7 +107,7 @@ button.has-pending { background: #8a6a2a; border-color: #bb9944; }
   flex-wrap: wrap; justify-content: flex-end;
   pointer-events: none;
 }
-#film-stoerung {
+#stoerung {
   /* #badge-row ist fuer Klicks durchlaessig (pointer-events: none), damit
      man durch die Badges hindurch die Szene bedienen kann. Diese Meldung
      laesst sich aber per Klick ausblenden — sie muss Klicks also wieder
@@ -704,8 +704,8 @@ input[type=range] {
   <div id="body-count-badge" data-i18n-title="tt.bodycount"></div>
   <!-- Sichtbare Stoerungsmeldung: eine Konsolenwarnung sieht im Alltag
        niemand, und eine stille Pause ist von einem Aufhaenger nicht zu
-       unterscheiden. Wird von filmStoerung() gesetzt. -->
-  <div id="film-stoerung" style="display:none;"></div>
+       unterscheiden. Wird von zeigeStoerung() gesetzt. -->
+  <div id="stoerung" style="display:none;"></div>
 </div>
 
 <div id="film-bar">
@@ -1075,6 +1075,8 @@ const I18N = {
     'tt.film-speed': 'Wie viele Sim-Tage pro Sekunde abgespielt werden. Unabhängig davon, wie schnell die GPU rechnet — reicht der Vorrat nicht, wartet die Wiedergabe an der Rechenkante. Details: 💡 bei der Physik-Engine.',
     'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
+    'inject.mmax': 'Grenze erreicht: höchstens {n} massive Körper (CUDA-Kernel). Rogue nicht injiziert — Asteroiden und Wolken bleiben unbegrenzt.',
+    'cuda.fehler': 'CUDA-Backend meldet einen Fehler — zurück auf den WebWorker geschaltet: {m} (Klick zum Ausblenden)',
     'lbl.film-lod': 'Punkte im Bild',
     'lbl.film-lod-auto': 'Auto',
     'tt.film-lod': 'Wie viele Punkte der Server höchstens pro Sample schickt. Der EINZIGE Regler, der die Bildrate beeinflusst — ruckelt es, hier herunter. Physik und Kollisionen laufen immer für ALLE Körper. Details: 💡 bei der Physik-Engine.',
@@ -1357,6 +1359,8 @@ const I18N = {
     'tt.film-speed': 'How many sim days are played back per second. Independent of how fast the GPU computes — if the buffer runs dry, playback waits at the production edge. Details: 💡 next to the physics engine.',
     'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
+    'inject.mmax': 'Limit reached: at most {n} massive bodies (CUDA kernel). Rogue not injected — asteroids and clouds stay unlimited.',
+    'cuda.fehler': 'CUDA backend reported an error — switched back to the WebWorker: {m} (Click to dismiss)',
     'lbl.film-lod': 'Points on screen',
     'lbl.film-lod-auto': 'Auto',
     'tt.film-lod': 'How many points the server sends per sample at most. The ONLY slider affecting frame rate — turn it down if playback stutters. Physics and collisions always run for ALL bodies. Details: 💡 next to the physics engine.',
@@ -2417,8 +2421,16 @@ function fuelleKoerperliste(details, ziel, offen) {
 // Reset, Import). Nur dann wird ueber den Klappzustand neu entschieden;
 // bei den laufenden Aufrufen (Verschmelzung, Rogue) bleibt stehen, was der
 // Nutzer eingestellt hat.
+// Zahl der MASSIVEN Koerper — genau die, die im CUDA-Kernel im Shared
+// Memory liegen und dort auf cudaMMax begrenzt sind. Unsichtbare zaehlen
+// mit: sie gehen beim Upload ebenfalls mit (siehe der Filter in
+// filmStart), und der Kernel unterscheidet nach isAst, nicht nach visible.
+function massiveKoerperZahl() {
+  return bodies.reduce((n, b) => n + (b.isAsteroid ? 0 : 1), 0);
+}
+
 function rebuildBodyList(neueSzene = false) {
-  const anzahl = bodies.reduce((n, b) => n + (b.isAsteroid ? 0 : 1), 0);
+  const anzahl = massiveKoerperZahl();
   const paare = [['bodies-details', checkDiv, 'planet-checks-count', 'desk'],
                  ['mob-bodies-details', mobCheckDiv, 'mob-planet-checks-count', 'mob']];
   for (const [detId, ziel, zaehlerId, schluessel] of paare) {
@@ -4607,6 +4619,10 @@ const CUDA_WS_URLS = (() => {
 })();
 let cudaSocket = null;
 let cudaReady = false;
+// Obergrenze fuer MASSIVE Koerper im CUDA-Kernel, vom Server beim
+// Handshake gemeldet (dort M_MAX in nbody_kernel.py). null = unbekannt,
+// weil noch kein Backend geantwortet hat.
+let cudaMMax = null;
 let cudaBusy = false;
 let cudaResolver = null;
 let cudaInflightRefs = null;
@@ -4791,6 +4807,10 @@ function initCudaBackend(urlIndex = 0) {
       cudaSocket = ws;
       cudaReady = true;
       _cudaSetVisible(true);
+      // mMax = Obergrenze fuer MASSIVE Koerper im CUDA-Kernel (sie liegen
+      // dort im Shared Memory). Der Server nennt sie beim Handshake; ohne
+      // Angabe bleibt cudaMMax null und es wird nichts gesperrt.
+      cudaMMax = (JSON.parse(msg.info).mMax) || null;
       console.log('CUDA-Backend verbunden:', msg.info);
       if (useCuda) {
         applyEngine('cuda', false);   // persistierten Modus nachziehen
@@ -4855,7 +4875,7 @@ function initCudaBackend(urlIndex = 0) {
                      '[bodies=' + bodies.length +
                      ' filmActive=' + filmActive +
                      ' restartPending=' + _filmRestartPending + ']');
-        filmStoerung(t('film.stoerung-mismatch'));
+        zeigeStoerung(t('film.stoerung-mismatch'));
         setPaused(true);
       }
       _filmHandover = false;   // Uebergabe abgeschlossen — Physik frei
@@ -4893,8 +4913,12 @@ function initCudaBackend(urlIndex = 0) {
       return;
     }
     if (status !== 0) {
-      console.warn('CUDA-Backend-Fehler:',
-        new TextDecoder().decode(new Uint8Array(buf, 8)));
+      // Sichtbar melden, nicht nur in die Konsole: der stille Wechsel auf
+      // den Worker sieht aus wie ein grundloser Tempoeinbruch, und beim
+      // Film blieb der Grund frueher vollstaendig unsichtbar.
+      const grund = new TextDecoder().decode(new Uint8Array(buf, 8));
+      console.warn('CUDA-Backend-Fehler:', grund);
+      zeigeStoerung(t('cuda.fehler').replace('{m}', grund));
       _cudaStateStale = true;
       applyEngine('worker', false);
     } else {
@@ -5384,12 +5408,22 @@ function filmReconstructVelocities() {
 // stille Pause ist von einem Aufhaenger nicht zu unterscheiden — genau
 // das kostete beim Testen mehrfach Minuten Ratlosigkeit. Klick blendet
 // die Meldung wieder aus.
-function filmStoerung(text) {
-  const el = document.getElementById('film-stoerung');
+//
+// autoMs > 0 blendet zusaetzlich nach Ablauf selbst aus (Toast). Das ist
+// fuer folgenlose Hinweise gedacht — eine abgelehnte Injektion aendert
+// nichts an der laufenden Szene. Meldungen, die einen ANGEHALTENEN
+// Zustand ankuendigen, bleiben ohne autoMs stehen, bis der Nutzer sie
+// wegklickt: sie zu ueberblaettern hiesse, die Pause nicht zu erklaeren.
+let _stoerungTimer = null;
+function zeigeStoerung(text, autoMs = 0) {
+  const el = document.getElementById('stoerung');
   if (!el) return;
   el.textContent = '⚠ ' + text;
   el.style.display = 'inline-block';
-  el.onclick = () => { el.style.display = 'none'; };
+  const aus = () => { el.style.display = 'none'; };
+  el.onclick = aus;
+  if (_stoerungTimer) clearTimeout(_stoerungTimer);
+  _stoerungTimer = autoMs > 0 ? setTimeout(aus, autoMs) : null;
 }
 
 function filmHandoverStart(zweck) {
@@ -5405,7 +5439,7 @@ function filmHandoverStart(zweck) {
     console.warn('[film] f64-Dump nach ' + (FILM_HANDOVER_MS / 1000) +
                  ' s nicht eingetroffen (' + zweck + ') — Zustand ist ' +
                  'unvollstaendig, Physik angehalten. Film neu starten.');
-    filmStoerung(t('film.stoerung-timeout'));
+    zeigeStoerung(t('film.stoerung-timeout'));
     setPaused(true);
   }, FILM_HANDOVER_MS);
 }
@@ -6859,7 +6893,11 @@ function shatter(a, b) {
       x: cx + Math.cos(ang)*ringR, y: cy + Math.sin(ang)*ringR,
       vx: cvx + sv[k][0]-mvx, vy: cvy + sv[k][1]-mvy, ax: 0, ay: 0,
       color: '#cc8866', radius: massToRadius(fm), realR: fr,
-      visible: true, isStar: false, escapeScore: 0,
+      // Fragmente sind Asteroiden. Sonst waechst die Zahl der MASSIVEN
+      // Koerper bei jedem Zerbersten um 3 (2 rein, 5 raus) — und die ist
+      // im CUDA-Kernel auf M_MAX begrenzt, weil sie im Shared Memory
+      // liegen. Eine Kaskade sprengte die Grenze ohne Nutzeraktion.
+      visible: true, isStar: false, isAsteroid: true, escapeScore: 0,
     });
     trails[name] = [];
   }
@@ -8384,6 +8422,15 @@ function updateBodyFields() {
 
 // --- Inject (desktop + mobile) ---
 function doInject() {
+  // Grenze des CUDA-Kernels: erreicht = kein weiterer massiver Koerper.
+  // Die Sperre gilt auch in den CPU-Engines, sobald ein Backend die
+  // Grenze gemeldet hat — sonst baut man im Worker eine Szene auf, die
+  // sich spaeter nicht mehr auf die GPU laden laesst. Asteroiden und
+  // Wolken sind nicht betroffen, sie sind Testteilchen.
+  if (cudaMMax && massiveKoerperZahl() >= cudaMMax) {
+    zeigeStoerung(t('inject.mmax').replace('{n}', cudaMMax), 6000);
+    return;
+  }
   const massExp = parseFloat(document.getElementById('p-mass').value);
   const massEarth = Math.pow(10, massExp);
   const massSun = massEarth * M_EARTH / M_SUN;

@@ -131,18 +131,14 @@ zehntausendmal feiner als das Softening.
 Zwischenschritt, der schon läuft: das Szenario „Strukturbildung
 (selbstgravitierend)" mit 500 Körpern im WebWorker.
 
-## Kernel-Grenze M_MAX wird nicht geprüft
+## Kernel-Grenze M_MAX — erledigt, aber weiterhin eng
 
-`M_MAX = 64` begrenzt die massiven Körper, weil sie im Shared Memory des
-Kernels liegen (`s_mx[M_MAX]` und Nachbarn). Eine Prüfung, ob eine Szene
-diese Grenze überschreitet, gibt es weder im Client noch in `server.py`.
+Die Grenze wird jetzt durchgesetzt: Der Server nennt `M_MAX` beim
+Handshake, der Client lehnt den Rogue darüber hinaus mit sichtbarer
+Meldung ab, und Berstfragmente gelten als Asteroiden (vorher wuchs die
+Zahl der massiven Körper bei jedem Zerbersten um 3).
 
-Erreichbar ist das im normalen Betrieb: Es genügt, genügend Rogues zu
-injizieren. Was der Kernel dann tut, ist ungeprüft — im besten Fall rechnet
-er die überzähligen Körper nicht mit, im schlechteren schreibt er über die
-Shared-Memory-Arrays hinaus.
-
-Zu klären: Wo wird die Zahl der massiven Körper festgestellt, und was soll
-beim Überschreiten passieren — Ablehnen mit Meldung (wie bei den
-f64-empfindlichen Szenarien, die nicht auf die GPU dürfen) oder gleich der
-Tiling-Kernel von oben, womit die Grenze ganz entfiele.
+Was bleibt: **64 ist wenig.** Für die selbstgravitierenden Szenarien oben
+sind zehntausende Massen das Ziel. Kernel A hebt die Grenze auf — sie
+existiert nur, weil die Massen im Shared Memory liegen und
+massiv×massiv seriell auf Thread 0 läuft. Bis dahin ist 64 hart.

@@ -39,7 +39,7 @@ import numpy as np
 import websockets
 
 import film_producer
-from nbody_kernel import NBodyCuda, pick_device
+from nbody_kernel import M_MAX, NBodyCuda, pick_device
 
 log = logging.getLogger("solarsim-cuda")
 
@@ -649,6 +649,19 @@ class FilmSession:
         await send drosselt automatisch auf Leitungstempo."""
         try:
             while self.running_val.value:
+                # Producer tot, ohne dass ein Zerbersten ihn gestoppt hat =
+                # Absturz. Ohne diese Pruefung wartet die Schleife ewig auf
+                # ein head_val, das nie mehr waechst: der Film startet nicht
+                # und niemand erfaehrt warum (der Traceback des KINDES steht
+                # nur im Server-Log). Genau so verhielt sich ein Zustand mit
+                # mehr als M_MAX massiven Koerpern.
+                if not self.proc.is_alive() and not self.shatter_flag.value:
+                    log.error("Film-Producer ist gestorben (exitcode %s) — "
+                              "Stream beendet", self.proc.exitcode)
+                    await ws.send(build_error(
+                        "Film-Producer abgestuerzt (exitcode "
+                        f"{self.proc.exitcode}) — Grund im Server-Log"))
+                    return
                 if self.shatter_flag.value == 1:
                     self.shatter_flag.value = 2
                     # status=7: Zerberst-Meldung + f64-Dump — der Client
@@ -1036,9 +1049,13 @@ async def handle(ws):
     try:
         async for message in ws:
             if isinstance(message, str):
-                # Textnachricht = Ping des Frontends bei der Auto-Detection
-                await ws.send('{"backend":"cuda","device":"%s"}'
-                              % device_name(_device))
+                # Textnachricht = Ping des Frontends bei der Auto-Detection.
+                # mMax geht mit, damit der Client die Grenze kennt, BEVOR
+                # er einen zu grossen Zustand hochlaedt — die Konstante
+                # bleibt so in nbody_kernel.py zuhause statt im Client
+                # dupliziert zu werden.
+                await ws.send('{"backend":"cuda","device":"%s","mMax":%d}'
+                              % (device_name(_device), M_MAX))
                 continue
             try:
                 typ, _n, dt_years = HEADER.unpack_from(message, 0)

@@ -56,6 +56,14 @@ HaemoTrace mit multiprocessing. Seit `39ffb50` beendet sich der Producer
 selbst, wenn sein Server verschwindet (Elternwächter, ~0,5 s), das sollte
 also nicht mehr nötig sein.
 
+**Injizieren tut nichts?** Bei 64 massiven Körpern ist Schluss — das ist
+`M_MAX` im CUDA-Kernel, wo sie im Shared Memory liegen. Der Server nennt
+die Zahl beim Handshake, der Client sperrt ab da und meldet es sichtbar.
+Die Sperre gilt auch in den CPU-Engines, sobald ein Backend geantwortet
+hat: sonst baut man im Worker eine Szene, die sich später nicht mehr auf
+die GPU laden lässt. Asteroiden und Wolken sind nicht betroffen — sie
+sind Testteilchen und zählen nicht gegen die Grenze.
+
 **ruff** liegt nicht im Projekt-venv:
 `/home/mp/Projekte/AIfred-Intelligence/venv/bin/ruff check backend/`
 
@@ -77,6 +85,7 @@ cd backend
 ../venv/bin/python test_kernel.py           # Kernel + Multi-GPU
 ../venv/bin/python test_waechter.py         # Runaway-Kills als kind 2
 ../venv/bin/python test_waisen.py           # GPU frei nach hartem Serverstod
+../venv/bin/python test_producer_tod.py     # Producer-Absturz wird gemeldet
 ../venv/bin/python bench_erkennung.py       # Umschaltschwelle der 2. Karte
 ../venv/bin/python bench_film.py -n 60000 --det-gpus 1
 ```
@@ -84,6 +93,13 @@ cd backend
 `test_waisen.py` startet sich selbst als Server-Ersatz und schießt ihn mit
 `SIGKILL` ab — er darf also ruhig „Prozess getötet" ins Log schreiben, das
 ist der Testgegenstand.
+
+`test_producer_tod.py` deckt eine Klasse von Fehlern ab, die sich sonst
+als „der Film startet einfach nicht" zeigt: Der Producer ist ein eigener
+Prozess, sein Traceback landet nur im Server-Log, und `stream()` schleift
+auf `running_val`, das allein der Server beim `stop()` zurücksetzt. Ohne
+die `is_alive()`-Prüfung wartet der Stream auf ein `head_val`, das nie
+mehr wächst — stumm, in 30-ms-Schritten, für immer.
 
 `test_film_protokoll.py` dekodiert ein echtes Frame nach demselben Schema
 wie `zerlegeFilm` in `index.html` — dort laufen Server und Client am
@@ -230,7 +246,14 @@ und die Galaxienverschmelzung wäre dabei tot. Wer den Schwund wirklich
 loswerden will, muss Tracer×Masse-Kollisionen abschalten, nicht am
 Radius drehen.
 
-### 5.8 Filamente aus masselosen Tracern
+### 5.8 „Über M_MAX hinaus überschreibt der Kernel Shared Memory"
+Widerlegt. `load_state` prüft und wirft (`nbody_kernel.py`), nachgemessen
+mit 64 → OK und 65 → `ValueError`. Der Kernel ist an dieser Stelle sicher;
+gefährlich war nur, **wo** der Fehler landete: im Film-Pfad stirbt der
+Producer damit im Kindprozess, und das blieb bis dahin unbemerkt (siehe
+`test_producer_tod.py` in Abschnitt 2).
+
+### 5.9 Filamente aus masselosen Tracern
 Prinzipiell unmöglich, unabhängig von Anfangsbedingungen, Expansion oder
 Teilchenzahl. Testteilchen ziehen sich nicht gegenseitig an; das kosmische
 Netz entsteht aber genau durch Selbstgravitation — eine Überdichte muss
