@@ -1090,6 +1090,7 @@ const I18N = {
     'tt.film-speed': 'Wie viele Sim-Tage pro Sekunde abgespielt werden. Unabhängig davon, wie schnell die GPU rechnet — reicht der Vorrat nicht, wartet die Wiedergabe an der Rechenkante. Details: 💡 bei der Physik-Engine.',
     'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
     'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
+    'film.desync': 'Film-Sitzung im Backend verloren und Neustart fehlgeschlagen — Film aus- und wieder einschalten. (Klick zum Ausblenden)',
     'inject.mmax': 'Grenze erreicht: höchstens {n} massive Körper (CUDA-Kernel). Rogue nicht injiziert — Asteroiden und Wolken bleiben unbegrenzt.',
     'film.sg-noetig': 'Dieses Szenario rechnet nur im Film-Modus — der Live-Pfad trägt höchstens 64 massive Körper. Die Szene steht, bis der Film wieder an ist.',
     'lbl.sg-n': 'Massen',
@@ -1379,6 +1380,7 @@ const I18N = {
     'tt.film-speed': 'How many sim days are played back per second. Independent of how fast the GPU computes — if the buffer runs dry, playback waits at the production edge. Details: 💡 next to the physics engine.',
     'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
     'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
+    'film.desync': 'Film session lost in the backend and restart failed — switch film mode off and on again. (Click to dismiss)',
     'inject.mmax': 'Limit reached: at most {n} massive bodies (CUDA kernel). Rogue not injected — asteroids and clouds stay unlimited.',
     'film.sg-noetig': 'This scenario only runs in film mode — the live path carries at most 64 massive bodies. The scene stays frozen until film mode is back on.',
     'lbl.sg-n': 'Masses',
@@ -5205,16 +5207,35 @@ function initCudaBackend(urlIndex = 0) {
       const grund = new TextDecoder().decode(new Uint8Array(buf, 8));
       console.warn('CUDA-Backend-Fehler:', grund);
       _cudaStateStale = true;
-      // Der Rueckfall auf den Worker ist bei selbstgravitierenden
-      // Szenarien KEINE Rettung — er kann sie nicht rechnen (jeder
-      // Koerper massiv, alle gegen alle). Und der Fehler ist dort meist
-      // ein blosses Wettrennen beim Start ("kein Film aktiv": ein
-      // FILM_SUB war vor dem Film da). Frueher schaltete das die Engine
-      // weg von CUDA, der Film starb, und die Szene stand im Worker bei
-      // 1,5 FPS.
+      // "kein Film aktiv" heisst: Der Server hat KEINE Session mehr,
+      // waehrend der Client noch glaubt, der Film laufe — und weiter
+      // Abos schickt. Das ist ein DESYNC, kein voruebergehender Fehler.
+      // Ihn zu ignorieren machte aus einem lauten Fehler einen stillen:
+      // Die Wiedergabe stand, die GPU war untaetig, und in der Konsole
+      // lief diese Meldung endlos mit.
+      //
+      // Richtig ist ein Neustart der Session. `_filmNeustartVersucht`
+      // verhindert die Endlosschleife, falls auch der scheitert — dann
+      // wird sichtbar gemeldet.
+      if (grund.indexOf('kein Film aktiv') >= 0 && useFilm && cudaReady) {
+        if (_filmNeustartVersucht) {
+          zeigeStoerung(t('film.desync'));
+          _filmNeustartVersucht = false;
+          filmStop();
+          return;
+        }
+        _filmNeustartVersucht = true;
+        console.warn('[film] Server hat keine Session — Neustart');
+        filmActive = false;          // sonst blockiert filmStart sich selbst
+        filmQueue = null;
+        filmStart();
+        return;
+      }
+      // Andere Fehler: Der Rueckfall auf den Worker ist bei
+      // selbstgravitierenden Szenarien keine Rettung — er kann sie nicht
+      // rechnen (jeder Koerper massiv, alle gegen alle).
       if (!clientRechnetSelbst()) {
-        console.warn('[film] Fehler ignoriert — selbstgravitierendes '
-                     + 'Szenario laeuft nur auf CUDA');
+        zeigeStoerung(t('cuda.fehler').replace('{m}', grund));
         return;
       }
       zeigeStoerung(t('cuda.fehler').replace('{m}', grund));
@@ -5286,6 +5307,9 @@ function initCudaBackend(urlIndex = 0) {
   // abgespielte Samples verwerfen, Producer-Rate schaetzen.
   function onFilmFrame(msg) {
     if (!filmRefs || msg.n !== filmRefs.length) return;   // stale Session
+    // Daten fliessen wieder — ein kuenftiger Desync darf erneut einen
+    // Neustart ausloesen.
+    _filmNeustartVersucht = false;
     if (!filmQueue) {
       filmQueue = { times: [], samples: [], tail: msg.tail, head: msg.head };
     }
@@ -5561,6 +5585,10 @@ function filmSubSamples() {
 }
 
 let _filmStartWartet = false;
+// Genau EIN automatischer Neustart je Desync ("kein Film aktiv"), sonst
+// drehte sich der Client im Kreis, wenn auch der Neustart scheitert.
+// Wird nach dem ersten erfolgreichen Frame wieder freigegeben.
+let _filmNeustartVersucht = false;
 
 function filmStart() {
   if (!cudaReady) return;
