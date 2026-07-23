@@ -202,6 +202,93 @@ Bereich zum Zuschauen ist damit **25.000–100.000**, nicht 200.000 — und
 genau deshalb sind Teilchenzahl und Weichzeichnung Regler: Wer ε groß
 lässt, bekommt Tempo statt Schärfe.
 
+## Particle-Mesh & TreePM — O(N log N) für Millionen Körper
+
+**Motivation:** Kernel A ist O(N²) und läuft in die Wand — 200.000 Körper =
+2,1 Sim-Jahre/Minute (Tabelle oben). Für Millionen Körper führt kein Weg an
+einem besseren Algorithmus vorbei. **Particle-Mesh (PM)** und **Barnes-Hut
+(Baum)** senken die Komplexität auf O(N log N). Sie **konkurrieren nicht,
+sondern ergänzen sich** — die Kombination heißt **TreePM** und ist das
+Standardverfahren echter kosmologischer Codes (GADGET).
+
+### Warum PM + Baum sich ergänzen
+
+|  | Nahbereich | Fernbereich |
+|---|---|---|
+| **Particle-Mesh** | geglättet (Gitterskala) | exakt, spottbillig (FFT) |
+| **Barnes-Hut** | exakt | genähert, Traversierung ist teuer |
+
+TreePM teilt die Kraft an einer Skala (~paar Gitterzellen): darunter der
+Baum (scharf in dichten Klumpen), darüber die FFT (globales Feld). Die
+Teilkräfte werden addiert.
+
+### Particle-Mesh: der Zyklus pro Zeitschritt
+
+1. **Deposit** (Teilchen → Gitter, Cloud-in-Cell): jedes Teilchen schmiert
+   seine Masse auf die 4 umliegenden Gitterpunkte → Dichtefeld ρ.
+2. **Solve** (cuFFT): Poisson ∇²φ = 4πG ρ im Fourier-Raum, φ̂ = −4πG ρ̂/k²,
+   dann Kraftfeld = −∇φ. Einmal fürs ganze Gitter.
+3. **Interpolate** (Gitter → Teilchen, Cloud-in-Cell): jedes Teilchen liest
+   die Kraft an **seiner eigenen Position** ab. Bleibt ein Einzelteilchen —
+   zwei in derselben Zelle lesen verschiedene interpolierte Kräfte.
+
+### Die vier Fallstricke (klassische Fehlerquellen)
+
+1. **Isolierte Randbedingung, NICHT periodisch.** Eine kollabierende Wolke
+   ist ein isoliertes System, kein periodisches Universum. Eine naive
+   periodische FFT wickelt die periodischen Bilder um → falsche Kräfte am
+   Rand. Lösung: **Zero-Padding (Hockney/James)** — Rechengitter doppelt so
+   groß, Masse nur in einer Hälfte, und nur der nicht-umgewickelte Quadrant
+   gilt. In 2D kostet das FFT/Speicher 4× — immer noch billig.
+2. **Green-Funktion & Normalisierung.** Diskrete k-Werte, `k=0` (DC-Term)
+   auf 0 setzen (kein Nettoschub des Schwerpunkts). Die Green-Funktion muss
+   zur **CiC-Diskretisierung** passen (sonst systematischer Kraftfehler).
+   Achtung 2D: das Softening/Gitter bestimmt die Kernform, nicht die
+   3D-1/r²-Formel.
+3. **Softening = Gitterskala.** Das Gitter glättet unterhalb einer Zelle —
+   das IST das Plummer-Softening. Zellgröße ≈ gewünschtes ε wählen, dann
+   deckt sich beides.
+4. **CiC muss beidseitig gleich sein.** Deposit UND Interpolation mit
+   demselben CiC-Schema, sonst zieht ein Teilchen sich selbst an
+   (Selbstkraft). CiC+CiC ist bei passender Green-Funktion selbstkraftfrei.
+
+### Gittergröße — fest, nicht mitwachsend
+
+Gebiet ~120.000 AE, ε ~20 AE → festes **8192²** (~15 AE Zellen, 537 MB
+complex f32; mit Zero-Padding 16384² real ≈ 2 GB). Speicher trivial (von
+32–48 GB).
+
+**Fest, nicht mit N mitwachsend:** Die feine Auflösung kommt beim Vollausbau
+vom **Baum** (adaptiv, nur in dichten Regionen), nicht von einem uniformen
+Riesengitter, das seine Feinheit in den Voids verschwendet. Ein festes
+8192²-Gitter + Baum schlägt ein uniformes 32768²-Gitter.
+
+### Baureihenfolge (zwingend — jeder Schritt ist die Testbasis des nächsten)
+
+1. **`pm_kernel.py` standalone**: CiC-Deposit → cuFFT-Poisson (Zero-Padding,
+   isolierte BC) → CiC-Kraft-Interpolation, Yoshida-Zeitschritt. Analog zur
+   API von `selfgrav_kernel.py`, damit `film_producer.py` es sauber neben
+   den bestehenden Kernel stellen kann.
+2. **`test_pm.py`**: PM-Kräfte gegen `selfgrav_kernel` (all-pairs) bei
+   kleinem N. Muss großräumig übereinstimmen (Sub-Prozent bei r > ein paar
+   Zellen), nah bewusst geglättet. Das ist das Sicherheitsnetz — ohne
+   bestandenen Test gilt der Kernel als nicht fertig.
+3. **Anbindung in `film_producer.py`** als dritter Physik-Pfad (Flag im
+   Protokoll, z. B. `pm_grid > 0` wählt PM). Multi-GPU: die FFT über die
+   Karten verteilen (cuFFT hat verteilte Transforms; alternativ eine Karte
+   für die FFT, die anderen für Deposit/Interpolation/Integration).
+4. **Baum obendrauf (TreePM)** — erst wenn PM steht und validiert ist. Der
+   GPU-Baum ist der fummelige Teil (irreguläre Zugriffe, divergente
+   Branches). Nur nötig, wenn man ε unter die Gitterskala drücken will.
+
+### Konsequenz, bewusst auf den Tisch gelegt
+
+Feinere Auflösung heißt **kleineres Softening** heißt **nahe Begegnungen
+kehren zurück** (Zweikörper-Streuung). Dann will man womöglich **echte
+Kollisionen** — das ist Kernel C (siehe UEBERGABE 6.16). Die Kette
+„TreePM → feines ε → nahe Begegnungen → Kernel C" ist die volle
+Ausbaustufe; PM allein ist der erste, große Wurf.
+
 ## Kernel-Grenze M_MAX — erledigt, aber weiterhin eng
 
 Die Grenze wird jetzt durchgesetzt: Der Server nennt `M_MAX` beim

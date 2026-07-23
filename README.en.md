@@ -14,12 +14,20 @@ backend** with multi-GPU physics and a decoupled film mode.
 
 ## Features
 
-- **16 predefined scenarios**: Solar System, Solar System with asteroid
+- **19 predefined scenarios**: Solar System, Solar System with asteroid
   belts (main and Kuiper belt, count configurable via slider), TRAPPIST-1,
   Alpha Centauri, Kepler-16, Kepler-47 (binary + 3 planets), Trisolaris
   (3 suns), Lagrange constellations (stable/unstable), Trojans (L4),
-  figure-8 choreography, Butterfly I, Moth I, Goggles, Yarn, and an
-  "Empty system" to build freely
+  figure-8 choreography, Butterfly I, Moth I, Goggles, Yarn, an
+  "Empty system" to build freely — plus three **cosmological scenarios**
+  (CUDA backend only): Galaxy cluster (collapse / expansion) and
+  **Structure formation (self-gravitating)**, see [Self-gravitating
+  structure formation](#self-gravitating-structure-formation)
+- **Self-gravitating structure formation** — hundreds of thousands of
+  masses where **every one attracts every other** (not just a few central
+  masses). From an almost homogeneous cloud, halos, bridges and voids grow:
+  the qualitative signature of the cosmic web. Tested with **> 750,000
+  bodies** (250 k masses + 500 k tracers) across five GPUs
 - **Inject perturber masses interactively** — position, mass (10⁻³ to 10⁶
   Earth masses, including stars above ~80 M⊕), speed and direction
 - **Inject asteroid clouds** — whole swarms of small bodies with count
@@ -45,9 +53,11 @@ backend** with multi-GPU physics and a decoupled film mode.
 - **Save, export and import configurations** locally — stores every body
   with its state **and all sliders and switches** (time step, film
   settings, display options)
-- **Live stats**: kinetic / potential / total energy, angular momentum,
-  barycenter drift, escape-trajectory detection; live benchmark badge
-  (FPS, days/s, active engine)
+- **Live stats**: active/total bodies by type, barycenter drift,
+  escape-trajectory detection; energy stats (kinetic/potential/total)
+  optionally enabled — the potential is O(M²) over all masses and too
+  expensive with tens of thousands of masses, so off by default. Live
+  benchmark badge (FPS, days/s, active engine)
 - **Full mobile support** — long-press, pinch-zoom, two-finger pan,
   dedicated mobile toolbar and bottom sheet
 - **Bilingual German / English** — toggle top-left in the side menu, choice
@@ -117,6 +127,54 @@ Requires the active CUDA backend. Compute and display are fully decoupled:
 
 This keeps a cloud of **> 250,000 bodies** playing smoothly while the GPU
 keeps computing in the background.
+
+## Self-gravitating structure formation
+
+The classic scenarios have **a few central masses** (sun, planets) and many
+massless tracers that trace the field. The cosmological scenarios flip that:
+**every body carries mass and attracts every other.** From an almost
+homogeneous cloud, structure then grows on its own.
+
+**What you see.** Overdensities collapse under their own gravity into
+**halos** (knots). Between them matter flows along the gravitational
+gradients and forms **bridges**; **voids** empty out in between. Knots +
+bridges + voids are the qualitative signature of the **cosmic web**. Massless
+tracers fundamentally cannot do this — they only follow a prescribed field
+and stay smooth. Structure only *emerges* through self-gravity.
+
+**How it computes.** A dedicated **self-gravitating kernel** (`all-pairs`
+with tiling, O(N²)) with **Plummer softening**: below a distance the mass is
+treated as smeared out rather than point-like. That is deliberate — without
+softening, close particles would fling each other away artificially
+(two-body scattering) and drown the structure in noise. So there are **no
+collisions and no mergers** here: for mass-samples of a density field,
+"impact" and "merge" are the wrong concept. Fixed time step, no detection
+pipeline — the freed cards compute physics too.
+
+**Why all GPUs pull.** The kernel measures that the **state** needs f64
+(velocity increments below f32 resolution) while the **force sum** tolerates
+f32 (softening smooths it anyway). So even the f64-weak Quadro RTX 8000
+compute the forces in f32 at full speed — all five cards flat out instead of
+two idle. Tested with **> 750,000 bodies**; cost grows as ~N^2.5 (more
+particles = finer resolution, plus a finer time step from the shrinking
+softening), details in [Hardware & findings](HARDWARE.en.md).
+
+**Three scenarios, one setup:**
+
+- **Galaxy cluster (collapse)** — rotation only, 58 % of escape velocity.
+  Deeply bound → the cloud collapses: dense core with a halo.
+- **Galaxy cluster (expansion)** — plus a radial Hubble flow (marginally
+  bound, Ω ≈ 1). Expansion prevents the global collapse; what remains is a
+  stretching field with structure in it.
+- **Structure formation (self-gravitating)** — sliders for **masses**,
+  **tracers** and **softening** (a multiple of the mean particle spacing, so
+  the value works at any particle count).
+
+**Honest framing.** This is the *collapse-driven* case — the knots are more
+rounded halos. True elongated cosmological filaments also need cosmic
+expansion *and* anisotropic initial conditions; this is a 2D caricature
+without a co-expanding metric. But the bridges and voids are **genuine
+self-gravitating structure**, not a traced field.
 
 ## CUDA backend
 
@@ -277,10 +335,18 @@ of bodies the CUDA backend is the only way.
 ### Backend (optional, `backend/`)
 
 - **Python + CuPy/NVRTC** — `server.py` (WebSocket server, session
-  management, v4 integer streaming with culling and LOD),
-  `nbody_kernel.py` (multi-GPU f64 kernel with hierarchical time steps),
-  `film_producer.py` (producer process: ring buffer, collision / bounce /
-  shatter detection).
+  management, integer streaming with culling and LOD), `film_producer.py`
+  (producer process: ring buffer, picks the kernel per scenario).
+  **Two compute kernels for two regimes:**
+  - `nbody_kernel.py` — multi-GPU **f64** kernel with hierarchical time
+    steps and collision / bounce / shatter detection. For few masses
+    (≤ 64) and many tracers: solar systems, galaxy clusters with test
+    particles. Exact forces, orbits on a knife's edge.
+  - `selfgrav_kernel.py` — **self-gravitating** kernel (all-pairs with
+    tiling), tens of thousands of equal masses, Plummer softening, no
+    collisions. **f64 state, f32 force** — so even the f64-weak cards pull
+    their full weight. For [structure
+    formation](#self-gravitating-structure-formation).
 - **Process split**: the producer owns the GPU exclusively, the server
   answers buffer requests from shared memory in microseconds — the physics
   GPU never starves on the GIL.
@@ -290,6 +356,17 @@ of bodies the CUDA backend is the only way.
   exactly the same hits as a single card), `test_lod_dichte.py` (priority
   and density-aware point selection). Measurement tools:
   `bench_erkennung.py`, `bench_film.py`.
+
+## Reference hardware & findings
+
+The CUDA backend was developed and benchmarked on an unusual setup: **five
+datacenter GPUs (3× Tesla V100, 2× Quadro RTX 8000) on a mini PC**, all
+attached via M.2-to-Oculink / USB4 adapters at only PCIe ×4, without
+NVLink. Why that still loads all five cards simultaneously (unlike LLM
+inference), how the f64/f32 split lets the f64-weak cards pull their full
+weight, why "100 % utilization" at 42 W means nothing, and more:
+
+**→ [Hardware & findings](HARDWARE.en.md)**
 
 ## Stargazers over time
 
