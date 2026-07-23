@@ -6856,20 +6856,16 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // Kante (Puffer-Ziel ~5 s Playback) ein, klemmte dort und wartete auf
     // Nachschub: sichtbar als Stufen mit Pausen statt gleichmaessiger
     // Zeitlupe. Die Kantenrate darf nur BREMSEN, nie beschleunigen.
-    let follow = rate;
-    if (rate > 0 && filmQueue.times.length) {
-      const aheadS = (filmQueue.times[filmQueue.times.length - 1] -
-                      filmPlayheadDays) / rate;
-      if (aheadS < FILM_PUFFER_S) {
-        // Erst HIER, dicht an der Kante, darf die Producer-Rate begrenzen:
-        // nicht schneller abspielen als nachgeliefert wird. Weiter vorn im
-        // Puffer waere sie die falsche Referenz — bei vollem Puffer sendet
-        // der Server nichts mehr, die Kante steht, und die Schaetzung
-        // faellt gegen 0 (der Playhead bliebe stehen).
-        if (_filmHeadRate > 0) follow = Math.min(rate, _filmHeadRate);
-        follow *= FILM_BREMSE;
-      }
-    }
+    // Puffer-basierte Glaettung (KISS): je naeher der Playhead der Datenkante,
+    // desto langsamer laeuft er — so schlaegt er nicht gegen die Kante und
+    // springt (das Diashow-Stocken). istVorratS = Sekunden Playback bis zur
+    // Kante; ab FILM_PUFFER_S laeuft er mit voller rate, an der Kante mit 0.
+    // Anders als die alte _filmHeadRate-Bremse (die auf 0 fiel und den
+    // Producer<->Playhead-Deadlock erzeugte) bewegt sich der Playhead, SOLANGE
+    // Vorrat > 0 ist — das reduziert den Producer-Vorlauf und haelt ihn am
+    // Rechnen. Der Playhead pendelt sich glatt auf die Produktionsrate ein.
+    const istVorratS = rate > 0 ? Math.max(0, kante - filmPlayheadDays) / rate : 1;
+    const follow = rate * Math.min(1, istVorratS / FILM_PUFFER_S);
     let next = filmPlayheadDays + follow * delta / 1000;
     next = Math.min(next, kante);
     if (next < filmPlayheadDays) next = filmPlayheadDays;   // stehenbleiben
@@ -6893,12 +6889,10 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // Playhead in der Vergangenheit auf der Download-Kante (er wird
     // gleich hart auf `kante` geklemmt) und jede Lieferluecke des
     // Streams schlaegt 1:1 als Stocken durch.
-    let vergangenheitsRate = rate;
-    if (kante < Infinity && rate > 0 &&
-        (kante - filmPlayheadDays) / rate < FILM_PUFFER_S) {
-      vergangenheitsRate *= FILM_BREMSE;
-    }
-    filmPlayheadDays += vergangenheitsRate * delta / 1000;
+    // Gleiche Puffer-Glaettung wie im Live-Zweig.
+    const istVorratS = rate > 0 ? Math.max(0, kante - filmPlayheadDays) / rate : 1;
+    filmPlayheadDays += rate * Math.min(1, istVorratS / FILM_PUFFER_S) *
+                        delta / 1000;
     // Kante eingeholt -> automatisch LIVE, aber NUR wenn das Queue-Ende
     // auch die echte Server-Kante ist (sonst stand der Playhead nur am
     // Download-Ende, obwohl der Puffer weiterreicht — falsches "LIVE").

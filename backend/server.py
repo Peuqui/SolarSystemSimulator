@@ -488,17 +488,17 @@ class FilmSession:
             sel = np.flatnonzero(
                 alive_i & (qxs >= x0) & (qxs <= x0 + spanx)
                 & (qys >= y0) & (qys <= y0 + spany))
-            # Dichte-LOD: mehr sichtbare Punkte, als Bandbreite und
+            # LOD-Deckel: mehr sichtbare Punkte, als Bandbreite und
             # Client-Dekodierung bei 20 Samples/s verkraften.
             # Obergrenze 120k: mehr Punkte pro Sample schafft der
             # Client-Dekodier-/Interpolations-Loop nicht bei 60 FPS.
             # lod_budget != 0 = vom Nutzer gesetzt (Regler), sonst Auto.
             lod_max = self.lod_budget or min(
                 120_000, max(20000, int(self._bw * 0.7 / 20.0 / 8.0)))
-            # LOD + Quantisierung laufen in Anzeige-Koordinaten (qxs/qys):
-            # so ist die Dichte-Ausduennung gleichmaessig ueber das ANGE-
-            # ZEIGTE Bild und die u16-Aufloesung passt zur Anzeige.
-            sel = self._lod_auswahl(sel, qxs, qys, box, lod_max)
+            # Auswahl haengt nur am festen Index (Hash-Stichprobe), nicht
+            # an der Position. Die Quantisierung unten laeuft weiter in
+            # Anzeige-Koordinaten (qxs/qys), passend zur u16-Aufloesung.
+            sel = self._lod_auswahl(sel, lod_max)
             qx = np.clip((qxs[sel] - x0) / spanx * 65535.0,
                          0, 65535).astype("<u2")
             qy = np.clip((qys[sel] - y0) / spany * 65535.0,
@@ -648,12 +648,6 @@ class FilmSession:
                                   punkt_nr[j], :]
         return gemeinsam, aus
 
-    # Zellen je Achse fuer die Dichteschaetzung. Die Auto-Box umspannt
-    # ALLE Koerper — auch weit hinausgeschleuderte —, der sichtbare
-    # Ausschnitt ist davon oft nur ein Bruchteil. Ein grobes Gitter legt
-    # dort entsprechend grosse Zellen an, deren Dichtesprung man als
-    # Rechteck sieht. 512 statt 128 viertelt die Kantenlaenge; die Kosten
-    # bleiben klein (bincount ueber 512x512 Zellen, unabhaengig von n).
     # Ab so vielen massiven Koerpern gelten sie als PUNKTWOLKE und
     # werden bei knappem Budget mitgeduennt, statt es allein
     # aufzubrauchen. Unterhalb bleibt der harte Vorrang: Ein paar
@@ -663,18 +657,7 @@ class FilmSession:
     # Rest gehoert den Tracern — sie sind es, die die Struktur zeichnen.
     LOD_MASSEN_ANTEIL = 0.5
 
-    LOD_ZELLEN = 512
-    # Dichte-Kontrast. behalten ~ anzahl^GAMMA je Zelle:
-    #   1,0 = wie frueher (dichte Zellen behalten proportional alles,
-    #         duenne Strukturen fallen unter die Sichtbarkeitsschwelle)
-    #   0,0 = alle Zellen gleich viele Punkte (Dichteunterschiede
-    #         verschwinden voellig — die Szene sieht ueberall gleich aus)
-    # 0,5 (Wurzel) laesst dichte Gebiete deutlich dichter erscheinen und
-    # haelt duenne trotzdem sichtbar: eine Zelle mit 10.000 Koerpern zeigt
-    # gegenueber einer mit 100 noch das 10-fache statt des 100-fachen.
-    LOD_GAMMA = 0.5
-
-    def _lod_auswahl(self, sel, x, y, box, budget):
+    def _lod_auswahl(self, sel, budget):
         """Punkte fuers Sample auswaehlen, wenn `sel` das Budget sprengt.
 
         Rangfolge:
@@ -684,11 +667,11 @@ class FilmSession:
           2. Asteroiden des geladenen Systems (Guertel, Szenario).
           3. Nachtraeglich injizierte Wolken — bekommen den Rest.
 
-        Innerhalb einer Stufe wird DICHTEABHAENGIG geduennt (siehe
-        LOD_GAMMA), nicht gleichmaessig: eine feste Rate ueber alle
-        Koerper loescht duenne Strukturen (der Guertel hat nur ein paar
-        hundert Objekte auf riesigem Ring), waehrend kompakte Wolken auch
-        stark geduennt noch dicht wirken.
+        Innerhalb einer Stufe wird GLEICHMAESSIG geduennt (Hash-Stichprobe,
+        siehe _dichte_filter): dieselbe feste Rate ueber alle Koerper der
+        Stufe. Die Auswahl haengt nur am festen Index, nicht an Position
+        oder Dichte — ueber alle Samples exakt dieselben Koerper, damit die
+        Client-Interpolation nicht reisst.
 
         Sprengt schon Stufe 2 das Budget, wird auch dort geduennt — das
         ist die normale Wirkung der Rangfolge unter knappem Budget, kein
@@ -714,12 +697,12 @@ class FilmSession:
             # Tracer bekommen einen garantierten Anteil.
             if len(massiv) > self.LOD_MASSEN_WOLKE_AB and len(sel) > len(massiv):
                 m_budget = max(1, int(budget * self.LOD_MASSEN_ANTEIL))
-                teile = [self._dichte_filter(massiv, x, y, box, m_budget)]
+                teile = [self._dichte_filter(massiv, m_budget)]
                 rest = budget - len(teile[0])
                 a_sel = sel[ast]
                 if rest > 0 and len(a_sel):
                     teile.append(
-                        self._dichte_filter(a_sel, x, y, box, rest))
+                        self._dichte_filter(a_sel, rest))
                 return np.sort(np.concatenate(teile))
             return sel[~ast]
         a_sel = sel[ast]
@@ -728,82 +711,35 @@ class FilmSession:
         for kandidaten in (a_sel[~inj], a_sel[inj]):
             if rest <= 0 or not len(kandidaten):
                 continue
-            behalten = self._dichte_filter(kandidaten, x, y, box, rest)
+            behalten = self._dichte_filter(kandidaten, rest)
             teile.append(behalten)
             rest -= len(behalten)
         return np.sort(np.concatenate(teile))
 
-    def _dichte_filter(self, idx, x, y, box, budget):
-        """Aus `idx` hoechstens `budget` Indizes waehlen, dichte Gebiete
-        staerker duennend als duenne (behalten ~ anzahl^LOD_GAMMA).
+    def _dichte_filter(self, idx, budget):
+        """Aus `idx` hoechstens `budget` Indizes waehlen — gleichverteilte
+        Stichprobe ueber den Hash des ORIGINAL-Index, mit EINER globalen
+        Rate `budget/len(idx)`.
 
-        Die Auswahl laeuft je Zelle ueber den ORIGINAL-Index
-        (`idx % schritt == 0`) und ist damit ueber Samples hinweg stabil:
-        dieselben Koerper bleiben gestreamt, die Client-Interpolation
-        reisst nicht."""
+        Die Auswahl haengt NUR am festen Index (`_index_hash`), nicht an
+        Position oder lokaler Dichte. Da Budget und die Koerpermenge einer
+        Stufe waehrend eines Films fest sind, ist die Rate konstant und die
+        behaltene Menge ueber alle Samples EXAKT dieselbe — kein Flackern,
+        die Client-Interpolation reisst nie. Eine gleichverteilte Stichprobe
+        haelt dichte Gebiete von selbst proportional dichter.
+
+        Budget ist ein ZIELWERT: E[behalten] = budget, die tatsaechliche
+        Zahl streut um rund sqrt(budget) (bei 20.000 etwa 140 Punkte, 0,7%).
+        Ein exakter Deckel braeuchte eine Teilsortierung — Aufwand ohne
+        Wirkung, das Budget stammt selbst aus einer Bandbreitenschaetzung.
+
+        Der SplitMix64-Hash bricht die Regelmaessigkeit auf: "jeder n-te
+        Index" legte in gleichmaessig erzeugten Wolken ein sichtbares
+        Raster an."""
         if len(idx) <= budget:
             return idx
-        x0, y0, spanx, spany = box
-        k = self.LOD_ZELLEN
-        cx = np.clip(((x[idx] - x0) / spanx * k).astype(np.int32), 0, k - 1)
-        cy = np.clip(((y[idx] - y0) / spany * k).astype(np.int32), 0, k - 1)
-        zelle = cy * k + cx
-        anzahl = np.bincount(zelle, minlength=k * k)
-        belegt = anzahl > 0
-        gewicht = np.zeros(k * k)
-        gewicht[belegt] = anzahl[belegt] ** self.LOD_GAMMA
-        # Skalierung so waehlen, dass die Summe der behaltenen Punkte das
-        # Budget trifft. min(anzahl, s*gewicht) ist monoton in s, also per
-        # Bisektion loesbar — geschlossen ginge es nur ohne die Deckelung
-        # auf die tatsaechliche Zellbelegung.
-        #
-        # Das Budget ist damit ein ZIELWERT, keine harte Schranke: die
-        # Hash-Auswahl trifft die Zellvorgabe im Erwartungswert, die
-        # tatsaechliche Zahl streut um rund sqrt(budget) (bei 20.000 also
-        # etwa 140 Punkte, 0,7%). Ein exakter Deckel braeuchte eine
-        # Teilsortierung der Trefferliste — Aufwand ohne Wirkung, denn
-        # das Budget selbst stammt aus einer Bandbreitenschaetzung.
-        lo, hi = 0.0, float(budget)
-        for _ in range(40):
-            s = 0.5 * (lo + hi)
-            if np.minimum(anzahl, s * gewicht).sum() > budget:
-                hi = s
-            else:
-                lo = s
-        ziel = np.minimum(anzahl, lo * gewicht)
-        # Behalte-Rate je Zelle, STUFENLOS. Ein ganzzahliger Schritt je
-        # Zelle (jeder n-te Index) kann nur die Raten 1, 1/2, 1/3 ...
-        # treffen; zwei Nachbarzellen landen dann auf 1/3 und 1/4 und
-        # unterscheiden sich sichtbar um ein Drittel — mit harter Kante
-        # entlang der Zellgrenze. Genau das erzeugte rechteckige
-        # Block-Artefakte im Bild.
-        rate = np.zeros(k * k).reshape(k, k)   # [cy, cx]
-        np.divide(ziel, anzahl, out=rate.reshape(-1), where=belegt)
-        # Behalte-Rate BILINEAR zwischen den Zellzentren interpolieren
-        # statt pro Zelle konstant: sonst springt die Rate an jeder
-        # Zellgrenze hart, und bei nahem Zoom (wenige grosse Zellen im
-        # Bild) sieht man das als Schachbrettraster. Der Punkt liegt bei
-        # kontinuierlichen Zellkoordinaten; seine Rate ist der bilineare
-        # Mix der vier umgebenden Zellzentren (Zentrum bei i+0.5).
-        fx = np.clip((x[idx] - x0) / spanx * k - 0.5, 0, k - 1)
-        fy = np.clip((y[idx] - y0) / spany * k - 0.5, 0, k - 1)
-        ix = np.floor(fx).astype(np.int32)
-        iy = np.floor(fy).astype(np.int32)
-        ix1 = np.minimum(ix + 1, k - 1)
-        iy1 = np.minimum(iy + 1, k - 1)
-        tx = fx - ix
-        ty = fy - iy
-        r_p = (rate[iy, ix] * (1 - tx) * (1 - ty) +
-               rate[iy, ix1] * tx * (1 - ty) +
-               rate[iy1, ix] * (1 - tx) * ty +
-               rate[iy1, ix1] * tx * ty)
-        # Auswahl ueber einen HASH des Original-Index statt ueber den
-        # Index selbst: liefert eine stufenlose Rate und bricht zugleich
-        # die Regelmaessigkeit auf (jeder n-te Index legte in gleichmaessig
-        # erzeugten Wolken sichtbare Raster an). Deterministisch, also
-        # ueber Samples hinweg stabil — dieselben Koerper bleiben
-        # gestreamt und die Client-Interpolation reisst nicht.
-        return idx[_index_hash(idx) < r_p]
+        rate = budget / len(idx)
+        return idx[_index_hash(idx) < rate]
 
     async def stream(self, ws) -> None:
         """Kontinuierlicher Sample-Push: haelt den Client-Puffer ~5 s
@@ -1398,7 +1334,14 @@ async def main() -> None:
     # Millionen Koerper der Particle-Mesh-Szenarien (1M Massen + 1M Tracer ≈
     # 104 MB) sprengen die alten 64 MiB. 256 MiB deckt ~5M Koerper; der Server
     # ist localhost-only — ein enges DoS-Limit braucht er nicht.
-    serve_kwargs = dict(max_size=256 * 1024 * 1024, ping_interval=None,
+    # ping_interval war None -> ein toter Client (Browser weg, halboffene TCP)
+    # blieb unerkannt: die FilmSession und ihr Producer liefen verwaist weiter
+    # und hielten GPU-Speicher (dangling auf der V100). Aktive Pings erkennen
+    # den Client-Tod, worauf der finally-Block (film.stop) sauber aufraeumt.
+    # ping_timeout grosszuegig, damit ein langer Frame-Send bei grossem N
+    # keinen falschen Disconnect ausloest (localhost, aber Millionen Punkte).
+    serve_kwargs = dict(max_size=256 * 1024 * 1024,
+                        ping_interval=20, ping_timeout=30,
                         compression=None)
     if sock is not None:
         server_ctx = websockets.serve(handle, sock=sock, **serve_kwargs)

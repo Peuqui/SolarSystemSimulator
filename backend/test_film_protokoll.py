@@ -69,6 +69,8 @@ def sub_bahn(i):
 def baue_session(head=40, capacity=64):
     s = server.FilmSession.__new__(server.FilmSession)
     s.n = N
+    # Kein server-seitiger Tracer-Auftrag: alle Koerper sind Massen.
+    s.n_mass = N
     s.capacity = capacity
     s.raster_days = RASTER
     s.t0 = T0
@@ -129,7 +131,12 @@ def zerlege_film(frame):
             d_off = off + 4 + 4 * vis_count
         qx = np.frombuffer(frame, "<u2", vis_count, d_off)
         qy = np.frombuffer(frame, "<u2", vis_count, d_off + 2 * vis_count)
-        soff = d_off + 4 * vis_count
+        # Anonymer Tracer-Block (v7): anzahl | qx | qy, ohne Index.
+        toff = d_off + 4 * vis_count
+        (t_count,) = struct.unpack_from("<I", frame, toff)
+        tqx = np.frombuffer(frame, "<u2", t_count, toff + 4)
+        tqy = np.frombuffer(frame, "<u2", t_count, toff + 4 + 2 * t_count)
+        soff = toff + 4 + 4 * t_count
         (sub_count,) = struct.unpack_from("<I", frame, soff)
         p = sub_count * m_sub
         sub_idx = np.frombuffer(frame, "<u4", sub_count, soff + 4)
@@ -137,9 +144,10 @@ def zerlege_film(frame):
         sqy = np.frombuffer(frame, "<u2", p,
                             soff + 4 + 4 * sub_count + 2 * p)
         samples.append(SimpleNamespace(idx=idx, qx=qx, qy=qy,
+                                       tqx=tqx, tqy=tqy,
                                        sub_idx=sub_idx, sqx=sqx, sqy=sqy))
         block = (4 + (0 if sel_gleich else 4 * vis_count) +
-                 4 * vis_count + 4 + 4 * sub_count + 4 * p)
+                 4 * vis_count + 4 + 4 * t_count + 4 + 4 * sub_count + 4 * p)
         off += block + (-block) % 4
     rest = len(frame) - off - ev_count * film_producer.EV_BYTES
     return SimpleNamespace(status=status, n=n, count=count, box=box,
@@ -296,10 +304,12 @@ def main():
         (roh,) = struct.unpack_from("<I", frame_v6, off)
         roh_flags.append(bool(roh & 0x8000_0000))
         vis = roh & 0x7FFF_FFFF
-        sub_off = off + 4 + (0 if roh_flags[-1] else 4 * vis) + 4 * vis
+        t_off = off + 4 + (0 if roh_flags[-1] else 4 * vis) + 4 * vis
+        (t_count,) = struct.unpack_from("<I", frame_v6, t_off)
+        sub_off = t_off + 4 + 4 * t_count
         (sub_count,) = struct.unpack_from("<I", frame_v6, sub_off)
-        blk = (4 + (0 if roh_flags[-1] else 4 * vis) + 4 * vis + 4 +
-               4 * sub_count + 4 * sub_count * fv.m_sub)
+        blk = (4 + (0 if roh_flags[-1] else 4 * vis) + 4 * vis +
+               4 + 4 * t_count + 4 + 4 * sub_count + 4 * sub_count * fv.m_sub)
         off += blk + (-blk) % 4
     ok &= pruefe(roh_flags[0] is False,
                  "erstes Sample traegt die volle Liste")

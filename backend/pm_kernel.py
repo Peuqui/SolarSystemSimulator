@@ -279,8 +279,16 @@ class NBodyPM:
         n, t = st["N"], st["T"]
         dt = float(dt_years)
         hdt = 0.5 * dt
-        raus = np.empty((steps, 4 * n + 2 * t), np.float32)
+        # Ergebnisse AUF DER GPU sammeln und in EINEM Transfer holen. Frueher
+        # lief pro Substep je ein cp.asnumpy (6 Stueck) -> 6*steps (=48 bei K=8)
+        # synchrone GPU->CPU-Transfers je Batch, jeder mit implizitem Device-
+        # Sync. CUDAs Default-Sync ist Spin-Wait: verbrennt einen CPU-Kern bei
+        # 100%, waehrend die GPU zwischen den winzigen Schritten idlet (gemessen
+        # step=96%, GPU nur ~40%). Das war der Produktions-Flaschenhals.
         with cp.cuda.Device(self.device):
+            # raus_gpu MUSS auf self.device liegen (nicht dem Default-Device),
+            # sonst laufen die Slice-Assigns cross-device und racen mit asnumpy.
+            raus_gpu = cp.empty((steps, 4 * n + 2 * t), cp.float32)
             for s in range(steps):
                 st["vx"] += hdt * st["ax"]; st["vy"] += hdt * st["ay"]
                 st["x"] += dt * st["vx"];   st["y"] += dt * st["vy"]
@@ -291,13 +299,16 @@ class NBodyPM:
                 st["vx"] += hdt * st["ax"]; st["vy"] += hdt * st["ay"]
                 if t:
                     st["tvx"] += hdt * st["tax"]; st["tvy"] += hdt * st["tay"]
-                raus[s, 0:n] = cp.asnumpy(st["x"].astype(cp.float32))
-                raus[s, n:2 * n] = cp.asnumpy(st["y"].astype(cp.float32))
-                raus[s, 2 * n:3 * n] = cp.asnumpy(st["vx"].astype(cp.float32))
-                raus[s, 3 * n:4 * n] = cp.asnumpy(st["vy"].astype(cp.float32))
+                # dtype-Cast f64->f32 passiert implizit beim Slice-Assign (GPU-
+                # Kernel, kein Sync); der einzige Sync ist das asnumpy am Ende.
+                raus_gpu[s, 0:n] = st["x"]
+                raus_gpu[s, n:2 * n] = st["y"]
+                raus_gpu[s, 2 * n:3 * n] = st["vx"]
+                raus_gpu[s, 3 * n:4 * n] = st["vy"]
                 if t:
-                    raus[s, 4 * n:4 * n + t] = cp.asnumpy(st["tx"].astype(cp.float32))
-                    raus[s, 4 * n + t:4 * n + 2 * t] = cp.asnumpy(st["ty"].astype(cp.float32))
+                    raus_gpu[s, 4 * n:4 * n + t] = st["tx"]
+                    raus_gpu[s, 4 * n + t:4 * n + 2 * t] = st["ty"]
+            raus = cp.asnumpy(raus_gpu)   # EIN Transfer statt 6*steps
         return raus
 
     def export_f64(self, st: dict) -> np.ndarray:
