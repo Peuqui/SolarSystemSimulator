@@ -187,16 +187,24 @@ class NBodyPM:
     """
 
     def __init__(self, devices, softening_au: float = 0.0,
-                 kraft_f32: bool = True, grid_n: int = 4096,
+                 kraft_f32: bool = True, grid_n: int | None = None,
                  softening_zellen: float = 1.5, rand_zellen: float = 4.0):
         # `devices` darf eine Liste sein (Producer uebergibt alle) — PM
         # nimmt die erste. `softening_au` wird angenommen (API-Kompat) und
         # nur als Untergrenze verwendet: das Gitter bestimmt das Softening.
+        #
+        # grid_n=None: aus der Massenzahl ableiten (~√N → rund 1 Teilchen je
+        # Zelle, Zellweite ≈ Teilchenabstand ≈ Softening). Ein festes,
+        # feines Gitter waere bei wenigen Teilchen schrotrausch-dominiert
+        # (viele leere Zellen) und wuerde das Softening unter den
+        # Teilchenabstand druecken — genau die Zweikoerper-Streuung, die es
+        # zu daempfen gilt. Ein fester Wert bleibt fuers Testen erzwingbar.
         if isinstance(devices, int):
             devices = [devices]
         self.device = devices[0]
         self.devices = [self.device]
-        self.grid_n = int(grid_n)
+        self._grid_n_fest = None if grid_n is None else int(grid_n)
+        self.grid_n = self._grid_n_fest or 512   # bis load_state N kennt
         self.softening_zellen = float(softening_zellen)
         self.rand_zellen = float(rand_zellen)
         self.softening_floor = float(softening_au)
@@ -230,6 +238,15 @@ class NBodyPM:
 
     def load_state(self, x, y, vx, vy, mass, *_egal,
                    tracer=None, **_auch_egal) -> dict:
+        # Gitteraufloesung aus der Massenzahl: naechste Zweierpotenz zu √N,
+        # gedeckelt auf [256, 2048]. So liegt rund ein Teilchen je Zelle und
+        # die Zellweite trifft den Teilchenabstand. Der Deckel haelt die FFT
+        # bezahlbar (2048² gepaddet = 4096²).
+        if self._grid_n_fest is None:
+            import math
+            g = 1 << max(8, round(math.log2(max(math.isqrt(len(x)), 1))))
+            self.grid_n = int(min(g, 2048))
+            self._kernel_h = None      # Neu-Cache erzwingen
         with cp.cuda.Device(self.device):
             st = {
                 "x": cp.asarray(x, cp.float64),

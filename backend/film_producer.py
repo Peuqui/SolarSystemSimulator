@@ -522,32 +522,36 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         np.asarray(state["isAst"], dtype=np.uint8)))
     if selbstgrav:
         from selfgrav_kernel import NBodySelfGrav, waehle_karten
-        # Eigene Kartenwahl: `pick_devices` filtert nach f64-Score und
-        # sortiert damit die Karten aus, die dieser Kernel mit seiner
-        # f32-Kraftschleife am besten nutzt.
-        #
-        # EIGENE Schwelle, nicht MULTI_GPU_AB: Die 30k dort sind am alten
-        # Kernel MIT Erkennungs-Pipeline gemessen. Kernel A hat ein ganz
-        # anderes Profil — die Barrier laeuft pro Zeitschritt, und der ist
-        # hier klein. Gemessen (1 Karte gegen 5):
-        #     20k 0,46x | 30k 0,86x | 40k 0,86x | 60k 1,27x
-        # Bei 30-40k ist der Verbund also 14 % LANGSAMER. Erst ab rund
-        # 50k traegt er.
-        # Gemessen am 22.07. (V100, f32-Kraft, Schritte/s gegen
-        # eine Karte):
-        #     20.000 Massen  ->  1,65x mit vier Karten
-        #     40.000 Massen  ->  2,05x
-        #     80.000 Massen  ->  2,27x
-        # Die alte Schwelle von 50.000 verschenkte damit genau den
-        # Bereich, in dem die meisten Szenen liegen: Bei 39.811 Massen
-        # rechnete EINE Karte 1,6 Milliarden Paare je Schritt, waehrend
-        # vier danebenstanden. Unterhalb von 20.000 ueberwiegt der
-        # Aufwand der System-Barrier (ueber PCIe, atomics-frei).
-        SELFGRAV_MULTI_GPU_AB = 20_000
+        # `waehle_karten` sortiert nach GEMESSENER f32-Kraftleistung — die
+        # RTX 8000 tragen hier voll bei (f64-Zustand, f32-Kraft), nicht
+        # nach dem f64-Datenblatt-Score von `pick_devices`.
         alle = waehle_karten(kraft_f32=True)
-        phys_devs = alle if len(state["x"]) >= SELFGRAV_MULTI_GPU_AB \
-            else alle[:1]
-        sim = NBodySelfGrav(phys_devs, softening_au=softening_au)
+        n_mass = int(np.count_nonzero(
+            np.asarray(state["isAst"], np.uint8) == 0))
+        # Ab genug MASSEN auf Particle-Mesh (O(N log N)) statt all-pairs
+        # (O(N²)). PM laeuft auf EINER Karte — das Gitter ueber die ×4-PCIe-
+        # Links zu teilen kostete mehr als es braechte (siehe pm_kernel).
+        # Unter der Schwelle bleibt all-pairs: exakt, und PM braucht genug
+        # Teilchen fuer ein glattes Dichtefeld. NBodyPM hat dieselbe API
+        # (load_state/step_batch/export_f64), der Rest der Pipeline merkt
+        # den Wechsel nicht.
+        PM_AB = 50_000
+        if n_mass >= PM_AB:
+            from pm_kernel import NBodyPM
+            phys_devs = alle[:1]
+            sim = NBodyPM(phys_devs, softening_au=softening_au)
+            print(f"[film] particle-mesh auf gpu {phys_devs}, "
+                  f"{n_mass} massen, gitter {sim.grid_n}² "
+                  f"(bestimmt beim load_state)", flush=True)
+        else:
+            # EIGENE Schwelle, nicht MULTI_GPU_AB (die 30k dort sind am
+            # alten Kernel mit Erkennung gemessen). Gemessen (V100, f32-
+            # Kraft): 20k 1,65x | 40k 2,05x | 80k 2,27x mit vier Karten;
+            # unter 20k frisst die PCIe-Barrier den Gewinn.
+            SELFGRAV_MULTI_GPU_AB = 20_000
+            phys_devs = alle if len(state["x"]) >= SELFGRAV_MULTI_GPU_AB \
+                else alle[:1]
+            sim = NBodySelfGrav(phys_devs, softening_au=softening_au)
     else:
         phys_devs = pick_devices() if n_ast_total >= MULTI_GPU_AB \
             else pick_devices()[:1]

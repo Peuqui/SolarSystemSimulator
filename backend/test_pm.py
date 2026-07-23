@@ -138,12 +138,11 @@ def test_dynamik(rng, dev):
     vx -= np.sum(m * vx) / Mtot          # Gesamtimpuls auf 0
     vy -= np.sum(m * vy) / Mtot
 
-    kern = NBodyPM([dev], grid_n=2048, softening_zellen=1.5)
-    _, _, h = grid_fuer(cp.asarray(x), cp.asarray(y), 2048, 4.0)
+    kern = NBodyPM([dev], softening_zellen=1.5)   # grid_n auto aus N
+    st = kern.load_state(x, y, vx, vy, m)         # setzt kern.grid_n
+    _, _, h = grid_fuer(cp.asarray(x), cp.asarray(y), kern.grid_n, 4.0)
     eps2 = (1.5 * h) ** 2
     e0, p0 = energie_impuls(x, y, vx, vy, m, eps2)
-
-    st = kern.load_state(x, y, vx, vy, m)
     t_dyn = R / vvir
     dt = t_dyn / 1000.0                   # 100 Schritte ≈ 0,1 t_dyn
     kern.step_batch(st, dt, steps=100)
