@@ -651,7 +651,7 @@ input[type=range] {
        Physik und ueber eta auch den Zeitschritt. -->
   <label data-i18n-title="tt.sg-n" id="lbl-sg-n" style="display:none;">
     <span data-i18n="lbl.sg-n">Massen</span> <span class="val" id="sg-n-val">50.000</span>
-    <input type="range" autocomplete="off" id="sg-n" min="3.3" max="5.4" step="0.05" value="4.7">
+    <input type="range" autocomplete="off" id="sg-n" min="3.3" max="6.0" step="0.05" value="4.7">
   </label>
   <label data-i18n-title="tt.sg-eps" id="lbl-sg-eps" style="display:none;">
     <span data-i18n="lbl.sg-eps">Weichzeichnung</span> <span class="val" id="sg-eps-val">0,10</span>
@@ -1121,7 +1121,7 @@ const I18N = {
     'inject.filmneu': 'Szene geändert — der Film wird neu berechnet. Der bereits berechnete Vorlauf geht dabei verloren.',
     'film.sg-noetig': 'Dieses Szenario rechnet nur im Film-Modus — der Live-Pfad trägt höchstens 64 massive Körper. Die Szene steht, bis der Film wieder an ist.',
     'lbl.sg-n': 'Massen',
-    'tt.sg-n': 'Wie viele selbstgravitierende Massen gerechnet werden. Jede spürt jede — der Aufwand wächst mit N². Weil die Weichzeichnung mit dem Teilchenabstand mitschrumpft, wird zusätzlich der Zeitschritt feiner: die Kosten steigen mit N^2,5. Gemessen auf fünf Karten: 50.000 Massen ≈ 37 Sim-Jahre pro Minute, 100.000 ≈ 9, 200.000 ≈ 2. Die Gesamtmasse bleibt gleich — mehr Teilchen heißt feiner aufgelöst, nicht schwerer.',
+    'tt.sg-n': 'Wie viele selbstgravitierende Massen gerechnet werden. Bis ~50.000 all-pairs (jede spürt jede, O(N²), fünf Karten); die Kosten steigen mit N^2,5 (37 Sim-Jahre/min bei 50k, 9 bei 100k, 2 bei 200k). Darüber schaltet der Server auf Particle-Mesh (FFT über ein Gitter, O(N log N), EINE Karte) — dann tragen auch Hunderttausende bis Millionen flüssig. Die Struktur ist bei PM gitterbegrenzt (rundlichere Knoten), wird mit steigender Teilchenzahl aber wieder schärfer. Gesamtmasse bleibt gleich — mehr Teilchen = feiner aufgelöst.',
     'lbl.sg-eps': 'Weichzeichnung',
     'lbl.sg-t': 'Tracer',
     'tt.sg-t': 'Masselose Testteilchen, die dem Feld der Massen folgen. Sie erzeugen keine Struktur, sie machen sie sichtbar — und weil sie auf nichts zurückwirken, kosten sie nur N×M statt N². Gemessen: 400.000 Tracer neben 20.000 Massen laufen mit 91 Schritten/s; 400.000 zusätzliche MASSEN kämen auf etwa 8. Links am Anschlag: keine Tracer.',
@@ -1417,7 +1417,7 @@ const I18N = {
     'inject.filmneu': 'Scene changed — the film is being recomputed. The buffer computed so far is discarded.',
     'film.sg-noetig': 'This scenario only runs in film mode — the live path carries at most 64 massive bodies. The scene stays frozen until film mode is back on.',
     'lbl.sg-n': 'Masses',
-    'tt.sg-n': 'How many self-gravitating masses are computed. Every one feels every other — the work grows as N². Since the softening shrinks with the particle spacing, the timestep gets finer too: cost grows as N^2.5. Measured on five cards: 50,000 masses ≈ 37 sim-years per minute, 100,000 ≈ 9, 200,000 ≈ 2. Total mass stays fixed — more particles means finer resolution, not more matter.',
+    'tt.sg-n': 'How many self-gravitating masses are computed. Up to ~50,000 all-pairs (every one feels every other, O(N²), five cards); cost grows as N^2.5 (37 sim-years/min at 50k, 9 at 100k, 2 at 200k). Above that the server switches to Particle-Mesh (FFT over a grid, O(N log N), ONE card) — then hundreds of thousands to millions run smoothly. Structure is grid-limited on PM (rounder knots) but sharpens again as the particle count rises. Total mass stays fixed — more particles = finer resolution.',
     'lbl.sg-eps': 'Softening',
     'lbl.sg-t': 'Tracers',
     'tt.sg-t': 'Massless test particles following the field of the masses. They do not create structure, they reveal it — and since they never act back, they cost only N×M instead of N². Measured: 400,000 tracers alongside 20,000 masses run at 91 steps/s; 400,000 additional MASSES would manage about 8. Far left: no tracers.',
@@ -8564,12 +8564,30 @@ function setBeltCount(kind, n) {
 });
 
 // --- Szenario-Auswahl ---
+// Log-Zoom staucht Punktwolken radial und macht die selbstgravitierende
+// Struktur unkenntlich — dort immer linear zeigen. localStorage bleibt die
+// Praeferenz-SSOT (nur der manuelle Toggle schreibt sie), useLogZoom ist der
+// daraus je Szenario abgeleitete effektive Wert.
+function logZoomPraeferenz() {
+  try {
+    const s = localStorage.getItem('sim_useLogZoom');
+    if (s !== null) return s === '1';
+  } catch (e) {}
+  return DEFAULTS.useLogZoom;
+}
+function setLogZoomEffektiv(val) {
+  useLogZoom = val;
+  document.getElementById('chk-logzoom').checked = val;
+  document.getElementById('mob-chk-logzoom').checked = val;
+}
+
 function onScenarioChange(name) {
   // Belt-Slider nur im Guertel-Szenario einblenden (CSS-Klasse).
   document.body.classList.toggle('belt-active', name === 'Sonnensystem mit Gürteln');
   cam.cx = 0; cam.cy = 0;
   if (SCENARIOS[name]) {
     loadScenario(name);
+    setLogZoomEffektiv(logZoomPraeferenz() && !SCENARIOS[name].selbstgravitierend);
     // Auto-Fit-Zoom basierend auf den tatsaechlichen Body-Positionen —
     // damit alle Koerper initial sichtbar sind, unabhaengig vom Szenario.
     fitZoomToSystem();
