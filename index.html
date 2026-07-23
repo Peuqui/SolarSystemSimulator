@@ -5315,15 +5315,22 @@ function zerlegeFilm(buf) {
     }
     const qx = new Uint16Array(buf, dOff, visCount);
     const qy = new Uint16Array(buf, dOff + 2 * visCount, visCount);
-    const soff = dOff + 4 * visCount;
+    // v5: anonymer Tracer-Block (Anzahl + Positionen, KEIN Index). Die
+    // Massen stehen davor (indiziert -> filmRefs), die Tracer sind reine
+    // Deko-Punkte ohne Identitaet. Ohne Auftrag ist tCount 0.
+    const toff = dOff + 4 * visCount;
+    const tCount = dv.getUint32(toff, true);
+    const tqx = new Uint16Array(buf, toff + 4, tCount);
+    const tqy = new Uint16Array(buf, toff + 4 + 2 * tCount, tCount);
+    const soff = toff + 4 + 4 * tCount;
     const subCount = dv.getUint32(soff, true);
     const p = subCount * mSub;
     const subIdx = new Uint32Array(buf, soff + 4, subCount);
     const sqx = new Uint16Array(buf, soff + 4 + 4 * subCount, p);
     const sqy = new Uint16Array(buf, soff + 4 + 4 * subCount + 2 * p, p);
-    samples.push({ idx, qx, qy, subIdx, sqx, sqy, mSub, box, log });
+    samples.push({ idx, qx, qy, tqx, tqy, subIdx, sqx, sqy, mSub, box, log });
     const blockLen = 4 + (selGleich ? 0 : 4 * visCount) +
-      4 * visCount + 4 + 4 * subCount + 4 * p;
+      4 * visCount + 4 + 4 * tCount + 4 + 4 * subCount + 4 * p;
     off += blockLen + ((4 - (blockLen % 4)) % 4);
   }
   const evs = [];

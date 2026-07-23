@@ -500,6 +500,18 @@ class FilmSession:
                          0, 65535).astype("<u2")
             qy = np.clip((qys[sel] - y0) / spany * 65535.0,
                          0, 65535).astype("<u2")
+            # Massen tragen Identitaet (Index -> filmRefs), Tracer sind
+            # anonyme Deko. sel ist aufsteigend, die Massen (Index < n_mass)
+            # bilden also ein Praefix; der Rest sind Tracer, die ohne Index
+            # allein als Positionen gestreamt werden. Ohne Auftrag ist
+            # n_mass == n -> sel_t leer, der Block ist wie zuvor plus einer
+            # 4-Byte-Null fuer die Tracer-Anzahl.
+            ist_mass = sel < self.n_mass
+            sel_m = sel[ist_mass]
+            qx_m = qx[ist_mass]
+            qy_m = qy[ist_mass]
+            qx_t = qx[~ist_mass]
+            qy_t = qy[~ist_mass]
             # Sub-Block: die GEMESSENEN Zwischenbilder der heissen
             # Asteroiden, beschraenkt auf die tatsaechlich gestreamten
             # Koerper. Fuer sie interpoliert der Client linear entlang der
@@ -513,7 +525,7 @@ class FilmSession:
             # keine Zusatzpruefung.
             sblock = struct.pack("<I", 0)
             if m_sub and nr > 0:
-                ssel, bahn = self._sub_kette(idxs[nr - 1], i, sel)
+                ssel, bahn = self._sub_kette(idxs[nr - 1], i, sel_m)
                 if ssel is not None:
                     bqx, bqy = _anzeige_koords(
                         bahn[:, :, 0], bahn[:, :, 1], log_zoom)
@@ -536,21 +548,30 @@ class FilmSession:
             # (Budget 512 KB gegen 354 KB Kosten), eine frameweise
             # Verankerung spraenge also nie an. Tragfaehig ist das, weil
             # der Client jedes Frame dekodiert — er verwirft keine.
-            sel_u4 = sel.astype("<u4")
+            sel_u4 = sel_m.astype("<u4")
             if self._letzte_sel is not None and \
                     len(sel_u4) == len(self._letzte_sel) and \
                     np.array_equal(sel_u4, self._letzte_sel):
-                kopf = struct.pack("<I", len(sel) | 0x8000_0000)
+                kopf = struct.pack("<I", len(sel_m) | 0x8000_0000)
                 sel_bytes = b""
             else:
                 self._letzte_sel = sel_u4
-                kopf = struct.pack("<I", len(sel))
+                kopf = struct.pack("<I", len(sel_m))
                 sel_bytes = sel_u4.tobytes()
-            block = kopf + sel_bytes + qx.tobytes() + qy.tobytes() + sblock
+            # Anonymer Tracer-Block: nur Anzahl + Positionen (kein Index,
+            # keine Delta-Kompression — Tracer wandern staendig, ein Index
+            # brächte nichts). Reihenfolge im Block: [Massen: kopf | idx |
+            # qx | qy] [Tracer: anzahl | qx | qy] [Sub-Block].
+            tblock = (struct.pack("<I", len(qx_t)) +
+                      qx_t.tobytes() + qy_t.tobytes())
+            block = (kopf + sel_bytes + qx_m.tobytes() + qy_m.tobytes()
+                     + tblock + sblock)
             block += b"\x00" * ((-len(block)) % 4)
             blocks.append(block)
 
-        head = struct.pack("<IIII", 4, self.n, len(idxs), ev_n)
+        # n = MASSEN-Anzahl (== filmRefs im Client): die Tracer sind anonym
+        # und stehen als Positionsblock je Sample, nicht in filmRefs.
+        head = struct.pack("<IIII", 5, self.n_mass, len(idxs), ev_n)
         # 7. f64 = logFlag: 1 = Positionen sind log-polar kodiert (der
         # Client transformiert zurueck), 0 = Weltkoordinaten.
         # 8. f64 = mSub: Stuetzpunkte je Koerper im Sub-Block, 0 = keiner.
