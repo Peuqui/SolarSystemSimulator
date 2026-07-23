@@ -677,3 +677,40 @@ Die Spur lief in `b.color`, und die ist beim Schwarzen Loch Fast-Schwarz
 auf schwarzem Grund. Jetzt zeichnet sie in `BH_TRAIL_COLOR` (`#ff8c28`,
 das Orange des Akkretions-Halos); der Körper selbst bleibt `BH_COLOR`.
 Beide Farben sind Konstanten statt dreifach eingestreuter Literale.
+
+### 6.16 IDEE: Kernel C — viele Massen, die verschmelzen (Kugelsternhaufen)
+Es gibt ein physikalisches Regime, das **keiner** der beiden Kerne
+bedient:
+
+- **Alter Kernel** (`nbody_kernel.py`): hat Kollisionen/Merges, aber
+  höchstens `M_MAX = 64` Massen. Grund ist NICHT der Shared Memory (M_MAX
+  belegt nur ~2,6 KB von 64–96 KB, Platz für ~1.500), sondern dass er
+  Masse×Masse **seriell auf Thread 0** rechnet (O(M²)).
+- **Selfgrav-Kernel** (`selfgrav_kernel.py`, Kernel A): viele Massen
+  (50.000+, gekachelt/parallel), aber **keine** Kollisionen — das
+  Plummer-Softening hält die Teilchen auf Abstand, Merges sind für
+  Massen-Samples eines Dichtefelds der falsche Begriff.
+
+Gewünschtes Regime dazwischen: **zehntausende Sterne, die einander
+anziehen UND verschmelzen** — ein Kugelsternhaufen, in dem echte
+Kollisionen passieren.
+
+**Wichtig, damit niemand am falschen Ende anfängt:** Es ist NICHT damit
+getan, die serielle Masse×Masse des alten Kernels zu parallelisieren. Bei
+M ≤ 64 ist die serielle Schleife 3.136 Paare = Mikrosekunden, also 0,04 %
+der Arbeit — die Tracer dominieren und laufen längst parallel. Das
+Parallelisieren allein bringt **null** Speedup und würde nur den
+Selfgrav-Kernel duplizieren.
+
+Der echte Aufwand ist die **Kollisionserkennung parallel über zehntausende
+Massen** — nicht seriell, nicht O(M²), sondern über ein **Raumgitter**
+(räumliches Hashing: nur Nachbarzellen prüfen). Das ist ein eigener
+Kernel C:
+- Kräfte: Tiling wie Kernel A (parallel, gekacheltes VRAM).
+- Kollisionen: Raumgitter-Broadphase + Merge-Anwendung.
+- Softening dann klein oder aus (sonst kollidiert nichts).
+- f64-Zustand, f32-Kraft (wie in Kernel A gemessen, UEBERGABE-Kennzahlen).
+
+Gehört konzeptionell neben die Kernel-Roadmap in `TODO.md` (Tiling A,
+Kernel B, Barnes-Hut/PM). Reihenfolge offen — erst wenn ein Szenario das
+wirklich braucht.
