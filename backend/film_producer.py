@@ -489,7 +489,8 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                   shatter_t=None, det_rank: int = 0,
                   det_gpus: int = DET_MAX, diag: bool = False,
                   m_sub: int = 0, sub_max: int = 0,
-                  softening_au: float = 0.0) -> None:
+                  softening_au: float = 0.0,
+                  tracer_auftrag: dict = None) -> None:
     # CUDA-Kontexte erst IM Kindprozess anlegen (spawn-Kontext!)
     from multiprocessing import shared_memory
 
@@ -600,6 +601,25 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     is_star_bh = np.array(state.get("isStarBH",
                                     np.zeros(len(is_ast), np.uint8)),
                           dtype=np.uint8, copy=True) != 0
+    # Server-seitige Tracer: aus dem Auftrag wuerfeln und an ALLE
+    # Koerper-Arrays ANHAENGEN (Massen zuerst 0..n_mass-1, dann Tracer
+    # n_mass..n-1). Ab hier laeuft der bestehende selbstgrav-Pfad
+    # unveraendert — sg_m/sg_t trennt Massen und Tracer ueber isAst wie beim
+    # Upload-Weg, nur dass die Tracer nicht mehr durch Browser und Leitung
+    # mussten. Masselos (mass 0), sichtbar, als Tracer markiert.
+    if tracer_auftrag:
+        from tracer_gen import wuerfle_tracer
+        tx, ty, tvx, tvy = wuerfle_tracer(tracer_auftrag, seed=0)
+        T = len(tx)
+        x = np.concatenate([np.asarray(x, np.float64), tx])
+        y = np.concatenate([np.asarray(y, np.float64), ty])
+        vx = np.concatenate([np.asarray(vx, np.float64), tvx])
+        vy = np.concatenate([np.asarray(vy, np.float64), tvy])
+        mass = np.concatenate([mass, np.zeros(T)])
+        real_r = np.concatenate([real_r, np.ones(T)])
+        vis = np.concatenate([vis, np.ones(T, np.uint8)])
+        is_ast = np.concatenate([is_ast, np.ones(T, bool)])
+        is_star_bh = np.concatenate([is_star_bh, np.zeros(T, bool)])
     # real_r mitgeben: damit erkennt die Feinschleife Beruehrungen mit
     # massiven Koerpern selbst — auf ~Radius/20 genau statt auf ein
     # Sample-Raster (bei einem Sonnensturz 0,07 AE).
@@ -609,7 +629,9 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         # bewegt die Massen (O(N^2)), Kernel B laesst die Tracer ihrem
         # Feld folgen (O(N x M), keine Rueckwirkung). Damit traegt das
         # bestehende Protokoll die Aufteilung, ohne ein weiteres Flag.
-        sg_ast = np.asarray(state["isAst"], dtype=np.uint8) != 0
+        # is_ast ist hier bereits um die server-erzeugten Tracer erweitert
+        # (state["isAst"] kennt nur die Massen).
+        sg_ast = is_ast
         sg_m = np.flatnonzero(~sg_ast)
         sg_t = np.flatnonzero(sg_ast)
         st = sim.load_state(

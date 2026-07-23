@@ -185,10 +185,20 @@ class FilmSession:
     def __init__(self, t0_days: float, raster_days: float,
                  x, y, vx, vy, mass, real_r, visible, is_ast,
                  is_star_bh, injiziert, ast_bounce: bool, m_sub: int,
-                 softening_au: float = 0.0):
+                 softening_au: float = 0.0, tracer_auftrag: dict = None):
         self.raster_days = max(0.1, raster_days)
         self.t0 = t0_days
-        self.n = len(x)
+        # Massen kommen als Koerper herein; die masselosen Tracer erzeugt der
+        # Producer server-seitig aus `tracer_auftrag` (tracer_gen). self.n
+        # deckt BEIDE: Massen zuerst (Index 0..n_mass-1, mit Identitaet ->
+        # filmRefs), danach die anonymen Tracer (n_mass..n-1). Slot,
+        # Kill-Zeiten und build_frame rechnen alle mit self.n. Ohne Auftrag
+        # (uebergangsweise der alte Pfad) ist n_tracer=0 und self.n == len(x)
+        # wie zuvor.
+        self.n_mass = len(x)
+        self.tracer_auftrag = tracer_auftrag
+        n_tracer = int(tracer_auftrag["n"]) if tracer_auftrag else 0
+        self.n = self.n_mass + n_tracer
         # Slot = x|y f32 + Sub-Block (Stuetzpunkte der heissen Asteroiden,
         # 0 = aus). Die Geschwindigkeit liegt NICHT mehr im Ring: sie
         # diente allein der Client-Interpolation, und dafuer sind die
@@ -267,12 +277,21 @@ class FilmSession:
         # verschwinden, lange bevor der Playhead den Kollisionszeitpunkt
         # erreichte — ihre Client-Position fror unterwegs ein und die
         # Explosion blitzte spaeter irgendwo im Leeren.
-        self._kill_t = np.where(
-            np.array(visible, dtype=np.uint8) != 0, np.inf, -np.inf)
-        self._is_ast = np.array(is_ast, dtype=np.uint8, copy=True) != 0
+        # Die Metadaten decken auch die server-erzeugten Tracer
+        # (Index n_mass..n-1): sie leben (sichtbar), sind als Tracer markiert
+        # (is_ast) und nie nachtraeglich injiziert. Ihre POSITIONEN fuellt der
+        # Producer in den Slot; hier zaehlen nur Kill-/LOD-/Culling-Flags.
+        vis_voll = np.concatenate(
+            [np.asarray(visible, np.uint8), np.ones(n_tracer, np.uint8)])
+        ast_voll = np.concatenate(
+            [np.asarray(is_ast, np.uint8), np.ones(n_tracer, np.uint8)])
+        inj_voll = np.concatenate(
+            [np.asarray(injiziert, np.uint8), np.zeros(n_tracer, np.uint8)])
+        self._kill_t = np.where(vis_voll != 0, np.inf, -np.inf)
+        self._is_ast = ast_voll != 0
         # Vorrang beim LOD-Budget: Koerper des geladenen Systems zuerst,
         # nachtraeglich injizierte Wolken bekommen den Rest.
-        self._injiziert = np.array(injiziert, dtype=np.uint8, copy=True) != 0
+        self._injiziert = inj_voll != 0
         # Punktbudget pro Sample; 0 = automatisch aus der gemessenen
         # Bandbreite. Kommt live im Abo (MSG_FILM_SUB), wirkt daher ohne
         # Filmneustart.
@@ -300,7 +319,7 @@ class FilmSession:
                   self.shatter_flag, self.shatter_a, self.shatter_b,
                   self.shatter_t, _SESSION_SEQ[0], self.DET_GPUS,
                   self.DIAG, self.m_sub, self.sub_max,
-                  float(softening_au)),
+                  float(softening_au), tracer_auftrag),
             daemon=True)
         _SESSION_SEQ[0] += 1
         self.proc.start()
