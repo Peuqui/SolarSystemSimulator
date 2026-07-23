@@ -590,6 +590,9 @@ input[type=range] {
   <label data-i18n-title="tt.worldgrid">
     <input type="checkbox" id="chk-worldgrid"> <span data-i18n="lbl.worldgrid">Welt-Koordinatenkreuz</span>
   </label>
+  <label data-i18n-title="tt.energie">
+    <input type="checkbox" id="chk-energie"> <span data-i18n="lbl.energie">Energie-Statistik</span>
+  </label>
   <label>
     <input type="checkbox" id="chk-logzoom" checked> <span data-i18n="lbl.logzoom">Logarithmischer Zoom</span>
   </label>
@@ -837,6 +840,7 @@ input[type=range] {
   <label><input type="checkbox" id="mob-chk-grid" checked> <span data-i18n="lbl.grid">Gitternetz</span></label>
   <label data-i18n-title="tt.stars"><input type="checkbox" id="mob-chk-stars" checked> <span data-i18n="lbl.stars">Sternenhintergrund</span></label>
   <label data-i18n-title="tt.worldgrid"><input type="checkbox" id="mob-chk-worldgrid"> <span data-i18n="lbl.worldgrid">Welt-Koordinatenkreuz</span></label>
+  <label data-i18n-title="tt.energie"><input type="checkbox" id="mob-chk-energie"> <span data-i18n="lbl.energie">Energie-Statistik</span></label>
   <label><input type="checkbox" id="mob-chk-logzoom" checked> <span data-i18n="lbl.logzoom">Log-Zoom</span></label>
   <label><input type="checkbox" id="mob-chk-baryctr" checked> <span data-i18n="lbl.centerbary">Schwerpunkt zentrieren</span></label>
   <label data-i18n-title="tt.bary-no-rogue"><input type="checkbox" id="mob-chk-bary-no-rogue" checked> <span data-i18n="lbl.exclude-rogues-bary">Rogues bei Schwerpunkt ignorieren</span></label>
@@ -936,6 +940,7 @@ const DEFAULTS = {
   showGrid: true,       // konzentrische Schwerpunkts-Ringe
   showStars: true,      // Hintergrund-Sternfeld
   showWorldGrid: false, // x=0/y=0 Achsenkreuz
+  showEnergie: false,   // KE/PE/Gesamt-E berechnen (O(M^2) fuer PE — default aus)
   useLogZoom: true,
   lockBarycenter: true,
   excludeRoguesFromBary: true,
@@ -1053,6 +1058,8 @@ const I18N = {
     'lbl.grid': 'Gitternetz',
     'lbl.stars': 'Sternenhintergrund',
     'lbl.worldgrid': 'Welt-Koordinatenkreuz',
+    'lbl.energie': 'Energie-Statistik',
+    'tt.energie': 'Berechnet kinetische und potentielle Gesamtenergie. Die potentielle ist O(M²) über alle Massen — bei zehntausenden Körpern sekundenlang. Nur einschalten, wenn die Energieerhaltung als Qualitätsprüfung interessiert (kleine Szenen). Default aus.',
     'lbl.logzoom': 'Logarithmischer Zoom',
     'lbl.centerbary': 'Schwerpunkt zentrieren',
     'lbl.exclude-rogues-bary': 'Rogues bei Schwerpunkt ignorieren',
@@ -1348,6 +1355,8 @@ const I18N = {
     'lbl.grid': 'Grid',
     'lbl.stars': 'Star background',
     'lbl.worldgrid': 'World axis cross',
+    'lbl.energie': 'Energy stats',
+    'tt.energie': 'Computes total kinetic and potential energy. The potential part is O(M²) over all masses — seconds long with tens of thousands of bodies. Only enable if energy conservation matters as a quality check (small scenes). Default off.',
     'lbl.logzoom': 'Logarithmic zoom',
     'lbl.centerbary': 'Center on barycenter',
     'lbl.exclude-rogues-bary': 'Ignore rogues for barycenter',
@@ -3222,6 +3231,12 @@ let _trailSxsBuf = new Float32Array(256);
 let _trailSysBuf = new Float32Array(256);
 
 function recordTrails() {
+  // Punktwolke (selbstgravitierende Szenarien, zehntausende Massen): keine
+  // Bahnspuren. Das Zeichnen ist ohnehin unterdrueckt (siehe _punktwolke
+  // im Render), das Aufzeichnen war reine Verschwendung — jedes Bild ein
+  // Spurpunkt je Koerper, der nie erscheint. EIN Riegel hier spart die
+  // Pro-Koerper-Schleife ueber alle Massen komplett.
+  if (_punktwolke) return;
   for (let i = 0; i < bodies.length; i++) {
     const b = bodies[i];
     if (!b.visible) continue;
@@ -3322,6 +3337,7 @@ let focusBody = null;        // Bei gesetztem Body: Kamera folgt ihm statt Schwe
 var excludeRoguesFromBary = DEFAULTS.excludeRoguesFromBary;  // Rogues nicht zum Schwerpunkt zaehlen
 var showStars = DEFAULTS.showStars;        // Hintergrund-Sternfeld als Bewegungsreferenz
 var showWorldGrid = DEFAULTS.showWorldGrid;   // Welt-fixiertes Rechteckgitter (statt nur die Ringe)
+var showEnergie = DEFAULTS.showEnergie;        // Energie-Statistik (KE/PE/E) berechnen + anzeigen
 
 // Statisches Sternfeld als Bewegungsreferenz. Die Sterne wohnen NICHT in
 // Welt-Koordinaten (das wuerde im Log-Zoom alle Sterne radial nach aussen
@@ -3498,6 +3514,13 @@ function heaviestBody() {
 // kinetische Energie (im Schwerpunkt-Ruhesystem) > Bindungsenergie an
 // den Rest  ->  KE + PE > 0  ->  Hyperbelbahn, entkommt.
 function updateBoundState() {
+  // Punktwolke (selbstgravitierende Kernel): keine Fluchterkennung. Sie
+  // dient dem Markieren und Aufraeumen einzelner Planeten/Asteroiden im
+  // alten Kernel — in einer Wolke aus zehntausenden gleichberechtigten
+  // Massen ist "dieser eine entkommt" bedeutungslos, und die Marker sind
+  // im Punkt-Render ohnehin unterdrueckt. Der O(N)-Durchlauf entfaellt
+  // damit komplett (gemessen 4,6 ms/Bild bei 50.000 Koerpern).
+  if (_punktwolke) return;
   // Fluchtkriterium pro Frame:
   //  (1) spez. Bahnenergie eps = v_rel^2/2 - G*M/r > 0  (Hyperbel)
   //  (2) das Objekt entfernt sich gerade  (radiale Geschw. vrad > 0)
@@ -8219,7 +8242,11 @@ async function simLoop() {
     // garantiert in der Mitte halten, auch bei sehr starkem Zoom.
     cam.cx = tx; cam.cy = ty;
     centerInTransit = zoomLerping;
-  } else if (lockBarycenter) {
+  } else if (lockBarycenter && !_punktwolke) {
+    // Punktwolke: keine Schwerpunkt-Nachfuehrung. Die Wolke startet im
+    // Ursprung und ihr Massenmittelpunkt bleibt dort (Impulserhaltung) —
+    // die Kamera braucht ihn nicht jedes Bild neu zu suchen (O(N)). Nach
+    // dem Auto-Fit beim Laden steht die Ansicht, der Rest ist manuell.
     const [bx, by] = barycenter();
     if (useLogZoom) {
       const r = Math.hypot(bx, by), ang = Math.atan2(by, bx);
@@ -8847,6 +8874,7 @@ const chkSync = [
   ['chk-grid', 'mob-chk-grid', 'showGrid'],
   ['chk-stars', 'mob-chk-stars', 'showStars'],
   ['chk-worldgrid', 'mob-chk-worldgrid', 'showWorldGrid'],
+  ['chk-energie', 'mob-chk-energie', 'showEnergie'],
   ['chk-logzoom', 'mob-chk-logzoom', 'useLogZoom'],
   ['chk-baryctr', 'mob-chk-baryctr', 'lockBarycenter'],
   ['chk-bary-no-rogue', 'mob-chk-bary-no-rogue', 'excludeRoguesFromBary'],
@@ -9611,7 +9639,10 @@ function updateStats() {
   // Gesamtmasse < 0,001 Erdmassen gegen Sonne 332.000), kosten aber als
   // N^2-Term im PE bei N=1400 Bodies rund 7 ms pro Aufruf. Daher nur
   // Planeten/Sterne/Rogues \u2014 O(M^2) mit M ~ 10 statt O(N^2) mit N ~ 1400.
-  const planets = [];
+  // `planets` (fuer die Energie) NUR bauen, wenn die Energie-Statistik an
+  // ist — sonst waere es bei zehntausenden Massen eine grosse Allokation
+  // je Aufruf fuer nichts. Die Typ-Zaehler laufen weiter (Badge).
+  const planets = showEnergie ? [] : null;
   let activeCount = 0;
   let bhN = 0, sunN = 0, solidN = 0, astN = 0;
   for (let i = 0; i < bodies.length; i++) {
@@ -9619,28 +9650,40 @@ function updateStats() {
     if (!b.visible) continue;
     activeCount++;
     if (b.isAsteroid) { astN++; continue; }
-    planets.push(b);
+    if (planets) planets.push(b);
     if (b.isBlackHole) bhN++;
     else if (b.isStar) sunN++;
     else solidN++;
   }
   let ke = 0;
-  for (let i = 0; i < planets.length; i++) {
+  if (showEnergie) for (let i = 0; i < planets.length; i++) {
     const b = planets[i];
     ke += 0.5 * b.mass * (b.vx*b.vx + b.vy*b.vy);
   }
-  let pe = 0;
-  for (let i = 0; i < planets.length; i++) {
-    const bi = planets[i];
-    for (let j = i+1; j < planets.length; j++) {
-      const bj = planets[j];
-      const dx = bj.x - bi.x;
-      const dy = bj.y - bi.y;
-      const r = Math.sqrt(dx*dx + dy*dy + 1e-12);
-      pe -= G_AU * bi.mass * bj.mass / r;
+  // Potentielle Energie ist O(M^2) ueber alle Massen. Der Asteroiden-
+  // Ausschluss oben hielt das bei ~10 Planeten winzig — aber in den
+  // selbstgravitierenden Szenarien sind ZEHNTAUSENDE Koerper Massen, keine
+  // Asteroiden. Bei 50.000 sind das 2,5 Mrd Paare = ~4 s je Aufruf, und
+  // updateStats laeuft alle 10 Bilder: der Haupt-Thread fror dadurch 96 %
+  // der Zeit ein (Puffer voll, Wiedergabe trotzdem ruckelig). Oberhalb der
+  // Schwelle wird die PE weggelassen — bei so vielen Koerpern ist eine
+  // Gesamtenergie-Zahl ohnehin ohne Aussage. KE bleibt (nur O(M)).
+  const PE_MAX_BODIES = 2000;
+  let pe = null;
+  if (showEnergie && planets.length <= PE_MAX_BODIES) {
+    pe = 0;
+    for (let i = 0; i < planets.length; i++) {
+      const bi = planets[i];
+      for (let j = i+1; j < planets.length; j++) {
+        const bj = planets[j];
+        const dx = bj.x - bi.x;
+        const dy = bj.y - bi.y;
+        const r = Math.sqrt(dx*dx + dy*dy + 1e-12);
+        pe -= G_AU * bi.mass * bj.mass / r;
+      }
     }
   }
-  const totalE = ke + pe;
+  const totalE = pe === null ? null : ke + pe;
   const engineName = (useCuda && useFilm && filmActive) ? 'CUDA-Film'
     : useCuda ? 'CUDA (f64)' : useHybrid ? 'Hybrid'
     : (useGPU && gpu) ? 'WebGPU' : useWorker ? 'WebWorker' : 'CPU';
@@ -9651,10 +9694,12 @@ function updateStats() {
     `<span>${fmtDE(_perf.fps, 1)}</span> ${t('stats.fps')}<br>` +
     `${t('stats.phys')}: <span>${fmtDE(_perf.msPhys, 1)}</span> ms — ` +
     `${t('stats.rate')}: <span>${fmtDE(_perf.daysPerSec, 1)}</span> ${t('stats.rate-unit')}<br>` +
-    `${t('stats.bodies')}: <span>${fmtDE(activeCount, 0)}</span> ${t('stats.active')} / ${fmtDE(bodies.length, 0)} ${t('stats.total')} (${fmtDE(perturbers.length, 0)} ${t('stats.rogues')})<br>` +
-    `${t('stats.ke')}: <span>${fmtDExp(ke, 2)}</span><br>` +
-    `${t('stats.pe')}: <span>${fmtDExp(pe, 2)}</span><br>` +
-    `${t('stats.te')}: <span>${fmtDExp(totalE, 2)}</span>`;
+    `${t('stats.bodies')}: <span>${fmtDE(activeCount, 0)}</span> ${t('stats.active')} / ${fmtDE(bodies.length, 0)} ${t('stats.total')} (${fmtDE(perturbers.length, 0)} ${t('stats.rogues')})` +
+    (showEnergie
+      ? `<br>${t('stats.ke')}: <span>${fmtDExp(ke, 2)}</span><br>` +
+        `${t('stats.pe')}: <span>${pe === null ? '—' : fmtDExp(pe, 2)}</span><br>` +
+        `${t('stats.te')}: <span>${totalE === null ? '—' : fmtDExp(totalE, 2)}</span>`
+      : '');
   document.getElementById('stats').innerHTML = html;
   document.getElementById('mob-stats').innerHTML = html;
   updateFilmBar();
@@ -10286,6 +10331,7 @@ function applyDefaults() {
     ['chk-grid',           'showGrid',              DEFAULTS.showGrid],
     ['chk-stars',          'showStars',             DEFAULTS.showStars],
     ['chk-worldgrid',      'showWorldGrid',         DEFAULTS.showWorldGrid],
+    ['chk-energie',        'showEnergie',           DEFAULTS.showEnergie],
     ['chk-logzoom',        'useLogZoom',            DEFAULTS.useLogZoom],
     ['chk-baryctr',        'lockBarycenter',        DEFAULTS.lockBarycenter],
     ['chk-bary-no-rogue',  'excludeRoguesFromBary', DEFAULTS.excludeRoguesFromBary],
