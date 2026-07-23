@@ -225,7 +225,13 @@ class FilmSession:
         nach_bytes = int(min(self.MAX_BYTES, _shm_budget())
                          // self.sample_bytes)
         nach_zeit = int(self.MAX_RING_TAGE / self.raster_days)
-        self.capacity = max(2000, min(nach_bytes, nach_zeit))
+        # nach_bytes ist die HARTE Grenze — der physisch im tmpfs verfuegbare
+        # Platz. Der Mindest-Vorlauf von 2000 Slots gilt nur gegen das
+        # ZEIT-Budget und darf den Platz NIE ueberschreiten: bei Millionen
+        # Koerpern ist ein Slot viele MB, 2000 davon sprengen ein 16-GB-tmpfs,
+        # und der Producer stirbt beim Schreiben ueber die Mapping-Grenze
+        # hinaus mit SIGBUS (Signal 7). Darum min() aussen, max() nur innen.
+        self.capacity = min(nach_bytes, max(2000, nach_zeit))
         self.shm = shared_memory.SharedMemory(
             create=True, size=self.capacity * self.sample_bytes)
         # Ereignisring. Muss den RUECKSTAND puffern koennen: erzeugt der
@@ -1324,7 +1330,12 @@ async def main() -> None:
     # jeden Frame durch zlib (~20-50 MB/s single-thread) — DAS war der
     # Stream-Durchsatz-Deckel. u16-Punktwolken komprimieren ohnehin
     # kaum; Bandbreite spart stattdessen das Dichte-LOD.
-    serve_kwargs = dict(max_size=64 * 1024 * 1024, ping_interval=None,
+    # max_size deckt den FILM_START-Upload: der Client schickt den kompletten
+    # Anfangszustand in EINER Nachricht, 52 B/Koerper (6×f64 + 4×u8). Die
+    # Millionen Koerper der Particle-Mesh-Szenarien (1M Massen + 1M Tracer ≈
+    # 104 MB) sprengen die alten 64 MiB. 256 MiB deckt ~5M Koerper; der Server
+    # ist localhost-only — ein enges DoS-Limit braucht er nicht.
+    serve_kwargs = dict(max_size=256 * 1024 * 1024, ping_interval=None,
                         compression=None)
     if sock is not None:
         server_ctx = websockets.serve(handle, sock=sock, **serve_kwargs)
