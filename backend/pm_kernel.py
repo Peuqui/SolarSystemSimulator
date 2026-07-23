@@ -25,9 +25,12 @@ der Ableitung.
 """
 from __future__ import annotations
 
+import time
+
 import cupy as cp
 import numpy as np
 
+import gpu_bench
 from nbody_kernel import G_AU
 
 
@@ -308,3 +311,57 @@ class NBodyPM:
             raus[2 * n:3 * n] = cp.asnumpy(st["vx"])
             raus[3 * n:4 * n] = cp.asnumpy(st["vy"])
         return raus
+
+
+# --- Kartenwahl fuer PM: eigener Mikro-Benchmark -------------------------
+# `selfgrav_kernel.miss_gewicht` (all-pairs, 4096 Koerper) taugt fuer PM
+# NICHT: bei so kleinem N ist die Last compute-bound, wo die RTX 8000 knapp
+# vorn liegt. PM ist bei grossem N FFT- und bandbreiten-bound — da gewinnt
+# die V100 (HBM2). Gemessen (Schritte/s je Kraftauswertung):
+#     N        RTX 8000   V100
+#   200.000       190      237   (V100 ×1,25)
+#   1.000.000      41       54   (V100 ×1,31)
+# Also eine EIGENE Last, gross genug, dass sie im richtigen Regime misst und
+# baugleiche Karten gleich rankt (kurze Laeufe verrauschen — siehe die
+# 7-%-Streuung zweier baugleicher RTX beim all-pairs-Proxy).
+KALIBRIER_PM_N = 200_000
+KALIBRIER_PM_SCHRITTE = 20
+KALIBRIER_PM_RUNDEN = 3
+
+
+def miss_gewicht_pm(device: int) -> float:
+    """PM-Durchsatz einer Karte (Schritte/s), gemessen im echten Betriebspfad
+    (`NBodyPM.step_batch`). Nur als VERHAELTNIS zwischen Karten aussagekraeftig.
+    MEHRERE Runden, davon die beste — Stoerungen (kalte Karte, fremde Last)
+    wirken nur nach unten, deshalb ist das Maximum der robuste Schaetzer."""
+    n = KALIBRIER_PM_N
+    rng = np.random.default_rng(0)
+    r = 60000.0 * np.sqrt(rng.uniform(0, 1, n))
+    th = rng.uniform(0, 2 * np.pi, n)
+    x = r * np.cos(th)
+    y = r * np.sin(th)
+    null = np.zeros(n)
+    m = np.full(n, 5.6e9 / n)
+    kern = NBodyPM([device], softening_au=0.0)
+    st = kern.load_state(x, y, null, null, m)
+    kern.step_batch(st, 1e-6, 3)          # warmlaufen: FFT-Plan, Takt hoch
+    cp.cuda.Device(device).synchronize()
+    beste = 0.0
+    for _ in range(KALIBRIER_PM_RUNDEN):
+        t0 = time.perf_counter()
+        kern.step_batch(st, 1e-6, KALIBRIER_PM_SCHRITTE)
+        cp.cuda.Device(device).synchronize()
+        dauer = time.perf_counter() - t0
+        beste = max(beste, KALIBRIER_PM_SCHRITTE / max(dauer, 1e-9))
+    return beste
+
+
+def waehle_karte_pm(devices: list[int]) -> int:
+    """Die schnellste EINE Karte fuer den PM-Pfad — aus dem persistenten
+    Cache oder frisch gemessen. Eine Karte: trivial (kein Benchmark noetig).
+    Mehrere: die mit dem hoechsten gemessenen PM-Score."""
+    devices = list(devices)
+    if len(devices) == 1:
+        return devices[0]
+    scores = gpu_bench.hole_gewichte("pm_fft", miss_gewicht_pm, devices)
+    return max(scores, key=scores.get)

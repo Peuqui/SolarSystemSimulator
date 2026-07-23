@@ -537,12 +537,16 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
         # den Wechsel nicht.
         PM_AB = 50_000
         if n_mass >= PM_AB:
-            from pm_kernel import NBodyPM
-            phys_devs = alle[:1]
+            from pm_kernel import NBodyPM, waehle_karte_pm
+            # NICHT alle[:1]: `waehle_karten` sortiert nach all-pairs-f32 —
+            # fuer PM der falsche Massstab (compute- statt bandbreiten-bound,
+            # kroent auf dieser Maschine die RTX 8000). `waehle_karte_pm`
+            # nimmt die im PM-Betrieb schnellste Karte (persistenter Mikro-
+            # Benchmark, HW-agnostisch, cacht nach Bestueckung).
+            phys_devs = [waehle_karte_pm(alle)]
             sim = NBodyPM(phys_devs, softening_au=softening_au)
             print(f"[film] particle-mesh auf gpu {phys_devs}, "
-                  f"{n_mass} massen, gitter {sim.grid_n}² "
-                  f"(bestimmt beim load_state)", flush=True)
+                  f"{n_mass} massen", flush=True)
         else:
             # EIGENE Schwelle, nicht MULTI_GPU_AB (die 30k dort sind am
             # alten Kernel mit Erkennung gemessen). Gemessen (V100, f32-
@@ -612,7 +616,11 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             x[sg_m], y[sg_m], vx[sg_m], vy[sg_m], mass[sg_m],
             tracer=(x[sg_t], y[sg_t], vx[sg_t], vy[sg_t])
             if len(sg_t) else None)
-        print(f"[film] {len(sg_m)} massen, {len(sg_t)} tracer", flush=True)
+        # grid_n steht erst JETZT fest (load_state leitet es aus √N ab) —
+        # der print oben lief noch mit dem Konstruktor-Default.
+        gitter = f", gitter {sim.grid_n}²" if hasattr(sim, "grid_n") else ""
+        print(f"[film] {len(sg_m)} massen, {len(sg_t)} tracer{gitter}",
+              flush=True)
     else:
         sg_m = sg_t = None
         st = sim.load_state(x, y, vx, vy, mass, vis, state["isAst"], real_r)

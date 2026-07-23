@@ -62,6 +62,7 @@ import cupy.cuda.compiler as _cupy_compiler
 import numpy as np
 import nvidia.cuda_runtime
 
+import gpu_bench
 from gpu_verbund import BARRIER_SRC, G_MAX, device_view_of_host
 from nbody_kernel import G_AU
 
@@ -84,6 +85,22 @@ _gewicht_cache: dict[tuple[int, bool], float] = {}
 
 
 def miss_gewicht(device: int, kraft_f32: bool = True) -> float:
+    """Rechenleistung einer Karte fuer diesen Kernel — aus dem persistenten
+    Hardware-Cache (`gpu_bench`) oder frisch gemessen. Zusaetzlich modulweit
+    im Speicher gehalten, damit wiederholte Aufrufe je Lauf gar nicht erst die
+    Datei anfassen. Die Last-Art trennt f32- und f64-Kraftschleife, weil sie
+    verschiedene Karten kroenen koennen."""
+    schluessel = (device, bool(kraft_f32))
+    if schluessel in _gewicht_cache:
+        return _gewicht_cache[schluessel]
+    art = "allpairs_f32" if kraft_f32 else "allpairs_f64"
+    wert = gpu_bench.hole_gewichte(
+        art, lambda d: _miss_gewicht_roh(d, kraft_f32), [device])[device]
+    _gewicht_cache[schluessel] = wert
+    return wert
+
+
+def _miss_gewicht_roh(device: int, kraft_f32: bool = True) -> float:
     """Rechenleistung einer Karte FUER DIESEN KERNEL, gemessen.
 
     Eine Datenblatt-Metrik taugt hier nicht — sie lag nachweislich falsch
@@ -108,9 +125,6 @@ def miss_gewicht(device: int, kraft_f32: bool = True) -> float:
     Rueckgabe: Schritte pro Sekunde (nur als VERHAELTNIS aussagekraeftig,
     die absolute Zahl haengt an KALIBRIER_N).
     """
-    schluessel = (device, bool(kraft_f32))
-    if schluessel in _gewicht_cache:
-        return _gewicht_cache[schluessel]
     n = KALIBRIER_N
     rng = np.random.default_rng(0)
     x = rng.uniform(-1e4, 1e4, n)
@@ -129,7 +143,6 @@ def miss_gewicht(device: int, kraft_f32: bool = True) -> float:
         cp.cuda.Device(device).synchronize()
         dauer = time.perf_counter() - t0
         beste = max(beste, KALIBRIER_SCHRITTE / max(dauer, 1e-9))
-    _gewicht_cache[schluessel] = beste
     return beste
 
 
