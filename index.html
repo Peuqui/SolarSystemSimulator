@@ -1114,8 +1114,8 @@ const I18N = {
     'lbl.film': 'Film-Modus',
     'lbl.film-speed': 'Abspieltempo (Tage/s)',
     'tt.film-speed': 'Wie viele Sim-Tage pro Sekunde abgespielt werden. Unabhängig davon, wie schnell die GPU rechnet — reicht der Vorrat nicht, wartet die Wiedergabe an der Rechenkante. Details: 💡 bei der Physik-Engine.',
-    'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
-    'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten, Film neu starten. (Klick zum Ausblenden)',
+    'film.stoerung-timeout': 'Zustandsübergabe fehlgeschlagen (Zeitüberschreitung) — Physik angehalten. (Klick zum Neustart)',
+    'film.stoerung-mismatch': 'Zustandsübergabe fehlgeschlagen (Körperzahl passt nicht) — Physik angehalten. (Klick zum Neustart)',
     'film.desync': 'Film-Sitzung im Backend verloren — hier klicken, um sie neu zu starten.',
     'inject.mmax': 'Grenze erreicht: höchstens {n} massive Körper (CUDA-Kernel). Rogue nicht injiziert — Asteroiden und Wolken bleiben unbegrenzt.',
     'inject.filmneu': 'Szene geändert — der Film wird neu berechnet. Der bereits berechnete Vorlauf geht dabei verloren.',
@@ -1410,8 +1410,8 @@ const I18N = {
     'lbl.film': 'Film mode',
     'lbl.film-speed': 'Playback speed (days/s)',
     'tt.film-speed': 'How many sim days are played back per second. Independent of how fast the GPU computes — if the buffer runs dry, playback waits at the production edge. Details: 💡 next to the physics engine.',
-    'film.stoerung-timeout': 'State handover failed (timeout) — physics halted, restart film. (Click to dismiss)',
-    'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted, restart film. (Click to dismiss)',
+    'film.stoerung-timeout': 'State handover failed (timeout) — physics halted. (Click to restart)',
+    'film.stoerung-mismatch': 'State handover failed (body count mismatch) — physics halted. (Click to restart)',
     'film.desync': 'Film session lost in the backend — click here to restart it.',
     'inject.mmax': 'Limit reached: at most {n} massive bodies (CUDA kernel). Rogue not injected — asteroids and clouds stay unlimited.',
     'inject.filmneu': 'Scene changed — the film is being recomputed. The buffer computed so far is discarded.',
@@ -2713,6 +2713,7 @@ function filmVorSzenenwechselBeenden() {
 
 function loadScenario(name) {
   filmVorSzenenwechselBeenden();
+  _massListeReset();   // neue Szene: Massen-Liste neu bauen (auch bei gleicher Koerperzahl)
   currentScenario = name;
   perturbers = [];
   perturberCounter = 0;
@@ -3402,6 +3403,28 @@ let _starPattern = null;
 let _baryDirty = true;
 let _baryCacheX = 0, _baryCacheY = 0;
 
+// Liste der MASSIVEN Koerper (keine Asteroiden). barycenter und
+// updateBoundState brauchen nur diese wenigen — im alten Kernel ~10-56,
+// waehrend `bodies` zehntausende bis Millionen Asteroiden traegt. Ohne die
+// Liste iterierten beide Funktionen jedes Bild alle Asteroiden nur, um sie
+// zu ueberspringen (gemessen 2,6 ms/Bild bei 150.000, linear steigend).
+//
+// Selbstheilend statt an jede der sieben bodies-Mutationsstellen gehaengt:
+// neu gebaut, sobald sich bodies.length aendert (Inject, Merge, Shatter,
+// Szenario) — ein Vergleich je Aufruf, der O(N)-Filter nur bei echter
+// Aenderung. `_massListeReset()` erzwingt den Neubau, wenn bodies bei
+// gleicher Laenge ausgetauscht wird (Szenario mit gleicher Koerperzahl).
+let _massListe = [];
+let _massListeLen = -1;
+function massListe() {
+  if (bodies.length !== _massListeLen) {
+    _massListe = bodies.filter(b => !b.isAsteroid);
+    _massListeLen = bodies.length;
+  }
+  return _massListe;
+}
+function _massListeReset() { _massListeLen = -1; }
+
 function barycenter() {
   if (!_baryDirty) return [_baryCacheX, _baryCacheY];
   // Nur MASSIVE Koerper (Sonne, Planeten, Rogues) bestimmen den
@@ -3422,9 +3445,10 @@ function barycenter() {
   let mxA = 0, myA = 0, mtA = 0;         // alle massiven inkl. Rogues, voll
   // perturbers in Set fuer O(1) Lookup statt O(M) pro Body.
   const pertSet = perturbers.length > 0 ? new Set(perturbers) : null;
-  for (let i = 0; i < bodies.length; i++) {
-    const b = bodies[i];
-    if (!b.visible || b.isAsteroid) continue;
+  const massen = massListe();
+  for (let i = 0; i < massen.length; i++) {
+    const b = massen[i];
+    if (!b.visible) continue;
     const isRogue = pertSet ? pertSet.has(b) : false;
     const sc = b.escapeScore || 0;
     let w;
@@ -3538,11 +3562,12 @@ function updateBoundState() {
   // Erdmassen), Beitrag ist physikalisch vernachlaessigbar. Bei N=50.000
   // Asteroiden sparen wir hier 50.000 Iterationen pro Frame.
   const pertSet = perturbers.length > 0 ? new Set(perturbers) : null;
+  const massen = massListe();
   let mx=0, my=0, mvx=0, mvy=0, mt=0;
   let mxA=0, myA=0, mvxA=0, mvyA=0, mtA=0;
-  for (let i = 0; i < bodies.length; i++) {
-    const b = bodies[i];
-    if (!b.visible || b.isAsteroid) continue;
+  for (let i = 0; i < massen.length; i++) {
+    const b = massen[i];
+    if (!b.visible) continue;
     const isRogue = pertSet ? pertSet.has(b) : false;
     let w;
     if (isRogue) w = 1;
@@ -3570,27 +3595,11 @@ function updateBoundState() {
     }
     return;
   }
-  for (let i = 0; i < bodies.length; i++) {
-    const b = bodies[i];
+  // MASSEN: Fluchterkennung immer (sie sind wenige). Ueber die Massen-Liste
+  // statt ueber `bodies` — spart bei vielen Asteroiden den Leer-Durchlauf.
+  for (let i = 0; i < massen.length; i++) {
+    const b = massen[i];
     if (!b.visible) { b.unbound = false; b.escapeScore = 0; continue; }
-    // Asteroiden-Fluchterkennung optional (Toggle astEscape). Aus = der
-    // alte schnelle Pfad (kein Check). An = BILLIGER O(1)-Check: da die
-    // Asteroidenmasse vernachlaessigbar ist, kein Massen-Abzug pro Body —
-    // einfach gegen den fixen System-Schwerpunkt (SM/Mt) pruefen.
-    if (b.isAsteroid) {
-      if (!astEscape) { b.unbound = false; b.escapeScore = 0; continue; }
-      const acmx = SMx/Mt, acmy = SMy/Mt, acmvx = SMvx/Mt, acmvy = SMvy/Mt;
-      const advx = b.vx - acmvx, advy = b.vy - acmvy;
-      const adx = b.x - acmx, ady = b.y - acmy;
-      const ar = Math.sqrt(adx*adx + ady*ady + 1e-12);
-      const aeps = 0.5 * (advx*advx + advy*advy) - G_AU * Mt / ar;
-      const aesc = aeps > 0 && ar > ESCAPE_MARK_AU;
-      const asc = aesc ? Math.min(30, (b.escapeScore||0)+1) : Math.max(0, (b.escapeScore||0)-1);
-      b.escapeScore = asc;
-      if (asc >= 25) b.unbound = true;
-      else if (asc <= 5) b.unbound = false;
-      continue;
-    }
     const isRogue = pertSet ? pertSet.has(b) : false;
     // Bahnenergie-Pruefung gegen den jeweils aktiven Schwerpunkt
     // (Hauptsystem bei Toggle an, Gesamt bei Toggle aus) — auch fuer
@@ -3630,6 +3639,28 @@ function updateBoundState() {
     if (sc >= 25) b.unbound = true;
     else if (sc <= 5) b.unbound = false;
     // dazwischen: b.unbound bleibt unveraendert (Hysterese)
+  }
+  // ASTEROIDEN: nur wenn ihre Fluchterkennung an ist. Aus (Default) bleiben
+  // sie ungebunden-frei — der Toggle-Handler loescht Alt-Marker beim
+  // Ausschalten. So entfaellt bei grossen Wolken der 150.000er-Durchlauf
+  // komplett. Billiger O(1)-Check: die Asteroidenmasse ist vernachlaessig-
+  // bar, kein Massen-Abzug pro Body — gegen den fixen Schwerpunkt (SM/Mt).
+  if (astEscape) {
+    const acmx = SMx/Mt, acmy = SMy/Mt, acmvx = SMvx/Mt, acmvy = SMvy/Mt;
+    for (let i = 0; i < bodies.length; i++) {
+      const b = bodies[i];
+      if (!b.isAsteroid) continue;
+      if (!b.visible) { b.unbound = false; b.escapeScore = 0; continue; }
+      const advx = b.vx - acmvx, advy = b.vy - acmvy;
+      const adx = b.x - acmx, ady = b.y - acmy;
+      const ar = Math.sqrt(adx*adx + ady*ady + 1e-12);
+      const aeps = 0.5 * (advx*advx + advy*advy) - G_AU * Mt / ar;
+      const aesc = aeps > 0 && ar > ESCAPE_MARK_AU;
+      const asc = aesc ? Math.min(30, (b.escapeScore||0)+1) : Math.max(0, (b.escapeScore||0)-1);
+      b.escapeScore = asc;
+      if (asc >= 25) b.unbound = true;
+      else if (asc <= 5) b.unbound = false;
+    }
   }
 }
 
@@ -5468,7 +5499,7 @@ function initCudaBackend(urlIndex = 0) {
                      '[bodies=' + bodies.length +
                      ' filmActive=' + filmActive +
                      ' restartPending=' + _filmRestartPending + ']');
-        zeigeStoerung(t('film.stoerung-mismatch'));
+        zeigeStoerung(t('film.stoerung-mismatch'), 0, filmNeuStarten);
         setPaused(true);
       }
       _filmHandover = false;   // Uebergabe abgeschlossen — Physik frei
@@ -5527,15 +5558,7 @@ function initCudaBackend(urlIndex = 0) {
           // Klick startet den Film erneut, statt nur die Meldung
           // wegzuwischen — das ist genau der Handgriff, den der Text
           // sonst vom Nutzer verlangt haette.
-          zeigeStoerung(t('film.desync'), 0, () => {
-            _filmNeustartVersucht = false;
-            filmActive = false;
-            filmQueue = null;
-            _filmHandover = false;
-            _filmRestartPending = false;
-            _filmStartWartet = false;
-            filmStart();
-          });
+          zeigeStoerung(t('film.desync'), 0, filmNeuStarten);
           _filmNeustartVersucht = false;
           filmStop();
           return;
@@ -6105,6 +6128,21 @@ function zeigeStoerung(text, autoMs = 0, aktion = null) {
   _stoerungTimer = autoMs > 0 ? setTimeout(aus, autoMs) : null;
 }
 
+// Film sauber neu aufsetzen — der Handgriff, den die Fehler-Badges sonst
+// vom Nutzer verlangten. Wird als Klick-Aktion an alle Handover-Meldungen
+// gehaengt: ein Klick startet den Film neu, statt nur die Meldung
+// wegzuwischen. Setzt auch die Pause zurueck, die der Fehler ausgeloest hat.
+function filmNeuStarten() {
+  _filmNeustartVersucht = false;
+  filmActive = false;
+  filmQueue = null;
+  _filmHandover = false;
+  _filmRestartPending = false;
+  _filmStartWartet = false;
+  setPaused(false);
+  filmStart();
+}
+
 function filmHandoverStart(zweck) {
   _filmHandover = true;
   setTimeout(() => {
@@ -6118,7 +6156,7 @@ function filmHandoverStart(zweck) {
     console.warn('[film] f64-Dump nach ' + (FILM_HANDOVER_MS / 1000) +
                  ' s nicht eingetroffen (' + zweck + ') — Zustand ist ' +
                  'unvollstaendig, Physik angehalten. Film neu starten.');
-    zeigeStoerung(t('film.stoerung-timeout'));
+    zeigeStoerung(t('film.stoerung-timeout'), 0, filmNeuStarten);
     setPaused(true);
   }, FILM_HANDOVER_MS);
 }
@@ -8890,6 +8928,13 @@ chkSync.forEach(([desk, mob, varName]) => {
     document.getElementById(mob).checked = val;
     // Log-Zoom braucht einen anderen Kamera-Zoom — Szenario-Wert neu setzen.
     if (varName === 'useLogZoom') fitZoomToSystem(true);   // smooth
+    // Asteroiden-Fluchterkennung AUS: updateBoundState iteriert Asteroiden
+    // dann nicht mehr — die bereits gesetzten Marker muessen hier einmalig
+    // geloescht werden, sonst blieben sie eingefroren stehen.
+    if (varName === 'astEscape' && !val) {
+      for (const b of bodies)
+        if (b.isAsteroid) { b.unbound = false; b.escapeScore = 0; }
+    }
     // "Schwerpunkt zentrieren" aktivieren hebt einen aktiven Fokus-Body auf
     // (wie Escape) — sonst ueberstimmt der Fokus-Zweig in simLoop die
     // Zentrierung und der Toggle scheint wirkungslos. Zusaetzlich Kamera
