@@ -25,7 +25,8 @@ import cupy as cp
 import numpy as np
 
 from nbody_kernel import G_AU
-from pm_kernel import build_force_kernels, grid_fuer, pm_accelerations
+from pm_kernel import (NBodyPM, build_force_kernels, grid_fuer,
+                       pm_accelerations)
 
 
 def allpairs_accel(x, y, m, eps2, G=G_AU):
@@ -99,6 +100,65 @@ def test_wolke_vs_allpairs(rng, eps_in_h, schwelle, label):
     return median < schwelle
 
 
+def energie_impuls(x, y, vx, vy, m, eps2):
+    """Gesamtenergie (KE + PE) und Impuls auf der GPU. PE ueber all-pairs
+    mit demselben Softening wie die Kraft."""
+    x = cp.asarray(x); y = cp.asarray(y)
+    vx = cp.asarray(vx); vy = cp.asarray(vy); m = cp.asarray(m)
+    ke = 0.5 * float(cp.sum(m * (vx * vx + vy * vy)))
+    dx = x[None, :] - x[:, None]
+    dy = y[None, :] - y[:, None]
+    r = cp.sqrt(dx * dx + dy * dy + eps2)
+    mm = m[:, None] * m[None, :]
+    # −G Σ_{i<j} m_i m_j / r  = −G/2 · (Σ_{i≠j} …) ; Diagonale i=j abziehen
+    pe_voll = -G_AU * float(cp.sum(mm / r))
+    pe_diag = -G_AU * float(cp.sum(m * m) / np.sqrt(eps2))
+    pe = 0.5 * (pe_voll - pe_diag)
+    px = float(cp.sum(m * vx)); py = float(cp.sum(m * vy))
+    return ke + pe, (px, py)
+
+
+def test_dynamik(rng, dev):
+    """Leapfrog ueber 100 Schritte mit NBodyPM — Impuls- und
+    Energieerhaltung. Ein sub-virialer Haufen, der ueber die kurze Zeit
+    (~0,1 dynamische Zeiten) kaum wandert, sodass das adaptive Gitter stabil
+    bleibt. Impuls muss maschinengenau bleiben (symmetrische Kraft + KDK),
+    die Energie im Prozentbereich (PM-Gitterfehler)."""
+    n = 10000
+    R = 30000.0
+    Mtot = 5.6e9
+    r = R * np.sqrt(rng.uniform(0, 1, n))
+    th = rng.uniform(0, 2 * np.pi, n)
+    x = r * np.cos(th); y = r * np.sin(th)
+    m = np.full(n, Mtot / n)
+    vvir = np.sqrt(G_AU * Mtot / R)
+    ang = rng.uniform(0, 2 * np.pi, n)
+    speed = 0.7 * vvir
+    vx = speed * np.cos(ang); vy = speed * np.sin(ang)
+    vx -= np.sum(m * vx) / Mtot          # Gesamtimpuls auf 0
+    vy -= np.sum(m * vy) / Mtot
+
+    kern = NBodyPM([dev], grid_n=2048, softening_zellen=1.5)
+    _, _, h = grid_fuer(cp.asarray(x), cp.asarray(y), 2048, 4.0)
+    eps2 = (1.5 * h) ** 2
+    e0, p0 = energie_impuls(x, y, vx, vy, m, eps2)
+
+    st = kern.load_state(x, y, vx, vy, m)
+    t_dyn = R / vvir
+    dt = t_dyn / 1000.0                   # 100 Schritte ≈ 0,1 t_dyn
+    kern.step_batch(st, dt, steps=100)
+    f = kern.export_f64(st)
+    e1, p1 = energie_impuls(f[0:n], f[n:2 * n], f[2 * n:3 * n],
+                            f[3 * n:4 * n], m, eps2)
+
+    e_drift = abs(e1 - e0) / abs(e0)
+    p_rel = np.hypot(*p1) / max(np.hypot(np.sum(m * np.abs(vx)),
+                                         np.sum(m * np.abs(vy))), 1e-30)
+    print(f"5) Dynamik (100 Leapfrog-Schritte): Energie-Drift "
+          f"{e_drift*100:.3f} %, Rest-Impuls {p_rel:.2e}")
+    return e_drift < 0.03 and p_rel < 1e-6
+
+
 def _zeit(fn, wdh=5):
     fn()
     cp.cuda.Stream.null.synchronize()
@@ -151,6 +211,7 @@ def main():
             rng, 4.0, 0.03, "3) Wolke ε≫h")),
         ("Wolke ε=1h vs all-pairs", test_wolke_vs_allpairs(
             rng, 1.0, 0.12, "4) Wolke ε≈h")),
+        ("Dynamik (Leapfrog)",     test_dynamik(rng, dev)),
     ]
     print()
     alle_ok = True

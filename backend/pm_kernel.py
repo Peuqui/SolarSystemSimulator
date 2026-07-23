@@ -26,6 +26,7 @@ der Ableitung.
 from __future__ import annotations
 
 import cupy as cp
+import numpy as np
 
 from nbody_kernel import G_AU
 
@@ -123,25 +124,170 @@ def grid_fuer(gx, gy, grid_n: int, rand_zellen: float = 3.0):
     return x0, y0, h
 
 
-def pm_accelerations(gx, gy, gm, grid_n, x0, y0, h, eps2,
-                     G: float = G_AU, kernels=None):
-    """Beschleunigung (ax, ay) je Teilchen via Particle-Mesh.
+def pm_force_field(gx, gy, gm, grid_n, x0, y0, h, eps2,
+                   G: float = G_AU, kernels=None):
+    """Das Beschleunigungs-Feld (ax_grid, ay_grid) auf dem N×N-Gitter.
 
-    gx, gy, gm: CuPy-Arrays (Positionen, Massen). kernels: optional das
-    Ergebnis von build_force_kernels (spart den Neubau)."""
+    Getrennt vom Gather, damit MEHRERE Teilchenmengen aus demselben Feld
+    schoepfen koennen — die Massen bauen das Feld, Massen UND masselose
+    Tracer lesen es an ihren Positionen ab (die Tracer wirken nicht
+    zurueck, tauchen also nicht im Deposit auf)."""
     if kernels is None:
         kernels = build_force_kernels(grid_n, h, eps2, G)
     fkx, fky = kernels
     n_pad = 2 * grid_n
 
-    rho = _cic_deposit(gx, gy, gm, grid_n, x0, y0, h)   # (N, N)
+    rho = _cic_deposit(gx, gy, gm, grid_n, x0, y0, h)
     rho_pad = cp.zeros((n_pad, n_pad), cp.float64)
     rho_pad[:grid_n, :grid_n] = rho
 
     fr = cp.fft.rfft2(rho_pad)
     ax_grid = cp.fft.irfft2(fr * fkx, s=(n_pad, n_pad))[:grid_n, :grid_n]
     ay_grid = cp.fft.irfft2(fr * fky, s=(n_pad, n_pad))[:grid_n, :grid_n]
+    return ax_grid, ay_grid
 
-    ax = _cic_gather(ax_grid, gx, gy, grid_n, x0, y0, h)
-    ay = _cic_gather(ay_grid, gx, gy, grid_n, x0, y0, h)
-    return ax, ay
+
+def gather_accel(ax_grid, ay_grid, px, py, grid_n, x0, y0, h):
+    """Feld an Teilchenpositionen (px, py) ablesen — fuer Massen und
+    Tracer gleich."""
+    return (_cic_gather(ax_grid, px, py, grid_n, x0, y0, h),
+            _cic_gather(ay_grid, px, py, grid_n, x0, y0, h))
+
+
+def pm_accelerations(gx, gy, gm, grid_n, x0, y0, h, eps2,
+                     G: float = G_AU, kernels=None):
+    """Beschleunigung (ax, ay) je Masse via Particle-Mesh — Feld bauen und
+    an denselben Positionen ablesen. Bequemlichkeit fuer Kraft-Tests."""
+    ax_grid, ay_grid = pm_force_field(gx, gy, gm, grid_n, x0, y0, h, eps2,
+                                      G, kernels)
+    return gather_accel(ax_grid, ay_grid, gx, gy, grid_n, x0, y0, h)
+
+
+class NBodyPM:
+    """Selbstgravitierender Verbund via Particle-Mesh — auf EINER Karte.
+
+    Aussenverhalten wie `NBodySelfGrav` (`load_state` / `step_batch` /
+    `export_f64`), damit der Film-Producer beide Kernel gleich aufruft. Die
+    Kraft kommt aber aus einer FFT-Faltung ueber ein Gitter (O(N log N))
+    statt aus der all-pairs-Summe (O(N²)).
+
+    WARUM EINE Karte: Das Gitter ueber die Karten zu teilen hiesse, es pro
+    Schritt ueber die ×4-PCIe-Links zu reduzieren/broadcasten — ~1 s gegen
+    ~6 ms Rechnung, auf Hardware ohne NVLink ein Verlust. PM auf einer Karte
+    ist gegen all-pairs auf fuenf Karten trotzdem um Groessenordnungen
+    schneller. Massen UND Tracer schoepfen aus DEMSELBEN Kraftfeld auf
+    dieser Karte.
+
+    ADAPTIVES Gitter: Jeder Schritt leitet Ursprung und Zellweite aus der
+    aktuellen Massen-Ausdehnung ab (feste Zellenzahl `grid_n`). So folgt das
+    Gitter der expandierenden Wolke — mitbewegte Koordinaten, kein
+    Rausfallen. Das Softening ist `softening_zellen` × Zellweite und waechst
+    damit mit; unter ~1 Zelle kann PM nicht aufloesen (das leistet spaeter
+    der Baum in TreePM).
+    """
+
+    def __init__(self, devices, softening_au: float = 0.0,
+                 kraft_f32: bool = True, grid_n: int = 4096,
+                 softening_zellen: float = 1.5, rand_zellen: float = 4.0):
+        # `devices` darf eine Liste sein (Producer uebergibt alle) — PM
+        # nimmt die erste. `softening_au` wird angenommen (API-Kompat) und
+        # nur als Untergrenze verwendet: das Gitter bestimmt das Softening.
+        if isinstance(devices, int):
+            devices = [devices]
+        self.device = devices[0]
+        self.devices = [self.device]
+        self.grid_n = int(grid_n)
+        self.softening_zellen = float(softening_zellen)
+        self.rand_zellen = float(rand_zellen)
+        self.softening_floor = float(softening_au)
+        self.kraft_f32 = bool(kraft_f32)
+        self._kernels = None      # (FKx, FKy) — gecacht, neu bei h-Wechsel
+        self._kernel_h = None
+
+    def name(self) -> str:
+        with cp.cuda.Device(self.device):
+            n = cp.cuda.runtime.getDeviceProperties(self.device)["name"]
+        return n.decode() + " (PM)"
+
+    def _accel_into(self, st):
+        """Kraftfeld aus den Massen bauen und an Massen- UND Tracer-
+        Positionen ablesen. Setzt st['ax','ay','tax','tay']."""
+        gx, gy, gm = st["x"], st["y"], st["m"]
+        x0, y0, h = grid_fuer(gx, gy, self.grid_n, self.rand_zellen)
+        eps = max(self.softening_zellen * h, self.softening_floor)
+        eps2 = eps * eps
+        # Kerne haengen nur an (h, eps) — bei nahezu gleichem h wiederverwenden.
+        if self._kernel_h is None or abs(h - self._kernel_h) > 1e-6 * h:
+            self._kernels = build_force_kernels(self.grid_n, h, eps2)
+            self._kernel_h = h
+        axg, ayg = pm_force_field(gx, gy, gm, self.grid_n, x0, y0, h, eps2,
+                                  kernels=self._kernels)
+        st["ax"], st["ay"] = gather_accel(axg, ayg, gx, gy,
+                                          self.grid_n, x0, y0, h)
+        if st["T"]:
+            st["tax"], st["tay"] = gather_accel(axg, ayg, st["tx"], st["ty"],
+                                                self.grid_n, x0, y0, h)
+
+    def load_state(self, x, y, vx, vy, mass, *_egal,
+                   tracer=None, **_auch_egal) -> dict:
+        with cp.cuda.Device(self.device):
+            st = {
+                "x": cp.asarray(x, cp.float64),
+                "y": cp.asarray(y, cp.float64),
+                "vx": cp.asarray(vx, cp.float64),
+                "vy": cp.asarray(vy, cp.float64),
+                "m": cp.asarray(mass, cp.float64),
+                "N": len(x),
+            }
+            if tracer is not None and len(tracer[0]):
+                st["tx"] = cp.asarray(tracer[0], cp.float64)
+                st["ty"] = cp.asarray(tracer[1], cp.float64)
+                st["tvx"] = cp.asarray(tracer[2], cp.float64)
+                st["tvy"] = cp.asarray(tracer[3], cp.float64)
+                st["T"] = len(tracer[0])
+            else:
+                st["tx"] = st["ty"] = st["tvx"] = st["tvy"] = None
+                st["T"] = 0
+            self._accel_into(st)   # Anfangsbeschleunigung fuer das erste Kick
+        return st
+
+    def step_batch(self, st: dict, dt_years: float, steps: int) -> np.ndarray:
+        """`steps` Leapfrog-Schritte (Kick-Drift-Kick). Rueckgabe wie
+        NBodySelfGrav: f32 (steps, 4N+2T) [x|y|vx|vy | tx|ty]."""
+        if steps < 1:
+            raise ValueError(f"steps muss >= 1 sein: {steps}")
+        n, t = st["N"], st["T"]
+        dt = float(dt_years)
+        hdt = 0.5 * dt
+        raus = np.empty((steps, 4 * n + 2 * t), np.float32)
+        with cp.cuda.Device(self.device):
+            for s in range(steps):
+                st["vx"] += hdt * st["ax"]; st["vy"] += hdt * st["ay"]
+                st["x"] += dt * st["vx"];   st["y"] += dt * st["vy"]
+                if t:
+                    st["tvx"] += hdt * st["tax"]; st["tvy"] += hdt * st["tay"]
+                    st["tx"] += dt * st["tvx"];   st["ty"] += dt * st["tvy"]
+                self._accel_into(st)
+                st["vx"] += hdt * st["ax"]; st["vy"] += hdt * st["ay"]
+                if t:
+                    st["tvx"] += hdt * st["tax"]; st["tvy"] += hdt * st["tay"]
+                raus[s, 0:n] = cp.asnumpy(st["x"].astype(cp.float32))
+                raus[s, n:2 * n] = cp.asnumpy(st["y"].astype(cp.float32))
+                raus[s, 2 * n:3 * n] = cp.asnumpy(st["vx"].astype(cp.float32))
+                raus[s, 3 * n:4 * n] = cp.asnumpy(st["vy"].astype(cp.float32))
+                if t:
+                    raus[s, 4 * n:4 * n + t] = cp.asnumpy(st["tx"].astype(cp.float32))
+                    raus[s, 4 * n + t:4 * n + 2 * t] = cp.asnumpy(st["ty"].astype(cp.float32))
+        return raus
+
+    def export_f64(self, st: dict) -> np.ndarray:
+        """Exakter f64-Zustand [x|y|vx|vy] (4N), Massen nur (keine Tracer,
+        keine Verschmelzungen). Gleiche Form wie NBodySelfGrav."""
+        n = st["N"]
+        raus = np.empty(4 * n, dtype="<f8")
+        with cp.cuda.Device(self.device):
+            raus[0:n] = cp.asnumpy(st["x"])
+            raus[n:2 * n] = cp.asnumpy(st["y"])
+            raus[2 * n:3 * n] = cp.asnumpy(st["vx"])
+            raus[3 * n:4 * n] = cp.asnumpy(st["vy"])
+        return raus
