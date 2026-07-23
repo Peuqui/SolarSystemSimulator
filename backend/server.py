@@ -67,7 +67,7 @@ BW_FENSTER_S = 0.2
 #     (Hermite-Interpolation schneller sonnennaher Koerper).
 # 4 = Sample = 8 B/Koerper (x|y) + Sub-Block je Frame: GEMESSENE
 #     Zwischenbilder der heissen Asteroiden statt geschaetzter Tangenten.
-FILM_PROTO_VERSION = 6
+FILM_PROTO_VERSION = 7
 
 TAGE_PRO_JAHR = 365.25
 
@@ -254,8 +254,11 @@ class FilmSession:
         self.ev_shm = shared_memory.SharedMemory(
             create=True, size=self.ev_cap * film_producer.EV_BYTES)
         # Zustands-Dump fuer die Engine-Uebergabe (x,y,vx,vy als f64)
+        # Der f64-Dump (Engine-Uebergabe) traegt NUR die Massen — die Tracer
+        # sind server-seitig und werden beim Neustart neu gewuerfelt. Also
+        # n_mass, passend zu filmRefs im Client (nicht self.n = M+T).
         self.dump_shm = shared_memory.SharedMemory(
-            create=True, size=4 * 8 * self.n)
+            create=True, size=4 * 8 * self.n_mass)
         ctx = mp.get_context("spawn")
         self.head_val = ctx.Value("q", 0, lock=False)
         self.playhead_val = ctx.Value("d", t0_days, lock=False)
@@ -569,9 +572,14 @@ class FilmSession:
             block += b"\x00" * ((-len(block)) % 4)
             blocks.append(block)
 
+        # head[0] ist der Message-STATUS, nicht die Sample-Version: 4 = Film-
+        # Frame, 5 = f64-Dump, 7 = Zerbersten. NIEMALS auf 5 setzen, sonst
+        # haelt der Client jedes Frame fuer einen Dump und verwirft es (kein
+        # Sample, Playhead steht, GPU drosselt). Das v5-Sampleformat (anonymer
+        # Tracer-Block) erkennt der Decoder am Block-Layout, nicht hier.
         # n = MASSEN-Anzahl (== filmRefs im Client): die Tracer sind anonym
         # und stehen als Positionsblock je Sample, nicht in filmRefs.
-        head = struct.pack("<IIII", 5, self.n_mass, len(idxs), ev_n)
+        head = struct.pack("<IIII", 4, self.n_mass, len(idxs), ev_n)
         # 7. f64 = logFlag: 1 = Positionen sind log-polar kodiert (der
         # Client transformiert zurueck), 0 = Weltkoordinaten.
         # 8. f64 = mSub: Stuetzpunkte je Koerper im Sub-Block, 0 = keiner.
@@ -821,11 +829,11 @@ class FilmSession:
                     # status=7: Zerberst-Meldung + f64-Dump — der Client
                     # fuehrt shatter() aus und startet den Film neu.
                     pkt = struct.pack(
-                        "<IIIId", 7, self.n,
+                        "<IIIId", 7, self.n_mass,
                         int(self.shatter_a.value),
                         int(self.shatter_b.value),
                         self.shatter_t.value) + \
-                        bytes(self.dump_shm.buf[0:4 * 8 * self.n])
+                        bytes(self.dump_shm.buf[0:4 * 8 * self.n_mass])
                     await ws.send(pkt)
                 ph = self.playhead_val.value
                 if self.ph_ms:
@@ -1003,8 +1011,16 @@ class FilmSession:
         v = (self.slot_pos(i + 1) - self.slot_pos(i - 1)) / dt_jahre
         self._v_aus_stuetzpunkten(i, v)
         t_i = self.t0 + (i + 1) * self.raster_days
-        return struct.pack("<IId", 5, self.n, t_i) + \
-            pos.astype("<f8").tobytes() + v.astype("<f8").tobytes()
+        # Nur die Massen an den Client (== filmRefs). pos/v tragen [x|y] bzw.
+        # [vx|vy] ueber self.n (M+T) — die ersten n_mass sind die Massen, der
+        # y-/vy-Block beginnt bei self.n. In x|y|vx|vy (je n_mass) packen.
+        nm = self.n_mass
+        raus = np.empty(4 * nm, dtype="<f8")
+        raus[0:nm] = pos[0:nm]
+        raus[nm:2 * nm] = pos[self.n:self.n + nm]
+        raus[2 * nm:3 * nm] = v[0:nm]
+        raus[3 * nm:4 * nm] = v[self.n:self.n + nm]
+        return struct.pack("<IId", 5, nm, t_i) + raus.tobytes()
 
     def _v_aus_stuetzpunkten(self, i: int, v) -> None:
         """Geschwindigkeit der HEISSEN Koerper in `v` nachbessern.
@@ -1055,8 +1071,8 @@ class FilmSession:
         if self.dump_req_val.value == 2 and not self.proc.is_alive():
             # Producer hat sich selbst beendet (Zerbersten) — sein
             # letzter Dump liegt bereit, niemand wuerde noch antworten.
-            return struct.pack("<IId", 5, self.n, self.head) + \
-                bytes(self.dump_shm.buf[0:4 * 8 * self.n])
+            return struct.pack("<IId", 5, self.n_mass, self.head) + \
+                bytes(self.dump_shm.buf[0:4 * 8 * self.n_mass])
         if playhead_days is not None:
             zustand = self.state_at_playhead(playhead_days)
             if zustand is not None:
@@ -1072,8 +1088,8 @@ class FilmSession:
         for _ in range(DUMP_WAIT_STEPS):
             if self.dump_req_val.value == 2:
                 t_head = self.head
-                return struct.pack("<IId", 5, self.n, t_head) + \
-                    bytes(self.dump_shm.buf[0:4 * 8 * self.n])
+                return struct.pack("<IId", 5, self.n_mass, t_head) + \
+                    bytes(self.dump_shm.buf[0:4 * 8 * self.n_mass])
             await asyncio.sleep(0.01)
         return None
 
@@ -1130,10 +1146,17 @@ def parse_film_start(buf: bytes):
     # eigener Wert statt Flag + Wert: 0 heisst "aus", das ist SSOT.
     (softening_au,) = struct.unpack_from("<d", buf, off)
     off += 8
+    # Tracer-Auftrag am Ende (6 f64: n, radius, cx, cy, hubble, streu). Der
+    # Server wuerfelt die masselosen Tracer daraus selbst (tracer_gen); n=0
+    # heisst "keine" -> tracer_auftrag None (alter Upload-Pfad).
+    t_n, t_r, t_cx, t_cy, t_h, t_s = struct.unpack_from("<dddddd", buf, off)
+    off += 48
+    tracer_auftrag = ({"n": int(t_n), "radius": t_r, "cx": t_cx, "cy": t_cy,
+                       "hubble": t_h, "streu": t_s} if t_n > 0 else None)
     if off != len(buf):
         raise ValueError(f"Protokollfehler: {len(buf)} Bytes, erwartet {off}")
     return (raster_days, t0_days, arrays, visible, is_ast, is_star_bh,
-            injiziert, ast_bounce, m_sub, softening_au)
+            injiziert, ast_bounce, m_sub, softening_au, tracer_auftrag)
 
 
 def parse_full(buf: bytes):
@@ -1221,14 +1244,14 @@ async def handle(ws):
                 if typ == MSG_FILM_START:
                     raster_days, t0_days, (x, y, vx, vy, mass, real_r), \
                         visible, is_ast, is_star_bh, injiziert, \
-                        ast_bounce, m_sub, softening_au = \
+                        ast_bounce, m_sub, softening_au, tracer_auftrag = \
                         parse_film_start(message)
                     if film:
                         film.stop()
                     film = FilmSession(t0_days, raster_days, x, y, vx, vy,
                                        mass, real_r, visible, is_ast,
                                        is_star_bh, injiziert, ast_bounce,
-                                       m_sub, softening_au)
+                                       m_sub, softening_au, tracer_auftrag)
                     fulls += 1
                     log.info(
                         "Film gestartet: N=%d, Raster %.2f Tage, "

@@ -2277,32 +2277,17 @@ function buildStrukturbildung() {
   // abtasten, nicht schon von sich aus geklumpt starten. Die Verdichtung
   // muessen sie durch ihren Fall in die Ueberdichten selbst finden —
   // sonst zeigten sie die Anfangsbedingung statt der Entwicklung.
+  // Tracer NICHT mehr im Browser erzeugen — nur einen AUFTRAG ablegen. Der
+  // SERVER wuerfelt sie daraus (tracer_gen.py): dieselbe Verteilung wie
+  // frueher hier (gleichmaessige Scheibe Radius 1,2*R um -mx/-my, radialer
+  // Hubble-Fluss v=H*r, 8 % Streuung), aber ohne T Body-Objekte und ohne
+  // sie durch Browser und Leitung zu schleusen. Dieselbe helle Farbe wie
+  // die Massen zeichnet der Client fest (_TRACER_RGB). So tragen Millionen.
   const T = strukturTracer();
-  for (let i = 0; i < T; i++) {
-    const a = Math.random() * 2 * Math.PI;
-    const r = STRUKTUR_R * 1.2 * Math.sqrt(Math.random());
-    const x = r * Math.cos(a) - mx, y = r * Math.sin(a) - my;
-    const rr = Math.hypot(x, y) || 1;
-    const vr = hubble * rr;
-    const streu = () => (Math.random() * 2 - 1) * 0.08 * vr;
-    pushBody({
-      name: 'T' + (i + 1), mass: 0,
-      // GLEICHE Farbe wie die Massen. Ein Tracer stellt dasselbe dar —
-      // Materie an einem Ort. Die Unterscheidung ist technisch (wer
-      // Quelle ist und wer nicht), nicht physikalisch, und in einer
-      // Dichtedarstellung darf sie nicht sichtbar sein: Bei additivem
-      // Blending summiert sich jeder Farbunterschied ueber die
-      // Ueberlagerungen. Mit dem frueheren #8fb4ff waren die Tracer
-      // 16 % dunkler, und das Bild wurde matter, je mehr davon
-      // dazukamen — obwohl MEHR Punkte da waren.
-      color: '#cfe0ff',
-      x, y,
-      vx: x / rr * vr + streu(),
-      vy: y / rr * vr + streu(),
-      isAsteroid: true,
-      rkm: 0,
-    });
-  }
+  _tracerAuftrag = T > 0 ? {
+    n: T, radius: STRUKTUR_R * 1.2,
+    cx: -mx, cy: -my, hubble: hubble, streu: 0.08,
+  } : null;
 }
 
 function buildEmpty() { /* leer — Koerper per Klick setzen (Bau-Modus) */ }
@@ -2715,6 +2700,7 @@ function loadScenario(name) {
   filmVorSzenenwechselBeenden();
   _massListeReset();   // neue Szene: Massen-Liste neu bauen (auch bei gleicher Koerperzahl)
   currentScenario = name;
+  _tracerAuftrag = null;   // Default; nur buildStrukturbildung setzt ihn
   perturbers = [];
   perturberCounter = 0;
   fragmentCounter = 0;
@@ -5824,6 +5810,9 @@ let _filmHeadPrevMs = 0;
 let _filmThroughput = 2e6;   // Bytes/s, EWMA-gemessen (Startannahme 2 MB/s)
 let _filmReqSentMs = 0;
 let filmRefs = null;         // Body-Reihenfolge beim FILM_START
+// Auftrag fuer server-seitige Tracer (buildStrukturbildung setzt ihn; jedes
+// Laden eines anderen Szenarios nullt ihn in loadScenario). null = keine.
+let _tracerAuftrag = null;
 let filmLive = true;         // Playhead folgt der Live-Kante
 let filmPlayheadDays = 0;
 let filmScrubbing = false;   // User zieht gerade am Regler
@@ -5969,7 +5958,9 @@ function filmStart() {
   const src = bodies.filter(b => b.visible || !b.isAsteroid);
   const N = src.length;
   // 24 Kopf + N*(6 f64 + 4 u8) + Flag-Byte + mSub-Byte + Softening (f64)
-  const buf = new ArrayBuffer(24 + N * (6 * 8 + 4) + 2 + 8);
+  // + 48 Byte Tracer-Auftrag am Ende (6 f64: n, radius, cx, cy, hubble,
+  // streu; n=0 = keine server-seitigen Tracer).
+  const buf = new ArrayBuffer(24 + N * (6 * 8 + 4) + 2 + 8 + 48);
   const dv = new DataView(buf);
   dv.setUint32(0, 3, true);                    // MSG_FILM_START
   dv.setUint32(4, N, true);
@@ -6013,13 +6004,23 @@ function filmStart() {
   // steht hier zwangslaeufig doppelt (der Client kennt das Backend
   // nicht vorab). Wer eine aendert, aendert beide.
   new Uint8Array(buf, 24 + 52 * N, 1)[0] =
-    (6 << 4) | (astAstCollisions ? 1 : 0);
+    (7 << 4) | (astAstCollisions ? 1 : 0);
   // Bahnstuetzpunkte je Raster: bestimmt die Ring-Slotgroesse und muss
   // deshalb beim START feststehen (der Regler loest einen Neustart aus).
   new Uint8Array(buf, 24 + 52 * N + 1, 1)[0] = filmSubSamples();
   // Plummer-Softening in AE. > 0 waehlt im Backend den selbst-
   // gravitierenden Kernel und schaltet die Kollisionserkennung ab.
   new DataView(buf).setFloat64(24 + 52 * N + 2, softeningAU(), true);
+  // Tracer-Auftrag am Ende (server-seitige Erzeugung, tracer_gen.py). n=0
+  // heisst "keine Tracer". Die Positionen wuerfelt der Server daraus — der
+  // Browser laedt nur die Massen (src enthaelt keine Tracer-Koerper mehr).
+  const _auf = _tracerAuftrag, _ao = 24 + 52 * N + 10, _adv = new DataView(buf);
+  _adv.setFloat64(_ao,      _auf ? _auf.n : 0, true);
+  _adv.setFloat64(_ao + 8,  _auf ? _auf.radius : 0, true);
+  _adv.setFloat64(_ao + 16, _auf ? _auf.cx : 0, true);
+  _adv.setFloat64(_ao + 24, _auf ? _auf.cy : 0, true);
+  _adv.setFloat64(_ao + 32, _auf ? _auf.hubble : 0, true);
+  _adv.setFloat64(_ao + 40, _auf ? _auf.streu : 0, true);
   cudaSocket.send(buf);
   filmRefs = src.slice();
   filmEvents = [];
@@ -6271,6 +6272,9 @@ let _filmCollBase = 0;             // Zaehlerstand vor der aktuellen Session
 let _filmEvVerworfen = 0;
 let _filmVtx = null;               // GL-Direktpfad: [x,y,r,g,b] aus filmApply
 let _filmVtxCount = -1;            // Punkte darin; -1 = Pfad inaktiv
+// Farbe der anonymen Tracer — dieselbe wie die Massen (ein Tracer stellt
+// dasselbe dar: Materie an einem Ort, siehe buildStrukturbildung).
+const _TRACER_RGB = _hexToRgb('#cfe0ff');
 // Koerper im zuletzt angewandten Sample — also das, was der Server nach
 // Culling und Dichte-LOD tatsaechlich schickt. Der Unterschied zur
 // Gesamtzahl ist die Ausduennung: ohne diese Anzeige ist nicht zu sehen,
@@ -6341,6 +6345,19 @@ function _filmWelt(sample) {
   sample.wy = new Float32Array(n);
   _filmEntpacke(sample.qx, sample.qy, sample.box, sample.log,
                 sample.wx, sample.wy);
+  return sample;
+}
+
+// Weltkoordinaten der anonymen Tracer (twx/twy), analog zu _filmWelt.
+// Getrennt, weil die Tracer keinen Index tragen — sie werden nur als
+// Punktwolke gezeichnet, nie einem filmRefs-Koerper zugeordnet.
+function _filmWeltTracer(sample) {
+  if (sample.twx) return sample;
+  const n = sample.tqx.length;
+  sample.twx = new Float32Array(n);
+  sample.twy = new Float32Array(n);
+  _filmEntpacke(sample.tqx, sample.tqy, sample.box, sample.log,
+                sample.twx, sample.twy);
   return sample;
 }
 
@@ -6471,7 +6488,7 @@ function filmApply(t) {
   let vtx = null, vo = 0;
   let wxMin = -Infinity, wxMax = Infinity, wyMin = -Infinity, wyMax = Infinity;
   if (typeof astGL !== 'undefined' && astGL.enabled) {
-    const need = s0.idx.length * 5;
+    const need = (s0.idx.length + (s0.tqx ? s0.tqx.length : 0)) * 5;
     if (!_filmVtx || _filmVtx.length < need) {
       let sz = _filmVtx ? _filmVtx.length : 4096 * 5;
       while (sz < need) sz *= 2;
@@ -6549,6 +6566,33 @@ function filmApply(t) {
       if (!c) { c = _hexToRgb(b.color); b._glColor = c; }
       vtx[vo++] = bx; vtx[vo++] = by;
       vtx[vo++] = c[0]; vtx[vo++] = c[1]; vtx[vo++] = c[2];
+    }
+  }
+  // Anonyme Tracer anhaengen (Option A: ohne Interpolation, am s0-Sample —
+  // sie tragen keinen Index, also keine Sample-zu-Sample-Korrespondenz.
+  // Dank Budget-Deckelung fallen sie nur beim Culling weg, nie durch
+  // Ausduennung; deshalb ruhig und vollstaendig. Feste Tracer-Farbe.
+  if (vtx !== null && s0.tqx && s0.tqx.length) {
+    _filmWeltTracer(s0);
+    const twx0 = s0.twx, twy0 = s0.twy, nt = twx0.length;
+    // Interpolation, wenn s1 DIESELBE Tracer-Auswahl hat: der Server streamt
+    // sie aufsteigend, und bei stehender Kamera + Budget-Deckelung (keine
+    // Ausduennung) ist die Auswahl zwischen zwei Samples identisch -> gleiche
+    // Anzahl heisst Position m ist DERSELBE Tracer, lineares Lerp ist exakt
+    // und das Zucken verschwindet. Bei ungleicher Anzahl (Kamera bewegt /
+    // ausgeduennt) faellt es sauber auf die s0-Position zurueck.
+    let twx1 = null, twy1 = null;
+    if (f > 0 && s1.tqx && s1.tqx.length === nt) {
+      _filmWeltTracer(s1);
+      twx1 = s1.twx; twy1 = s1.twy;
+    }
+    const tr = _TRACER_RGB;
+    for (let m = 0; m < nt; m++) {
+      let bx = twx0[m], by = twy0[m];
+      if (twx1 !== null) { bx += (twx1[m] - bx) * f; by += (twy1[m] - by) * f; }
+      if (bx < wxMin || bx > wxMax || by < wyMin || by > wyMax) continue;
+      vtx[vo++] = bx; vtx[vo++] = by;
+      vtx[vo++] = tr[0]; vtx[vo++] = tr[1]; vtx[vo++] = tr[2];
     }
   }
   _filmVtxCount = vtx !== null ? (vo / 5) : -1;
@@ -9799,7 +9843,10 @@ function updateStats() {
       // stehen. Also dieselben Woerter wie die Regler verwenden.
       if (_punktwolke) {
         if (solidN) parts.push(t('lbl.sg-n') + '&nbsp;' + fmtDE(solidN, 0));
-        if (astN)   parts.push(t('lbl.sg-t') + '&nbsp;' + fmtDE(astN, 0));
+        // Tracer sind jetzt server-seitig (nicht in bodies): Zahl aus dem
+        // Auftrag statt aus astN (Tracer-Koerper gibt es nicht mehr).
+        const tracerN = _tracerAuftrag ? _tracerAuftrag.n : astN;
+        if (tracerN) parts.push(t('lbl.sg-t') + '&nbsp;' + fmtDE(tracerN, 0));
       } else {
         if (solidN) parts.push('\u{1FA90} ' + fmtDE(solidN, 0));  // feste Koerper
         if (astN)   parts.push('\u{1FAA8} ' + fmtDE(astN, 0));    // Asteroiden
@@ -9811,8 +9858,11 @@ function updateStats() {
       const gestreamt = (typeof filmActive !== 'undefined' && filmActive &&
                          _filmStreamN > 0)
         ? '&nbsp;|&nbsp;👁 ' + fmtDE(_filmStreamN, 0) : '';
+      // Gesamt schliesst die server-seitigen Tracer ein (nicht in bodies).
+      const gesamtN = activeCount +
+        (_punktwolke && _tracerAuftrag ? _tracerAuftrag.n : 0);
       bcEl.innerHTML = '<span>' + t('stats.bodies') + ': ' +
-        fmtDE(activeCount, 0) + '</span>'
+        fmtDE(gesamtN, 0) + '</span>'
         + (parts.length ? '&nbsp;|&nbsp;' + parts.join('&nbsp;|&nbsp;') : '')
         + gestreamt;
       bcEl.classList.add('show');

@@ -83,7 +83,24 @@ def main():
         print(f"Positionen endlich: {endlich}")
         print(f"Bewegung Massen ~8 Raster: {bew_mass:.3f} AE")
         print(f"Bewegung Tracer ~8 Raster: {bew_trac:.3f} AE")
-        ok = endlich and bew_mass > 0.0 and bew_trac > 0.0
+
+        # Handover: state_at_playhead darf NUR die Massen dumpen (n_mass),
+        # sonst schlaegt die Engine-Uebergabe im Client fehl (filmRefs=Massen,
+        # "Zustandsuebergabe fehlgeschlagen"). Header-n und Byte-Groesse pruefen.
+        import struct
+        t_mid = sess.t0 + (sess.tail_abs + 3) * sess.raster_days
+        dump = sess.state_at_playhead(t_mid)
+        if dump is not None:
+            _st, dn, _dt = struct.unpack_from("<IId", dump, 0)
+            soll = 16 + 4 * 8 * n_mass
+            print(f"Handover-Dump: n={dn} (soll {n_mass}), "
+                  f"bytes={len(dump)} (soll {soll})")
+            handover_ok = (dn == n_mass and len(dump) == soll)
+        else:
+            print("Handover-Dump: None (Ring zu kurz) — uebersprungen")
+            handover_ok = True
+
+        ok = (endlich and bew_mass > 0.0 and bew_trac > 0.0 and handover_ok)
         print("\n" + ("BESTANDEN — Server erzeugt Tracer, beide bewegen sich"
                       if ok else "FEHLGESCHLAGEN"))
         return 0 if ok else 1
