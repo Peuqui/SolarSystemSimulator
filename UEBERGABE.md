@@ -1037,8 +1037,16 @@ schrotrausch-dominiert (viele leere Zellen, siehe `NBodyPM.__init__`). Das
 wäre ein eigenes Paket (adaptives/feineres Gitter, evtl. gekoppelt an den
 Regler).
 
-### 6.23 OFFEN: Tracer frieren beim Zoom ein (der „Halo") + Punktdichte
-**Ein Bug, der zwei Symptome erzeugt** — vom Nutzer diagnostiziert.
+### 6.23 Tracer frieren beim Zoom ein (der „Halo") + Punktdichte — ERLEDIGT (Proto v8)
+**Ein Bug, DREI Symptome** — vom Nutzer diagnostiziert: Halo, mit dem Zoom
+springende Punktdichte, „LOD nicht auf eingestelltem Wert". Behoben in
+Protokoll v8: Tracer sind server-seitig eine FESTE Hash-Stichprobe über
+alle lebenden Tracer (kein Sichtfenster-Culling), tragen eine eigene Box
+im Tracer-Block (`[anzahl | x0,y0,sx,sy f32 | qx | qy]`), der Client
+entpackt sie über diese `tbox` und cullt beim Zeichnen. Verifiziert:
+Tracer-Zahl über Zoom konstant, kein Freeze, kein Halo. Der Trade-off
+(globale u16-Auflösung der Tracer, ~2 AE) ist für Deko unkritisch. Die
+ursprüngliche Analyse steht unten.
 
 Der Client interpoliert Massen und Tracer verschieden:
 - **Massen tragen einen Index** (`sel_m`, server.py `build_frame`). Der
