@@ -5327,22 +5327,30 @@ function zerlegeFilm(buf) {
     }
     const qx = new Uint16Array(buf, dOff, visCount);
     const qy = new Uint16Array(buf, dOff + 2 * visCount, visCount);
-    // v5: anonymer Tracer-Block (Anzahl + Positionen, KEIN Index). Die
-    // Massen stehen davor (indiziert -> filmRefs), die Tracer sind reine
-    // Deko-Punkte ohne Identitaet. Ohne Auftrag ist tCount 0.
+    // v8: anonymer Tracer-Block (Anzahl + EIGENE Box + Positionen, KEIN
+    // Index). Die Massen stehen davor (indiziert -> filmRefs), die Tracer
+    // sind reine Deko-Punkte ohne Identitaet. Sie tragen eine eigene Box
+    // (ihre Ausdehnung statt des Sichtfensters), weil sie NICHT aufs Bild
+    // gecullt sind — ihre Auswahl ist zoomstabil, damit sie nicht
+    // einfrieren (siehe _filmWeltTracer). Ohne Auftrag ist tCount 0.
     const toff = dOff + 4 * visCount;
     const tCount = dv.getUint32(toff, true);
-    const tqx = new Uint16Array(buf, toff + 4, tCount);
-    const tqy = new Uint16Array(buf, toff + 4 + 2 * tCount, tCount);
-    const soff = toff + 4 + 4 * tCount;
+    const tbox = { x0: dv.getFloat32(toff + 4, true),
+                   y0: dv.getFloat32(toff + 8, true),
+                   sx: dv.getFloat32(toff + 12, true),
+                   sy: dv.getFloat32(toff + 16, true) };
+    const tqx = new Uint16Array(buf, toff + 20, tCount);
+    const tqy = new Uint16Array(buf, toff + 20 + 2 * tCount, tCount);
+    const soff = toff + 20 + 4 * tCount;
     const subCount = dv.getUint32(soff, true);
     const p = subCount * mSub;
     const subIdx = new Uint32Array(buf, soff + 4, subCount);
     const sqx = new Uint16Array(buf, soff + 4 + 4 * subCount, p);
     const sqy = new Uint16Array(buf, soff + 4 + 4 * subCount + 2 * p, p);
-    samples.push({ idx, qx, qy, tqx, tqy, subIdx, sqx, sqy, mSub, box, log });
+    samples.push({ idx, qx, qy, tqx, tqy, tbox, subIdx, sqx, sqy,
+                   mSub, box, log });
     const blockLen = 4 + (selGleich ? 0 : 4 * visCount) +
-      4 * visCount + 4 + 4 * tCount + 4 + 4 * subCount + 4 * p;
+      4 * visCount + 4 + 16 + 4 * tCount + 4 + 4 * subCount + 4 * p;
     off += blockLen + ((4 - (blockLen % 4)) % 4);
   }
   const evs = [];
@@ -6044,7 +6052,7 @@ function filmStart() {
   // steht hier zwangslaeufig doppelt (der Client kennt das Backend
   // nicht vorab). Wer eine aendert, aendert beide.
   new Uint8Array(buf, 24 + 52 * N, 1)[0] =
-    (7 << 4) | (astAstCollisions ? 1 : 0);
+    (8 << 4) | (astAstCollisions ? 1 : 0);
   // Bahnstuetzpunkte je Raster: bestimmt die Ring-Slotgroesse und muss
   // deshalb beim START feststehen (der Regler loest einen Neustart aus).
   new Uint8Array(buf, 24 + 52 * N + 1, 1)[0] = filmSubSamples();
@@ -6399,7 +6407,10 @@ function _filmWeltTracer(sample) {
   const n = sample.tqx.length;
   sample.twx = new Float32Array(n);
   sample.twy = new Float32Array(n);
-  _filmEntpacke(sample.tqx, sample.tqy, sample.box, sample.log,
+  // Die Tracer tragen ihre EIGENE Box (tbox, ihre Ausdehnung), nicht das
+  // Sichtfenster (box) der Massen — sie sind server-seitig nicht aufs Bild
+  // gecullt (feste, zoomstabile Stichprobe, siehe zerlegeFilm / Proto v8).
+  _filmEntpacke(sample.tqx, sample.tqy, sample.tbox, sample.log,
                 sample.twx, sample.twy);
   return sample;
 }

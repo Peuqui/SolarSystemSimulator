@@ -131,12 +131,15 @@ def zerlege_film(frame):
             d_off = off + 4 + 4 * vis_count
         qx = np.frombuffer(frame, "<u2", vis_count, d_off)
         qy = np.frombuffer(frame, "<u2", vis_count, d_off + 2 * vis_count)
-        # Anonymer Tracer-Block (v7): anzahl | qx | qy, ohne Index.
+        # Anonymer Tracer-Block (v8): anzahl | box(x0,y0,sx,sy f32) | qx | qy,
+        # ohne Index. Die eigene Box, weil die Tracer nicht aufs Sichtfenster
+        # gecullt sind (feste, zoomstabile Stichprobe).
         toff = d_off + 4 * vis_count
         (t_count,) = struct.unpack_from("<I", frame, toff)
-        tqx = np.frombuffer(frame, "<u2", t_count, toff + 4)
-        tqy = np.frombuffer(frame, "<u2", t_count, toff + 4 + 2 * t_count)
-        soff = toff + 4 + 4 * t_count
+        tbox = struct.unpack_from("<ffff", frame, toff + 4)
+        tqx = np.frombuffer(frame, "<u2", t_count, toff + 20)
+        tqy = np.frombuffer(frame, "<u2", t_count, toff + 20 + 2 * t_count)
+        soff = toff + 20 + 4 * t_count
         (sub_count,) = struct.unpack_from("<I", frame, soff)
         p = sub_count * m_sub
         sub_idx = np.frombuffer(frame, "<u4", sub_count, soff + 4)
@@ -144,10 +147,11 @@ def zerlege_film(frame):
         sqy = np.frombuffer(frame, "<u2", p,
                             soff + 4 + 4 * sub_count + 2 * p)
         samples.append(SimpleNamespace(idx=idx, qx=qx, qy=qy,
-                                       tqx=tqx, tqy=tqy,
+                                       tqx=tqx, tqy=tqy, tbox=tbox,
                                        sub_idx=sub_idx, sqx=sqx, sqy=sqy))
         block = (4 + (0 if sel_gleich else 4 * vis_count) +
-                 4 * vis_count + 4 + 4 * t_count + 4 + 4 * sub_count + 4 * p)
+                 4 * vis_count + 4 + 16 + 4 * t_count + 4 + 4 * sub_count +
+                 4 * p)
         off += block + (-block) % 4
     rest = len(frame) - off - ev_count * film_producer.EV_BYTES
     return SimpleNamespace(status=status, n=n, count=count, box=box,
@@ -306,10 +310,11 @@ def main():
         vis = roh & 0x7FFF_FFFF
         t_off = off + 4 + (0 if roh_flags[-1] else 4 * vis) + 4 * vis
         (t_count,) = struct.unpack_from("<I", frame_v6, t_off)
-        sub_off = t_off + 4 + 4 * t_count
+        sub_off = t_off + 4 + 16 + 4 * t_count   # +16: eigene Tracer-Box (v8)
         (sub_count,) = struct.unpack_from("<I", frame_v6, sub_off)
         blk = (4 + (0 if roh_flags[-1] else 4 * vis) + 4 * vis +
-               4 + 4 * t_count + 4 + 4 * sub_count + 4 * sub_count * fv.m_sub)
+               4 + 16 + 4 * t_count + 4 + 4 * sub_count + 4 * sub_count *
+               fv.m_sub)
         off += blk + (-blk) % 4
     ok &= pruefe(roh_flags[0] is False,
                  "erstes Sample traegt die volle Liste")

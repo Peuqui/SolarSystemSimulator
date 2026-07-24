@@ -67,7 +67,11 @@ BW_FENSTER_S = 0.2
 #     (Hermite-Interpolation schneller sonnennaher Koerper).
 # 4 = Sample = 8 B/Koerper (x|y) + Sub-Block je Frame: GEMESSENE
 #     Zwischenbilder der heissen Asteroiden statt geschaetzter Tangenten.
-FILM_PROTO_VERSION = 7
+# 7 = Massen indiziert (Delta-kompr.), Tracer als anonymer Block.
+# 8 = Tracer als FESTE Hash-Stichprobe (kein Sichtfenster-Culling) mit
+#     EIGENER Box im Tracer-Block: [anzahl | x0,y0,spanx,spany f32 | qx | qy].
+#     Behebt Einfrieren/Dichtesprung der Tracer beim Zoom (UEBERGABE 6.23).
+FILM_PROTO_VERSION = 8
 
 TAGE_PRO_JAHR = 365.25
 
@@ -485,9 +489,6 @@ class FilmSession:
                     box = (cx - 2 * hw, cy - 2 * hh,
                            max(4 * hw, 1e-6), max(4 * hh, 1e-6))
             x0, y0, spanx, spany = box
-            sel = np.flatnonzero(
-                alive_i & (qxs >= x0) & (qxs <= x0 + spanx)
-                & (qys >= y0) & (qys <= y0 + spany))
             # LOD-Deckel: mehr sichtbare Punkte, als Bandbreite und
             # Client-Dekodierung bei 20 Samples/s verkraften.
             # Obergrenze 120k: mehr Punkte pro Sample schafft der
@@ -495,26 +496,49 @@ class FilmSession:
             # lod_budget != 0 = vom Nutzer gesetzt (Regler), sonst Auto.
             lod_max = self.lod_budget or min(
                 120_000, max(20000, int(self._bw * 0.7 / 20.0 / 8.0)))
-            # Auswahl haengt nur am festen Index (Hash-Stichprobe), nicht
-            # an der Position. Die Quantisierung unten laeuft weiter in
-            # Anzeige-Koordinaten (qxs/qys), passend zur u16-Aufloesung.
-            sel = self._lod_auswahl(sel, lod_max)
-            qx = np.clip((qxs[sel] - x0) / spanx * 65535.0,
-                         0, 65535).astype("<u2")
-            qy = np.clip((qys[sel] - y0) / spany * 65535.0,
-                         0, 65535).astype("<u2")
-            # Massen tragen Identitaet (Index -> filmRefs), Tracer sind
-            # anonyme Deko. sel ist aufsteigend, die Massen (Index < n_mass)
-            # bilden also ein Praefix; der Rest sind Tracer, die ohne Index
-            # allein als Positionen gestreamt werden. Ohne Auftrag ist
-            # n_mass == n -> sel_t leer, der Block ist wie zuvor plus einer
-            # 4-Byte-Null fuer die Tracer-Anzahl.
-            ist_mass = sel < self.n_mass
-            sel_m = sel[ist_mass]
-            qx_m = qx[ist_mass]
-            qy_m = qy[ist_mass]
-            qx_t = qx[~ist_mass]
-            qy_t = qy[~ist_mass]
+            ist_mass_all = np.arange(self.n) < self.n_mass
+            # MASSEN: nur die im Sichtfenster (Culling), dann feste
+            # Hash-Stichprobe. Sie tragen einen Index (-> filmRefs); der
+            # Client ordnet sie ueber Samples per Index zu und interpoliert
+            # robust, auch wenn sich die Auswahl beim Zoom aendert.
+            sel_m = np.flatnonzero(
+                alive_i & ist_mass_all
+                & (qxs >= x0) & (qxs <= x0 + spanx)
+                & (qys >= y0) & (qys <= y0 + spany))
+            sel_m = self._lod_auswahl(sel_m, lod_max)
+            qx_m = np.clip((qxs[sel_m] - x0) / spanx * 65535.0,
+                           0, 65535).astype("<u2")
+            qy_m = np.clip((qys[sel_m] - y0) / spany * 65535.0,
+                           0, 65535).astype("<u2")
+            # TRACER: feste Hash-Stichprobe ueber ALLE lebenden Tracer, OHNE
+            # Sichtfenster-Culling. So bleibt ihre Auswahl beim Zoom stabil
+            # (gleiche Anzahl, gleiche Teilchen ueber die Samples) — die
+            # anonyme Client-Interpolation friert dann nicht ein (kein
+            # Halo, keine mit dem Zoom springende Dichte). Der Preis: Sie
+            # brauchen eine EIGENE Box (ihre Ausdehnung, nicht das
+            # Sichtfenster), weil viele ausserhalb des Bildes liegen — der
+            # Client cullt sie beim Zeichnen. u16 ueber die (grosse)
+            # Tracer-Box ist groeber, fuer die Deko-Tracer unkritisch. Die
+            # Box liegt PRO SAMPLE im Tracer-Block (die Wolke wandert und
+            # dehnt sich, eine frameweite Box schnitte sonst ab).
+            sel_t = np.flatnonzero(alive_i & ~ist_mass_all)
+            sel_t = self._lod_auswahl(sel_t, lod_max)
+            if len(sel_t):
+                tqx = qxs[sel_t]
+                tqy = qys[sel_t]
+                tx0 = float(tqx.min())
+                ty0 = float(tqy.min())
+                tspanx = max(float(tqx.max()) - tx0, 1e-6)
+                tspany = max(float(tqy.max()) - ty0, 1e-6)
+                qx_t = np.clip((tqx - tx0) / tspanx * 65535.0,
+                               0, 65535).astype("<u2")
+                qy_t = np.clip((tqy - ty0) / tspany * 65535.0,
+                               0, 65535).astype("<u2")
+            else:
+                tx0 = ty0 = 0.0
+                tspanx = tspany = 1.0
+                qx_t = np.empty(0, "<u2")
+                qy_t = np.empty(0, "<u2")
             # Sub-Block: die GEMESSENEN Zwischenbilder der heissen
             # Asteroiden, beschraenkt auf die tatsaechlich gestreamten
             # Koerper. Fuer sie interpoliert der Client linear entlang der
@@ -561,11 +585,13 @@ class FilmSession:
                 self._letzte_sel = sel_u4
                 kopf = struct.pack("<I", len(sel_m))
                 sel_bytes = sel_u4.tobytes()
-            # Anonymer Tracer-Block: nur Anzahl + Positionen (kein Index,
-            # keine Delta-Kompression — Tracer wandern staendig, ein Index
-            # brächte nichts). Reihenfolge im Block: [Massen: kopf | idx |
-            # qx | qy] [Tracer: anzahl | qx | qy] [Sub-Block].
-            tblock = (struct.pack("<I", len(qx_t)) +
+            # Anonymer Tracer-Block: Anzahl + EIGENE Box (x0,y0,spanx,spany
+            # f32, siehe oben) + Positionen (kein Index, keine
+            # Delta-Kompression — Tracer wandern staendig). Reihenfolge im
+            # Block: [Massen: kopf | idx | qx | qy] [Tracer: anzahl | box |
+            # qx | qy] [Sub-Block].
+            tblock = (struct.pack("<Iffff", len(qx_t),
+                                  tx0, ty0, tspanx, tspany) +
                       qx_t.tobytes() + qy_t.tobytes())
             block = (kopf + sel_bytes + qx_m.tobytes() + qy_m.tobytes()
                      + tblock + sblock)
