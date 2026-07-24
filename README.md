@@ -4,9 +4,9 @@ Deutsch | [English](README.en.md)
 
 Browser-basierter N-Körper-Gravitationssimulator. Der **Standard-Modus**
 ist eine einzige HTML-Datei — kein Build, kein Backend, einfach im Browser
-öffnen. Für massive Szenarien (Hunderttausende Körper) gibt es ein
-**optionales CUDA-Backend** mit Multi-GPU-Physik und einem entkoppelten
-Film-Modus.
+öffnen. Für massive Szenarien (Hunderttausende bis Millionen Körper) gibt
+es ein **optionales CUDA-Backend** mit Multi-GPU-Physik und einem
+entkoppelten Film-Modus.
 
 ![Render](https://img.shields.io/badge/render-Canvas%202D%20%2B%20WebGL-blueviolet)
 ![Standalone](https://img.shields.io/badge/frontend-single--file-success)
@@ -25,11 +25,13 @@ Film-Modus.
   Galaxienhaufen (Kollaps / Expansion) und **Strukturbildung
   (selbstgravitierend)**, siehe [Selbstgravitierende
   Strukturbildung](#selbstgravitierende-strukturbildung)
-- **Selbstgravitierende Strukturbildung** — hunderttausende Massen, bei
-  denen **jede jede andere anzieht** (nicht nur wenige Zentralmassen).
-  Aus einer fast homogenen Wolke wachsen Halos, Brücken und Voids: die
-  qualitative Signatur des kosmischen Netzes. Getestet mit **> 750 000
-  Körpern** (250 k Massen + 500 k Tracer) über fünf GPUs
+- **Selbstgravitierende Strukturbildung** — Millionen Massen, bei denen
+  **jede jede andere anzieht** (nicht nur wenige Zentralmassen). Aus einer
+  fast homogenen Wolke wachsen Halos, Brücken und Voids: die qualitative
+  Signatur des kosmischen Netzes. Ab ~50 000 Massen rechnet ein
+  **Particle-Mesh-Kernel** (Kraft per FFT über ein Gitter, O(N log N)) das
+  auf **einer** GPU — getestet mit **5 Mio Massen + 5 Mio Tracern**.
+  Darunter all-pairs (O(N²)) über alle fünf Karten
 - **Störmassen interaktiv injizieren** — Position, Masse (10⁻³ bis 10⁶
   Erdmassen, inkl. Sternen ab ~80 M⊕), Geschwindigkeit und Richtung
 - **Asteroiden-Wolken injizieren** — ganze Schwärme aus Kleinkörpern mit
@@ -78,7 +80,7 @@ Die Engine ist im Seitenmenü umschaltbar; die Wahl bleibt im
 | **WebWorker** | Browser, eigener Thread (f64) | Standard — auf den meisten Geräten der schnellste browserinterne Pfad |
 | **WebGPU** | integrierte/dedizierte GPU (f32) | starke GPUs; auf schwacher iGPU langsamer als der Worker |
 | **Hybrid** | Worker + gezielt genauere Asteroiden-Substeps | nahe Begegnungen präziser |
-| **CUDA-Backend** | NVIDIA-GPUs, nativ f64, Multi-GPU | Hunderttausende Körper, Film-Modus |
+| **CUDA-Backend** | NVIDIA-GPUs, nativ f64, Multi-GPU + Particle-Mesh | Hunderttausende bis Millionen Körper, Film-Modus |
 
 Interessanterweise ist der **WebWorker** auf vielen (auch schwächeren)
 Rechnern der schnellste browserinterne Pfad: native f64-Arithmetik auf der
@@ -168,14 +170,16 @@ Deshalb gibt es hier **keine Kollisionen und keine Verschmelzungen**: Bei
 Massen-Samples eines Dichtefelds sind „Stoß" und „Merge" der falsche
 Begriff. Fester Zeitschritt, keine Erkennungs-Pipeline.
 
-**Warum alle GPUs mitziehen.** Der Kernel misst, dass der **Zustand** f64
-braucht (Geschwindigkeitsinkremente unterhalb der f32-Auflösung), die
-**Kraftsumme** aber f32 verträgt (das Softening glättet sie ohnehin). Damit
-rechnen auch die in f64 schwachen Quadro RTX 8000 die Kräfte in f32 voll mit
-— alle fünf Karten am Anschlag statt zwei brachliegend. Getestet mit
-**> 750 000 Körpern**; der Aufwand wächst mit ~N^2,5 (mehr Teilchen = feiner
-aufgelöst, plus feinerer Zeitschritt durch das mitschrumpfende Softening),
-Details in [Hardware & Findings](HARDWARE.md).
+**Warum im all-pairs-Fall alle GPUs mitziehen.** Der all-pairs-Kernel
+misst, dass der **Zustand** f64 braucht (Geschwindigkeitsinkremente
+unterhalb der f32-Auflösung), die **Kraftsumme** aber f32 verträgt (das
+Softening glättet sie ohnehin). Damit rechnen auch die in f64 schwachen
+Quadro RTX 8000 die Kräfte in f32 voll mit — alle fünf Karten am Anschlag
+statt zwei brachliegend. So getestet mit **> 750 000 Körpern**; der Aufwand
+wächst dort mit ~N^2,5. Der **Particle-Mesh-Kernel** darüber läuft dagegen
+bewusst auf **einer** Karte (das Gitter über die ×4-PCIe-Links zu teilen
+kostete mehr, als es brächte) und trägt so **Millionen** — Details und
+Messungen in [Hardware & Findings](HARDWARE.md).
 
 **Drei Szenarien, ein Aufbau:**
 

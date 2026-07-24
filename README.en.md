@@ -4,8 +4,8 @@
 
 Browser-based N-body gravity simulator. The **default mode** is a single
 HTML file — no build, no backend, just open it in a browser. For massive
-scenarios (hundreds of thousands of bodies) there is an **optional CUDA
-backend** with multi-GPU physics and a decoupled film mode.
+scenarios (hundreds of thousands to millions of bodies) there is an
+**optional CUDA backend** with multi-GPU physics and a decoupled film mode.
 
 ![Render](https://img.shields.io/badge/render-Canvas%202D%20%2B%20WebGL-blueviolet)
 ![Standalone](https://img.shields.io/badge/frontend-single--file-success)
@@ -23,11 +23,13 @@ backend** with multi-GPU physics and a decoupled film mode.
   (CUDA backend only): Galaxy cluster (collapse / expansion) and
   **Structure formation (self-gravitating)**, see [Self-gravitating
   structure formation](#self-gravitating-structure-formation)
-- **Self-gravitating structure formation** — hundreds of thousands of
-  masses where **every one attracts every other** (not just a few central
-  masses). From an almost homogeneous cloud, halos, bridges and voids grow:
-  the qualitative signature of the cosmic web. Tested with **> 750,000
-  bodies** (250 k masses + 500 k tracers) across five GPUs
+- **Self-gravitating structure formation** — millions of masses where
+  **every one attracts every other** (not just a few central masses). From
+  an almost homogeneous cloud, halos, bridges and voids grow: the
+  qualitative signature of the cosmic web. From ~50,000 masses up a
+  **Particle-Mesh kernel** (force via an FFT over a grid, O(N log N)) runs
+  this on a **single** GPU — tested with **5 M masses + 5 M tracers**.
+  Below that, all-pairs (O(N²)) across all five cards
 - **Inject perturber masses interactively** — position, mass (10⁻³ to 10⁶
   Earth masses, including stars above ~80 M⊕), speed and direction
 - **Inject asteroid clouds** — whole swarms of small bodies with count
@@ -74,7 +76,7 @@ The engine is switchable in the side menu; the choice persists in
 | **WebWorker** | Browser, own thread (f64) | default — the fastest in-browser path on most devices |
 | **WebGPU** | integrated/discrete GPU (f32) | strong GPUs; slower than the worker on a weak iGPU |
 | **Hybrid** | Worker + targeted finer asteroid substeps | more precise close encounters |
-| **CUDA backend** | NVIDIA GPUs, native f64, multi-GPU | hundreds of thousands of bodies, film mode |
+| **CUDA backend** | NVIDIA GPUs, native f64, multi-GPU + Particle-Mesh | hundreds of thousands to millions of bodies, film mode |
 
 Interestingly the **WebWorker** is the fastest in-browser path on many
 (even weaker) machines: native f64 arithmetic on the CPU beats a weak iGPU
@@ -159,13 +161,15 @@ So there are **no collisions and no mergers** here: for mass-samples of a
 density field, "impact" and "merge" are the wrong concept. Fixed time step,
 no detection pipeline.
 
-**Why all GPUs pull.** The kernel measures that the **state** needs f64
-(velocity increments below f32 resolution) while the **force sum** tolerates
-f32 (softening smooths it anyway). So even the f64-weak Quadro RTX 8000
-compute the forces in f32 at full speed — all five cards flat out instead of
-two idle. Tested with **> 750,000 bodies**; cost grows as ~N^2.5 (more
-particles = finer resolution, plus a finer time step from the shrinking
-softening), details in [Hardware & findings](HARDWARE.en.md).
+**Why in the all-pairs case all GPUs pull.** The all-pairs kernel measures
+that the **state** needs f64 (velocity increments below f32 resolution)
+while the **force sum** tolerates f32 (softening smooths it anyway). So even
+the f64-weak Quadro RTX 8000 compute the forces in f32 at full speed — all
+five cards flat out instead of two idle. Tested that way with **> 750,000
+bodies**; cost there grows as ~N^2.5. The **Particle-Mesh kernel** above it,
+by contrast, deliberately runs on a **single** card (splitting the grid
+across the ×4 PCIe links would cost more than it saves) and so carries
+**millions** — details and measurements in [Hardware & findings](HARDWARE.en.md).
 
 **Three scenarios, one setup:**
 
