@@ -651,15 +651,19 @@ input[type=range] {
        Physik und ueber eta auch den Zeitschritt. -->
   <label data-i18n-title="tt.sg-n" id="lbl-sg-n" style="display:none;">
     <span data-i18n="lbl.sg-n">Massen</span> <span class="val" id="sg-n-val">50.000</span>
-    <input type="range" autocomplete="off" id="sg-n" min="3.3" max="6.0" step="0.05" value="4.7">
+    <input type="range" autocomplete="off" id="sg-n" min="3.3" max="6.7" step="0.05" value="4.7">
   </label>
   <label data-i18n-title="tt.sg-eps" id="lbl-sg-eps" style="display:none;">
     <span data-i18n="lbl.sg-eps">Weichzeichnung</span> <span class="val" id="sg-eps-val">0,10</span>
-    <input type="range" autocomplete="off" id="sg-eps" min="-1.52" max="-0.30" step="0.02" value="-1.0">
+    <input type="range" autocomplete="off" id="sg-eps" min="-1.52" max="0.75" step="0.02" value="0.32">
+  </label>
+  <label data-i18n-title="tt.sg-hubble" id="lbl-sg-hubble" style="display:none;">
+    <span data-i18n="lbl.sg-hubble">Expansion</span> <span class="val" id="sg-hubble-val">1,00 × marginal</span>
+    <input type="range" autocomplete="off" id="sg-hubble" min="0" max="2" step="0.05" value="1.0">
   </label>
   <label data-i18n-title="tt.sg-t" id="lbl-sg-t" style="display:none;">
     <span data-i18n="lbl.sg-t">Tracer</span> <span class="val" id="sg-t-val">30.000</span>
-    <input type="range" autocomplete="off" id="sg-t" min="0" max="5.7" step="0.05" value="4.48">
+    <input type="range" autocomplete="off" id="sg-t" min="0" max="6.7" step="0.05" value="4.48">
   </label>
   <label data-i18n-title="tt.ast-ast">
     <input type="checkbox" id="chk-ast-ast"> <span data-i18n="lbl.ast-ast">Asteroid × Asteroid Kollisionen</span>
@@ -970,8 +974,12 @@ const DEFAULTS = {
   // --- Selbstgravitierende Szenarien ---
   sgN: 4.7,             // Massen (log10) — 10^4.7 ~ 50.000
   sgT: 4.48,            // Tracer (log10) — 10^4.48 ~ 30.000
-  sgEps: -1.0,          // Weichzeichnung (log10 x mittlerer Abstand) —
-                        // 10^-1 = 0,1, die klassische Faustregel
+  sgEps: 0.32,          // Weichzeichnung (log10 x mittlerer Abstand) —
+                        // 10^0.32 ~ 2,1 x Abstand = 1,5 Gitterzellen im PM
+                        // (das bisherige feste Softening; runter = schaerfer
+                        // bis 1 Zelle, hoch = weicher)
+  sgHubble: 1.0,        // Expansion (Faktor auf die marginal geb. Hubble-
+                        // Rate) — 1,0 = marginal (bisher), 0 = Kollaps
   // --- Guertel (Sonnensystem mit Guerteln) ---
   beltAB: 800,          // Anzahl Asteroidengürtel
   beltKB: 600,          // Anzahl Kuipergürtel
@@ -1125,6 +1133,9 @@ const I18N = {
     'lbl.sg-eps': 'Weichzeichnung',
     'lbl.sg-t': 'Tracer',
     'tt.sg-t': 'Masselose Testteilchen, die dem Feld der Massen folgen. Sie erzeugen keine Struktur, sie machen sie sichtbar — und weil sie auf nichts zurückwirken, kosten sie nur N×M statt N². Gemessen: 400.000 Tracer neben 20.000 Massen laufen mit 91 Schritten/s; 400.000 zusätzliche MASSEN kämen auf etwa 8. Links am Anschlag: keine Tracer.',
+    'lbl.sg-hubble': 'Expansion',
+    'lbl.sg-hubble-kollaps': 'aus (Kollaps)',
+    'tt.sg-hubble': 'Radialer Hubble-Fluss v = H·r als Anfangsbedingung — die Wolke startet expandierend. Skaliert die marginal gebundene Rate (Ω ≈ 1, am Rand gerade Fluchtgeschwindigkeit): 1,0 = marginal (das bisherige Verhalten), unter 1 kollabiert die Wolke schneller, über 1 expandiert sie dauerhaft (offenes Universum). Bei 0 keine Expansion. Wirkt auf Massen UND Tracer.',
     'tt.sg-eps': 'Plummer-Softening: unterhalb dieser Distanz wird die Masse als verschmiert gerechnet statt als Punkt. Ohne sie schleudern sich nahe Teilchen künstlich weg. Angegeben als Vielfaches des mittleren Teilchenabstands, damit der Wert bei jeder Teilchenzahl passt. Zu groß glättet die Filamente weg (gemessener Dichtekontrast bei 0,5 nur 3,8× gegen 7,2× bei 0,03); zu klein bringt nichts mehr und erzeugt künstliche Klumpen durch Zweikörper-Streuung. 0,1 ist die klassische Faustregel. Kleinere Werte erzwingen einen feineren Zeitschritt und kosten Tempo.',
     'cuda.fehler': 'CUDA-Backend meldet einen Fehler — zurück auf den WebWorker geschaltet: {m} (Klick zum Ausblenden)',
     'lbl.film-lod': 'Punkte im Bild',
@@ -1421,6 +1432,9 @@ const I18N = {
     'lbl.sg-eps': 'Softening',
     'lbl.sg-t': 'Tracers',
     'tt.sg-t': 'Massless test particles following the field of the masses. They do not create structure, they reveal it — and since they never act back, they cost only N×M instead of N². Measured: 400,000 tracers alongside 20,000 masses run at 91 steps/s; 400,000 additional MASSES would manage about 8. Far left: no tracers.',
+    'lbl.sg-hubble': 'Expansion',
+    'lbl.sg-hubble-kollaps': 'off (collapse)',
+    'tt.sg-hubble': 'Radial Hubble flow v = H·r as an initial condition — the cloud starts out expanding. Scales the marginally bound rate (Ω ≈ 1, escape velocity at the edge): 1.0 = marginal (the previous behaviour), below 1 the cloud collapses faster, above 1 it expands forever (open universe). At 0 no expansion. Affects masses AND tracers.',
     'tt.sg-eps': 'Plummer softening: below this distance mass is treated as smeared out rather than point-like. Without it, close particles fling each other away artificially. Given as a multiple of the mean particle spacing so the value works at any particle count. Too large smooths the filaments away (measured density contrast at 0.5 is only 3.8× versus 7.2× at 0.03); too small adds nothing and creates artificial clumping through two-body scattering. 0.1 is the classic rule of thumb. Smaller values force a finer timestep and cost speed.',
     'cuda.fehler': 'CUDA backend reported an error — switched back to the WebWorker: {m} (Click to dismiss)',
     'lbl.film-lod': 'Points on screen',
@@ -2169,6 +2183,16 @@ function strukturTracer() {
   return Math.round(Math.pow(10, el ? parseFloat(el.value) : 4.48));
 }
 
+// Expansions-Faktor auf die marginal gebundene Hubble-Rate (Omega ~ 1):
+// 0 = keine Expansion (die Wolke kollabiert), 1 = marginal (am Rand gerade
+// Fluchtgeschwindigkeit — das bisherige Verhalten), >1 = ueberkritisch
+// (offen, expandiert dauerhaft). Skaliert v = faktor * H * r fuer Massen
+// UND Tracer.
+function strukturHubbleFaktor() {
+  const el = document.getElementById('sg-hubble');
+  return el ? parseFloat(el.value) : 1.0;
+}
+
 // Plummer-Softening in AE, als Vielfaches des mittleren Teilchen-
 // abstands. Der Regler ist bewusst RELATIV: absolut in AE muesste man
 // ihn bei jeder Aenderung der Teilchenzahl nachziehen.
@@ -2246,8 +2270,10 @@ function buildStrukturbildung() {
     rMax = Math.max(rMax, Math.hypot(px[i], py[i]));
   }
   // Marginal gebunden (Omega ~ 1): am Rand ist der Hubble-Fluss gerade
-  // die Fluchtgeschwindigkeit.
-  const hubble = Math.sqrt(2 * G_AU * gesamt / rMax) / rMax;
+  // die Fluchtgeschwindigkeit. Der Regler skaliert das (0 = Kollaps,
+  // 1 = marginal, >1 = ueberkritisch expandierend).
+  const hubble = strukturHubbleFaktor() *
+                 Math.sqrt(2 * G_AU * gesamt / rMax) / rMax;
 
   for (let i = 0; i < STRUKTUR_N; i++) {
     const x = px[i], y = py[i];
@@ -2256,7 +2282,7 @@ function buildStrukturbildung() {
     const streu = () => (Math.random() * 2 - 1) * 0.08 * vr;
     pushBody({
       name: 'M' + (i + 1), mass: STRUKTUR_MASSE,
-      color: '#cfe0ff',
+      color: _MASS_HEX,
       x, y,
       vx: x / r * vr + streu(),
       vy: y / r * vr + streu(),
@@ -2281,8 +2307,8 @@ function buildStrukturbildung() {
   // SERVER wuerfelt sie daraus (tracer_gen.py): dieselbe Verteilung wie
   // frueher hier (gleichmaessige Scheibe Radius 1,2*R um -mx/-my, radialer
   // Hubble-Fluss v=H*r, 8 % Streuung), aber ohne T Body-Objekte und ohne
-  // sie durch Browser und Leitung zu schleusen. Dieselbe helle Farbe wie
-  // die Massen zeichnet der Client fest (_TRACER_RGB). So tragen Millionen.
+  // sie durch Browser und Leitung zu schleusen. Der Client zeichnet sie
+  // fest in _TRACER_RGB (hellblau) — abgesetzt von den hellorangen Massen.
   const T = strukturTracer();
   _tracerAuftrag = T > 0 ? {
     n: T, radius: STRUKTUR_R * 1.2,
@@ -6286,9 +6312,12 @@ let _filmCollBase = 0;             // Zaehlerstand vor der aktuellen Session
 let _filmEvVerworfen = 0;
 let _filmVtx = null;               // GL-Direktpfad: [x,y,r,g,b] aus filmApply
 let _filmVtxCount = -1;            // Punkte darin; -1 = Pfad inaktiv
-// Farbe der anonymen Tracer — dieselbe wie die Massen (ein Tracer stellt
-// dasselbe dar: Materie an einem Ort, siehe buildStrukturbildung).
-const _TRACER_RGB = _hexToRgb('#cfe0ff');
+// Farben der Strukturbildung, als benannte Konstanten (SSOT): Massen und
+// Tracer sind jetzt unterscheidbar — die massiven Punkte sehr hellorange,
+// die masselosen Tracer hellblau. So hebt sich das Massengeruest optisch
+// von der Testteilchen-Wolke ab, die es sichtbar macht.
+const _MASS_HEX = '#ffd3a0';                 // Massen: sehr hellorange
+const _TRACER_RGB = _hexToRgb('#a8c8ff');    // Tracer: hellblau
 // Koerper im zuletzt angewandten Sample — also das, was der Server nach
 // Culling und Dichte-LOD tatsaechlich schickt. Der Unterschied zur
 // Gesamtzahl ist die Ausduennung: ohne diese Anzeige ist nicht zu sehen,
@@ -7193,6 +7222,18 @@ document.getElementById('sg-n').addEventListener('change', function() {
   loadScenario(currentScenario);
   fitZoomToSystem();
 });
+document.getElementById('sg-eps').addEventListener('change', function() {
+  // Weichzeichnung UND Expansion aendern die Physik von t=0 an (Softening
+  // bzw. Hubble-Fluss gehen in die Anfangsbedingungen und den Kernel). Der
+  // laufende Film rechnet mit den alten Werten weiter — also Szenario neu
+  // aufbauen, damit der Producer mit dem neuen Wert startet. Ohne diesen
+  // Handler blieb der Regler folgenlos.
+  loadScenario(currentScenario);
+});
+document.getElementById('sg-hubble').addEventListener('change', function() {
+  loadScenario(currentScenario);
+});
+document.getElementById('sg-hubble').addEventListener('input', sgReglerAnzeige);
 document.getElementById('sg-eps').addEventListener('change', function() {
   // Die Weichzeichnung aendert die Physik und ueber eta auch den
   // Zeitschritt — der Producer muss mit dem neuen Wert neu starten. Die
@@ -9117,7 +9158,7 @@ function sgReglerSichtbarkeit() {
   }
   _filmControlsAktiv();   // sperrt u. a. "Punkte im Bild" szenarioabhaengig
   const zeigen = selbstgrav && cudaReady;
-  for (const id of ['lbl-sg-n', 'lbl-sg-eps', 'lbl-sg-t']) {
+  for (const id of ['lbl-sg-n', 'lbl-sg-eps', 'lbl-sg-t', 'lbl-sg-hubble']) {
     const el = document.getElementById(id);
     if (el) el.style.display = zeigen ? '' : 'none';
   }
@@ -9166,6 +9207,12 @@ function sgReglerAnzeige() {
     const au = faktor * 2 * STRUKTUR_R / Math.sqrt(strukturN());
     eEl.textContent = fmtDE(faktor, 3) + ' × Abstand (' +
                       fmtDE(au, 0) + ' AE)';
+  }
+  const hEl = document.getElementById('sg-hubble-val');
+  if (hEl) {
+    const f = strukturHubbleFaktor();
+    hEl.textContent = f === 0 ? t('lbl.sg-hubble-kollaps')
+                              : fmtDE(f, 2) + ' × marginal';
   }
 }
 
@@ -10434,6 +10481,7 @@ function applyDefaults() {
     ['sg-n',             DEFAULTS.sgN],
     ['sg-eps',           DEFAULTS.sgEps],
     ['sg-t',             DEFAULTS.sgT],
+    ['sg-hubble',        DEFAULTS.sgHubble],
   ];
   for (const [stem, val] of sliderDefs) {
     // Slider-Persistierung: wenn ein Wert in localStorage gespeichert ist,

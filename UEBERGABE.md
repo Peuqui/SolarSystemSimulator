@@ -339,7 +339,12 @@ den Anteil, der im Producer `step=93 %` belegt:
 | 23.07., Ausgangslage | 133 | 604 |
 | Gitter je Batch statt je Substep | 128 | 626 |
 | CIC fusioniert + Faltung in f32 | 89 | 903 |
-| pinned Download-Puffer | **63** | **1267** |
+| pinned Download-Puffer | 63 | 1267 |
+| nur Positionen transferieren (kein vx\|vy) | **44** | **1820** |
+
+Insgesamt **3,0×** (604 → 1820). Der letzte Schritt (kein vx\|vy) betrifft
+nur `pm_kernel.py` und den Producer — Kernel A (`selfgrav_kernel.py`,
+all-pairs) bleibt bit-identisch. Siehe 6.17.
 
 **Wo die Zeit im Substep steckt** (1M Massen, 1024², vor dem Umbau):
 
@@ -358,8 +363,9 @@ Zellindex und Gewichte zweimal berechnet. Jetzt je ein ElementwiseKernel
 (Deposit mit `atomicAdd`, Gather für beide Komponenten in einem Zug), und
 die Faltung läuft in f32 (`kraft_f32`; der Zustand bleibt f64).
 
-**Der Engpass ist jetzt der D2H-Transfer:** 47 von 63 ms. Ein Batch trägt
-152 MB (8 Substeps × [x|y|vx|vy|tx|ty] in f32).
+**Der Engpass war danach der D2H-Transfer** (47 von 63 ms, Batch 152 MB) —
+und der trug zu 40 % Geschwindigkeiten, die niemand liest. Weggelassen:
+Batch 152 → 92 MB, 44 ms/Batch, 1820 d/s (Details in 6.17).
 
 **Nicht gemessen:** `build_frame` im Server-Prozess (Culling, Dichte-LOD
 mit Bisektion und 512×512-`bincount`, Quantisierung, Sub-Kette) ist reine
@@ -818,53 +824,57 @@ Gehört konzeptionell neben die Kernel-Roadmap in `TODO.md` (Tiling A,
 Kernel B, Barnes-Hut/PM). Reihenfolge offen — erst wenn ein Szenario das
 wirklich braucht.
 
-### 6.17 PM-Durchsatz: der Rest ist Transfer
-2,1× geholt (Abschnitt 4). Was jetzt noch bremst, ist **nicht mehr die
-Rechnung**, sondern der Weg zum Host: 47 von 63 ms je Batch.
+### 6.17 PM-Durchsatz: 3,0× geholt, der Rest wäre CUDA-Graphs
+Stand: 604 → 1820 d/s (Abschnitt 4). Der letzte Schritt hat den D2H-Engpass
+angegangen — **`vx|vy` wurden übertragen und weggeworfen.**
 
-**Der nächste Hebel liegt offen: `vx|vy` werden übertragen und
-weggeworfen.** `schreibe_slot` liest aus der Kernel-Ausgabe nur
-`out_i[0:2*n]`, und im selbstgravitierenden Pfad braucht auch sonst
-niemand die Geschwindigkeiten (der f64-Dump für die Engine-Übergabe holt
-sie separat über `export_f64`). Ein Layout `[x|y | tx|ty]` statt
-`[x|y|vx|vy | tx|ty]` senkt den Batch von 152 auf 92 MB — gemessen
-47,3 → 28,3 ms, also nochmal rund **1,4×** auf den Gesamtdurchsatz.
+Der PM-Kernel liefert jetzt nur noch Positionen `[x|y | tx|ty]` statt
+`[x|y|vx|vy | tx|ty]`; die Geschwindigkeiten bleiben f64 auf der GPU (die
+Leapfrog-Integration nutzt sie weiter), gehen aber nicht mehr über den
+×4-Link. Der Ring trägt ohnehin nur Positionen (`schreibe_slot` liest
+`out_i[0:2*n]`), und die Engine-Übergabe holt den v-Zustand separat via
+`export_f64`. Batch 152 → 92 MB, 63 → 44 ms, kein Genauigkeitsverlust.
 
-Der Haken, und deshalb liegt es hier statt im Code: Das Layout ist
-zwischen **beiden** selbstgravitierenden Kernen gleich, und in Kernel A
-(`selfgrav_kernel.py`) entsteht es im CUDA-Quelltext (`snap` mit vier
-Feldern je Substep). Es sauber zu machen heisst, dort den Kernel, im
-Producer den `voll`-Umbau und die Tests gemeinsam zu ziehen — ein eigenes
-Arbeitspaket, kein Nebenbei-Fix.
+**Kernel A blieb bit-identisch** — auf Wunsch nur `pm_kernel.py` angefasst.
+Der Producer liest das Layout am Klassenattribut `NBodyPM.nur_positionen`
+(`getattr(sim, "nur_positionen", False)`), Kernel A liefert weiter
+`[x|y|vx|vy|tx|ty]` und der Producer verwirft dessen v beim `voll`-Umbau.
+Der Tracer-Block liegt darum je Kernel an anderer Stelle (2·nm bzw. 4·nm).
 
-Danach erst lohnt sich, über CUDA-Graphs nachzudenken: Die reine
-Rechenzeit liegt dann bei ~16 ms je Batch, und die Launch-Zahl je Substep
-ist durch die Kernel-Fusion bereits von rund zwanzig auf eine Handvoll
-gefallen.
+**Was bleibt: CUDA-Graphs.** Die reine Rechnung liegt bei ~16 ms je Batch,
+der Rest ist Transfer und Launch-Overhead. Die Launch-Zahl je Substep ist
+durch die Kernel-Fusion schon von ~zwanzig auf eine Handvoll gefallen;
+einen Substep als Graph aufzeichnen und abspielen spart den verbliebenen
+Python-/Launch-Overhead. Erst messen, ob es den Aufwand trägt — 1820 d/s
+sind bei 1000 d/s Wunschtempo bereits über der Wiedergabe-Grenze.
 
-### 6.21 Tracer auf eine zweite Karte — lohnt erst ab ~1 Mio Tracern
-Nachgerechnet und gemessen, bevor gebaut wird. Die Tracer-Karte braucht je
-Substep das **Kraftfeld** (2 × grid_n² × 4 B, bei 1024² also **8,0 MB —
-unabhängig von der Tracer-Zahl**), und sie spart der Rechenkarte deren
-**Ausgabe** (2 × T × 4 B). Der Break-Even ist damit schlicht:
+### 6.21 Tracer auf eine zweite Karte — VERWORFEN, gemessen
+Erst als lohnend eingeschätzt (Break-Even `T = grid_n²`, über das
+Ausgabe-Volumen gerechnet), dann **vor dem Bau gemessen — und verworfen.**
+Der Denkfehler der ersten Rechnung: Sie stellte den Feldtransfer gegen die
+Tracer-*Ausgabe*. Der eigentliche Nutzen des Splits wäre aber, den
+Tracer-*Gather* aus dem kritischen Pfad zu nehmen — und der ist seit der
+CIC-Fusion (6.17, Punkt 2) fast nichts mehr.
 
-    T = grid_n²      (bei 1024² also ~1,05 Mio Tracer)
+Gemessen (Massen-Karte V100, Tracer-Karte RTX, pinned Host):
 
-| Tracer | Ausgabe je Substep | gegen Feld 8,0 MB |
+| | grid 1024 | grid 2048 |
 |---|---|---|
-| 500.000 | 3,8 MB | kostet mehr, als es spart |
-| 1.000.000 | 7,6 MB | Break-Even |
-| 2.000.000 | 15,3 MB | lohnt |
-| 5.000.000 | 38,1 MB | lohnt klar |
+| Feldtransfer je Substep | 5,0 ms | 20,0 ms |
+| Tracer-Gather 1 Mio | 0,15 ms | 0,55 ms |
+| Tracer-Gather 5 Mio | 0,67 ms | 2,70 ms |
 
-Bei der heutigen Szene (500k Tracer) würde die Auslagerung den Durchsatz
-also **senken**. Für das eigentliche Ziel — Millionen Tracer — trägt sie,
-und dann doppelt: Die beiden Ströme laufen über **verschiedene**
-PCIe-Links, statt sich einen zu teilen.
+Der Feldtransfer kostet **das 7- bis 40-fache** des Gathers, den er
+einspart. Sequenziell ist der Split klar schädlich; selbst mit Pipelining
+(Streams/Events/Doppelpuffer) wäre der Gewinn nur die paar ms Gather,
+während die Massen-Karte den Feldtransfer (bei grid 2048: 160 MB je Batch)
+oben drauf bekäme. Kein Regime, in dem es sich trägt.
 
-Zwei Dinge sind dabei gesetzt: Der Feldtransfer läuft **über den pinned
-Host**, nicht per P2P (6.3), und das Feld muss in f32 gehen (in f64 wäre
-es 16 MB und der Break-Even läge doppelt so hoch).
+**Lehre:** Der fusionierte CIC-Gather (0,7 ms bei 5 Mio) hat dem Split die
+Grundlage entzogen. Der frühere Break-Even galt für den alten,
+Fancy-Index-Gather. Wer das später aufgreift, misst zuerst wieder Gather
+gegen Feldtransfer, bevor er baut. Die Slider-Erweiterung auf 5 Mio
+(Massen und Tracer) bleibt davon unberührt — 5 Mio laufen auf einer Karte.
 
 ### 6.18 Tracer-Kreis nach dem Handover
 Beim Neustart der Sitzung (Inject/Engine-Übergabe) würfelt der Producer
@@ -874,10 +884,20 @@ als scharfer Kreis mit Halo. Fix: den Tracer-Zustand server-intern über
 den Handover mitführen statt neu zu würfeln. Der Client merkt davon
 nichts, die Tracer bleiben dort anonym.
 
-### 6.19 Massen und Tracer in einer Farbe
-Beide zeichnen in `_TRACER_RGB` (`#cfe0ff`). Gewünscht: Massen hellgelb,
-Tracer hellblau — als **benannte Konstanten** wie `BH_TRAIL_COLOR` (6.11),
-nicht als verstreute Hex-Literale.
+### 6.19 Massen und Tracer in einer Farbe — erledigt
+Getrennt: Massen `_MASS_HEX` (`#ffd3a0`, sehr hellorange), Tracer
+`_TRACER_RGB` (`#a8c8ff`, hellblau), beide benannte Konstanten (SSOT).
+
+**Nebenwirkung, offen (siehe 6.23):** Die Farbtrennung hat einen
+bestehenden Tracer-Rendering-Kompromiss sichtbar gemacht — beim Zoom
+frieren die anonymen Tracer ein, die orange Massen wandern davon: ein
+oranger Halo am Verteilungsrand. Vorher (beide hellblau) unsichtbar.
+
+**Zweite offene Nebenwirkung:** Bei sehr vielen Tracern (5 Mio gegen 500k
+Massen) übertönen die blauen Tracer die orange Massen im additiven
+Blending — die Massen sind nur am dünnen Rand sichtbar. Wer die Massen
+heraustreten lassen will: sattere Farbe und/oder grössere Punkte,
+und/oder sie NACH den Tracern zeichnen (nicht additiv untergehen).
 
 ### 6.20 Wiedergabe bei hohem Tempo — gemessen, gedämpft
 Gemeldet als „stockt bei 1000 Tage/s, GPUs arbeiten gar nicht".
@@ -990,21 +1010,78 @@ Beim Lesen der Formel hilft: Die frühere Schreibweise
 ist dieselbe Funktion — die Rate kürzt sich heraus. Der Playhead läuft
 also mit „Vorrat je 1,5 s", **unabhängig vom eingestellten Tempo**.
 
-### 6.22 OFFEN: Der Weichzeichnungs-Regler wirkt im PM-Pfad nicht
-`NBodyPM` nimmt `softening_au` nur als **Untergrenze** — das Softening
-bestimmt das Gitter: `eps = max(1,5 · Zellweite, softening_au)`. Bei
-1024² und der Ausdehnung der kosmischen Szenen liegt die Zellweite bei
-60–140 AE, also `eps ≈ 90–210 AE`. Ob am Regler 31,6, 9,1 oder 0,11 AE
-steht, ändert damit nichts.
+### 6.22 Weichzeichnungs-Regler im PM — technisch gefixt, physikalisch begrenzt
+**Zwei getrennte Ursachen, die zusammen den Eindruck „wirkt nichts" gaben.**
 
-Was der Regler tatsächlich auslöst: einen **Sitzungsneustart**. Neuer
-Producer, neuer Ring, Tracer neu gewürfelt (6.18), Bandbreitenschätzung
-von vorn — sichtbar als mehrsekündiger Aussetzer. Die Massen laufen aus
-dem f64-Dump weiter, aber die Rückspul-Historie ist jedes Mal weg.
+**1. Technisch (behoben):** `sg-eps` hatte nur einen `input`-Handler
+(Anzeige), aber **keinen `change`-Handler** wie `sg-n`/`sg-t`. Der Regler
+änderte den Wert, startete den Film aber NIE neu — der laufende Producer
+behielt sein altes `softening_au`. Egal was am Kernel geschraubt wurde,
+der Regler blieb folgenlos. Fix: `change` → `loadScenario` (index.html).
 
-Zu entscheiden ist, was der Regler im PM-Betrieb bedeuten SOLL. Naheliegend
-wäre, ihn auf `softening_zellen` zu legen (heute fest 1,5): Das ist die
-Grösse, die im PM-Pfad wirklich das Softening setzt, und sie wirkt ohne
-Sitzungsneustart. Unter ~1 Zelle kann PM allerdings prinzipiell nicht
-auflösen — der Regler bräuchte also einen anderen Bereich und eine
-ehrliche Beschriftung.
+**2. Physikalisch (Grenze des Verfahrens):** Die PM-Untergrenze ist jetzt
+`softening_zellen = 1,0` (war 1,5), der Regler steuert `softening_au`
+darüber: `eps = max(1,0 · Zellweite, softening_au)`. Damit WIRKT er — aber
+nur im gröberen Bereich. Die Messtabelle für den Dichtekontrast
+(`softeningAU`-Kommentar, Kernel A) läuft von eps/Abstand 0,03 (Kontrast
+7,2×) bis 0,5 (3,8×) — der interessante, filament-schärfende Teil. Im PM
+ist eps ≥ 1 Zellweite ≈ **1,4 × Abstand**, also KOMPLETT oberhalb der
+Tabelle, im flachen, weggeglätteten Ast. PM kann prinzipiell nicht feiner
+als ~1 Zelle auflösen (dafür TreePM). Der Regler ändert also die Glättung
+im Bereich 1–4 Zellen, aber der dramatische Struktur-Kontrast ist so nicht
+erreichbar.
+
+**Wer spürbaren Schärfe-Effekt im PM will**, muss an die GITTERAUFLÖSUNG
+(grid_n) statt ans Softening — feiner rechnen. Haken: grid > √N ist
+schrotrausch-dominiert (viele leere Zellen, siehe `NBodyPM.__init__`). Das
+wäre ein eigenes Paket (adaptives/feineres Gitter, evtl. gekoppelt an den
+Regler).
+
+### 6.23 OFFEN: Tracer frieren beim Zoom ein (der „Halo") + Punktdichte
+**Ein Bug, der zwei Symptome erzeugt** — vom Nutzer diagnostiziert.
+
+Der Client interpoliert Massen und Tracer verschieden:
+- **Massen tragen einen Index** (`sel_m`, server.py `build_frame`). Der
+  Client ordnet sie über Samples per Index zu — robust gegen
+  Auswahl-Änderung, sie laufen immer mit der aktuellen Zeit.
+- **Tracer sind anonym** (kein Index, bewusst — Millionen ohne
+  Index-Overhead). Der Client interpoliert sie NUR, wenn zwei Samples
+  gleich viele haben (`s1.tqx.length === nt`, index.html ~6604). Bei
+  Kamerabewegung ändert das Sichtfenster-Culling (`build_frame`, `in-box`)
+  die Tracer-ANZAHL → Bedingung falsch → Tracer frieren auf dem letzten
+  Sample ein, während die Massen weiterlaufen.
+
+**Symptom 1 (Halo):** Massen wandern (orange), Tracer stehen (blau) →
+oranger Rand-Halo. Nur bei/nach Kamerabewegung, seit der Farbtrennung
+(6.19) sichtbar.
+**Symptom 2 (Punktdichte):** Dieselbe Culling-Abhängigkeit lässt die
+Tracer-Zahl im Bild beim Zoom springen — irritierend, obwohl `lod_budget`
+(Regler auf Max) konstant ist.
+
+**Fix-Plan (ein Umbau löst beide):** Die Tracer NICHT aufs Sichtfenster
+cullen, sondern eine **feste Hash-Stichprobe** über alle Tracer (wie das
+deterministische Massen-LOD, `_lod_auswahl`). Dann ist die Auswahl über
+Samples stabil → die anonyme Interpolation greift → sie laufen mit.
+
+**Haken (deshalb ein eigenes, sauber zu bauendes Paket):** Ohne
+Sichtfenster-Cull brauchen die Tracer eine EIGENE Box zur
+u16-Quantisierung (die Verteilungs-Ausdehnung statt des Sichtfensters), im
+Sample mitübertragen — ein Protokoll-Umbau über Server UND Client mit
+Versionssprung. Trade-off: u16-Auflösung der Tracer wird global (≈2 AE bei
+135.000 AE Ausdehnung) statt sichtfenster-fein; beim tiefen Zoom auf
+einzelne Tracer gröber. Für Deko-Tracer vertretbar, die Massen bleiben
+sichtfenster-f32-präzise. Der Client cullt die Tracer dann beim Zeichnen
+(`wxMin/wxMax`) statt der Server.
+
+Nebenbei zu klären: Die Hubble-Expansion (jetzt per Regler, 6.24) treibt
+Massen und Tracer gemeinsam auseinander — sie erzeugt KEINE Divergenz, ist
+also nicht die Halo-Ursache, aber die physikalische Quelle der weiten
+Verteilung (p99 = 135.000 AE nach 918 Sim-Jahren, Start 60.000).
+
+### 6.24 Hubble-Expansion per Regler — erledigt
+Neuer Slider „Expansion" (`sg-hubble`, unter der Weichzeichnung): skaliert
+die marginal gebundene Rate (`strukturHubbleFaktor` × `√(2GM/rMax)/rMax`).
+0 = Kollaps, 1 = marginal (bisheriges Verhalten), >1 = offen/dauerhaft
+expandierend. Wirkt auf Massen (`buildStrukturbildung`) und Tracer
+(`_tracerAuftrag.hubble`). Wie `sg-eps` löst eine Änderung einen
+Sitzungsneustart aus (`change` → `loadScenario`).

@@ -122,6 +122,37 @@ def schreibe_slot(buf, basis: int, n: int, sub_max: int,
         buf[off:off + bahnen.nbytes] = bahnen.tobytes()
     return ueberlauf
 
+
+def schreibe_slot_direkt(ring_f4, off: int, nm: int, nt: int,
+                         massen_i, tracer_i) -> None:
+    """Ein Ring-Sample OHNE `voll`-Zwischenarray und OHNE `tobytes`: die
+    Kernel-Ausgabe geht per vier Slice-Copies direkt in `ring_f4` — einen
+    persistenten f32-View auf den GESAMTEN Ring-Puffer (`off` ist der
+    Slot-Anfang in float-Einheiten = basis // 4).
+
+    Fuer den selbstgravitierenden Pfad, wenn die Massen an Index 0..nm-1
+    und die Tracer an nm..n-1 liegen (server-seitige Tracer). `massen_i`
+    ist [x|y] der Massen (2*nm f32), `tracer_i` [x|y] der Tracer (2*nt f32)
+    — beide in Ring-Reihenfolge. Der Ring-Slot ist [x(n)|y(n)]; x/y der
+    Massen bilden je ein Praefix, die Tracer haengen an.
+
+    DER GRUND: Bei 5 Mio Tracern kostete der Umweg ueber ein
+    (K, 2n)-f32-Array + `tobytes` je Batch rund 640 ms Producer-CPU — der
+    eigentliche Engpass, nicht der GPU-Transfer. Direkt in den Ring spart
+    den 352-MB-Umbau und die Kopie. Der View liegt im Producer (EINE
+    Instanz, vor `shm.close()` freigegeben) — je Slot einen anzulegen
+    haette Export-Pointer hinterlassen, die das Schliessen blockieren.
+    Kein Sub-Block (selbstgrav hat keine heissen Asteroiden): nh=0, und
+    weil u32-Null bitgleich f32-Null ist, geht auch die ueber den View.
+    """
+    n = nm + nt
+    ring_f4[off:off + nm] = massen_i[0:nm]              # x der Massen
+    ring_f4[off + n:off + n + nm] = massen_i[nm:2 * nm]  # y der Massen
+    if nt:
+        ring_f4[off + nm:off + n] = tracer_i[0:nt]           # x der Tracer
+        ring_f4[off + n + nm:off + 2 * n] = tracer_i[nt:2 * nt]  # y Tracer
+    ring_f4[off + 2 * n] = 0.0                          # nh = 0
+
 # Erkennungskarten pro Session. Die Bounce-Suche ist der Engpass (75-93%
 # der Batchzeit); sie skaliert raeumlich, weil Kollisionen lokal sind.
 DET_MAX = 2
@@ -563,7 +594,15 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             # nimmt die im PM-Betrieb schnellste Karte (persistenter Mikro-
             # Benchmark, HW-agnostisch, cacht nach Bestueckung).
             phys_devs = [waehle_karte_pm(alle)]
-            sim = NBodyPM(phys_devs, softening_au=softening_au)
+            # tracer_u16 vorerst AUS: der u16-D2H halbiert zwar den Transfer,
+            # aber der ist nicht der Producer-Engpass — das ist die
+            # CPU-Nachverarbeitung (voll-Umbau + schreibe_slot, ~640 ms/Batch
+            # bei 5M Tracern). Die Dequant der u16-Tracer im Producer wuerde
+            # noch draufzahlen. Erst der Ring-u16 mit DIREKTem Schreiben
+            # (ohne voll-Zwischenarray, Dequant erst im Server auf die
+            # LOD-Auswahl) traegt hier — separates Paket.
+            sim = NBodyPM(phys_devs, softening_au=softening_au,
+                          tracer_u16=False)
             print(f"[film] particle-mesh auf gpu {phys_devs}, "
                   f"{n_mass} massen", flush=True)
         else:
@@ -665,6 +704,17 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     else:
         sg_m = sg_t = None
         st = sim.load_state(x, y, vx, vy, mass, vis, state["isAst"], real_r)
+    # Ring-Layout der step_batch-Ausgabe: Der PM-Kernel liefert nur
+    # Positionen [x|y|tx|ty] (er transferiert v gar nicht erst), Kernel A
+    # weiter [x|y|vx|vy|tx|ty]. Ohne das Flag gilt das alte Layout.
+    nur_positionen = getattr(sim, "nur_positionen", False)
+    # Direkter Ring-Schreibpfad (schreibe_slot_direkt) nur, wenn die Massen
+    # das Praefix 0..nm-1 bilden und die Tracer lueckenlos anhaengen —
+    # server-seitige Tracer erfuellen das immer. Sonst der voll-Umbau.
+    zusammenhaengend = (
+        sg_m is not None and sg_m.size > 0
+        and np.array_equal(sg_m, np.arange(sg_m.size))
+        and np.array_equal(sg_t, np.arange(sg_m.size, sg_m.size + sg_t.size)))
     n = len(x)
     collisions = 0
     dt_years = raster_days / 365.25
@@ -715,6 +765,10 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
 
     shm = shared_memory.SharedMemory(name=shm_name)
     buf = shm.buf
+    # Persistenter f32-View auf den GANZEN Ring fuer schreibe_slot_direkt.
+    # EINE Instanz — vor shm.close() wieder freigegeben (siehe finally),
+    # sonst blockiert ihr Export-Pointer das Schliessen.
+    ring_f4 = np.frombuffer(buf, "<f4")
     ev_shm = shared_memory.SharedMemory(name=ev_name)
     ev_buf = ev_shm.buf
     dump_shm = shared_memory.SharedMemory(name=dump_name)
@@ -1298,24 +1352,60 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
                 diag_throttled_s += 0.01
                 continue
             _t = time.monotonic()
-            outs = sim.step_batch(st, dt_years, K)
-            if sg_m is not None:
-                # Kernel A/B liefern [x_m|y_m|vx_m|vy_m|x_t|y_t] — der
-                # Ring erwartet [x|y|vx|vy] in der ORIGINALREIHENFOLGE
-                # des Clients. Tracer haben dort keine Geschwindigkeit;
-                # sie bleibt null, was niemand liest (der Ring traegt
-                # ohnehin nur x|y, und die Engine-Uebergabe stellt sie
-                # aus dem Dump wieder her).
+            erg = sim.step_batch(st, dt_years, K)
+            subs = st.get("sub")
+            if nur_positionen and zusammenhaengend and not subs:
+                # SCHNELLPFAD (PM + server-seitige Tracer, kein Sub-Block):
+                # Die Kernel-Ausgabe geht OHNE (K, 2n)-Zwischenarray und ohne
+                # tobytes direkt in den Ring — das spart bei 5 Mio Tracern
+                # rund 640 ms Producer-CPU je Batch (der eigentliche Engpass,
+                # nicht der GPU-Transfer). massen/tracer liegen schon in
+                # Ring-Reihenfolge; es gibt keine Kollisionen und keine
+                # Analyse (selbstgrav).
                 nm, nt = len(sg_m), len(sg_t)
-                voll = np.zeros((outs.shape[0], 4 * n), np.float32)
-                voll[:, sg_m] = outs[:, 0:nm]
-                voll[:, n + sg_m] = outs[:, nm:2 * nm]
-                voll[:, 2 * n + sg_m] = outs[:, 2 * nm:3 * nm]
-                voll[:, 3 * n + sg_m] = outs[:, 3 * nm:4 * nm]
-                if nt:
-                    voll[:, sg_t] = outs[:, 4 * nm:4 * nm + nt]
-                    voll[:, n + sg_t] = outs[:, 4 * nm + nt:4 * nm + 2 * nt]
+                massen, tracer, rahmen = erg
+                if nt and rahmen is not None:      # u16-Tracer (derzeit aus)
+                    lo, span = rahmen
+                    tracer = lo + tracer.astype(np.float32) * (span / 65535.0)
+                for i in range(K):
+                    schreibe_slot_direkt(
+                        ring_f4, ((k + i) % capacity) * sample_bytes // 4,
+                        nm, nt, massen[i], tracer[i] if nt else None)
+                diag_t_ring += time.monotonic() - _t
+                k += K
+                if ast_bounce and k % 500 == 0 and bounce_count:
+                    print(f"[film] {bounce_count} asti-bounces nach "
+                          f"{k} samples", flush=True)
+                continue
+            if sg_m is not None:
+                # Umweg ueber ein (K, 2n)-f32-Array in ORIGINALREIHENFOLGE des
+                # Clients (sg_m/sg_t sind die Zielindizes). Fuer Kernel A und
+                # fuer nicht zusammenhaengende (client-hochgeladene) Tracer.
+                # NUR Positionen — die Geschwindigkeiten liest niemand.
+                nm, nt = len(sg_m), len(sg_t)
+                voll = np.zeros((K, 2 * n), np.float32)
+                if nur_positionen:
+                    massen, tracer, rahmen = erg
+                    voll[:, sg_m] = massen[:, 0:nm]
+                    voll[:, n + sg_m] = massen[:, nm:2 * nm]
+                    if nt:
+                        if rahmen is not None:
+                            lo, span = rahmen
+                            tracer = lo + tracer.astype(np.float32) \
+                                * (span / 65535.0)
+                        voll[:, sg_t] = tracer[:, 0:nt]
+                        voll[:, n + sg_t] = tracer[:, nt:2 * nt]
+                else:
+                    # Kernel A: flaches [x|y|vx|vy|tx|ty]; v wird verworfen,
+                    # der Tracer-Block liegt bei 4*nm.
+                    voll[:, sg_m] = erg[:, 0:nm]
+                    voll[:, n + sg_m] = erg[:, nm:2 * nm]
+                    if nt:
+                        voll[:, sg_t] = erg[:, 4 * nm:4 * nm + nt]
+                        voll[:, n + sg_t] = erg[:, 4 * nm + nt:4 * nm + 2 * nt]
                 outs = voll
+            else:
+                outs = erg
             diag_t_step += time.monotonic() - _t
             kh = st.get("hits")
             if kh is not None and len(kh[0]):
@@ -1327,13 +1417,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             # Batch direkt in den Ring.
             if not selbstgrav:
                 future = executor.submit(analyze_batch_timed, outs, k)
-            # x|y je Koerper plus die Stuetzpunkte der heissen Asteroiden
-            # (siehe schreibe_slot). Masse/Sichtbarkeit laufen weiter als
-            # Ereignis. outs[i] ist [x|y|vx|vy] (4n) — der v-Teil geht
-            # NICHT in den Ring: er diente nur der Client-Interpolation,
-            # und die stuetzt sich jetzt auf gemessene Zwischenbilder.
             _t = time.monotonic()
-            subs = st.get("sub")
             for i in range(K):
                 voll = schreibe_slot(
                     buf, ((k + i) % capacity) * sample_bytes, n, sub_max,
@@ -1372,6 +1456,11 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             pass
         if det_pool is not None:
             det_pool.shutdown(wait=False)
+        # Den Ring-View freigeben, BEVOR das shm geschlossen wird — sein
+        # Export-Pointer wuerde `shm.close()` sonst mit BufferError
+        # blockieren (der Ring bliebe in /dev/shm liegen).
+        del ring_f4
+        buf = None
         shm.close()
         ev_shm.close()
         dump_shm.close()

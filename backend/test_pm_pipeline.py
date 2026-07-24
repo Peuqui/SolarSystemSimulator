@@ -68,6 +68,9 @@ def main():
         ok = endlich and bewegung > 0.0
         print("\n" + ("BESTANDEN — PM-Pipeline produziert bewegte, endliche "
                       "Samples" if ok else "FEHLGESCHLAGEN"))
+        # s0/s1 sind Views auf den Ring — vor sess.stop() (shm.close())
+        # freigeben, sonst blockiert ihr Export-Pointer das Schliessen.
+        del s0, s1
         return 0 if ok else 1
     finally:
         sess.stop()

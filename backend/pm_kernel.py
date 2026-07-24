@@ -133,6 +133,18 @@ def _cic_deposit(gx, gy, gm, grid_n, x0, y0, h, dtype=cp.float64):
     return rho.reshape(grid_n, grid_n)
 
 
+# Positionen -> u16 in EINEM Kernel. Die naive Fassung (cp.clip((v-lo)/span*
+# 65535).astype) erzeugt bei 5 Mio Tracern × 8 Substeps × 2 Achsen mehrere
+# f32-Temporaere zu je 320 MB — der GPU-Speicherverkehr frass mehr, als der
+# u16-D2H spart (gemessen 258 gegen 126 ms). Fusioniert kostet er fast nichts.
+_quant_u16_kernel = cp.ElementwiseKernel(
+    "T val, float64 lo, float64 inv_span",
+    "uint16 q",
+    "double f = (val - lo) * inv_span * 65535.0;"
+    "q = (unsigned short)(f < 0.0 ? 0.0 : (f > 65535.0 ? 65535.0 : f + 0.5));",
+    "quant_u16")
+
+
 def grid_fuer(gx, gy, grid_n: int, rand_zellen: float = 3.0):
     """Gitter-Geometrie aus der Punktwolke: Ursprung (x0, y0) und Zellweite
     h, sodass alle Punkte mit `rand_zellen` Zellen Rand hineinpassen.
@@ -223,9 +235,15 @@ class NBodyPM:
     der Baum in TreePM).
     """
 
+    # step_batch liefert NUR Positionen [x|y|tx|ty], nicht [x|y|vx|vy|tx|ty]
+    # wie Kernel A. Der Producer liest an diesem Flag das Ring-Layout ab;
+    # fehlt es (Kernel A), gilt das alte Layout mit Geschwindigkeiten.
+    nur_positionen = True
+
     def __init__(self, devices, softening_au: float = 0.0,
                  kraft_f32: bool = True, grid_n: int | None = None,
-                 softening_zellen: float = 1.5, rand_zellen: float = 4.0):
+                 softening_zellen: float = 1.0, rand_zellen: float = 4.0,
+                 tracer_u16: bool = True):
         # `devices` darf eine Liste sein (Producer uebergibt alle) — PM
         # nimmt die erste. `softening_au` wird angenommen (API-Kompat) und
         # nur als Untergrenze verwendet: das Gitter bestimmt das Softening.
@@ -253,9 +271,18 @@ class NBodyPM:
         # Gather — und genau die sind der Engpass, nicht die Rechenwerke.
         self.kraft_f32 = bool(kraft_f32)
         self.feld_dtype = cp.float32 if self.kraft_f32 else cp.float64
+        # Tracer-Positionen als u16 zum Host statt f32 — halbiert den
+        # D2H-Transfer (der Engpass bei vielen Tracern: 5 Mio × 2 × 4 B × 8
+        # Substeps = 320 MB je Batch) UND den Ring in /dev/shm (mehr
+        # Objekte). Der Quantisierungs-Bezugsrahmen (min/max je Batch) geht
+        # als 4 f32 mit; die Massen bleiben f32 (Zoom-Praezision fuer die
+        # Struktur-Forschung). Tracer sind Deko, u16 ueber die Szenenbreite
+        # reicht (~2 AE bei 140.000 AE). Abschaltbar fuer Korrektheits-Tests.
+        self.tracer_u16 = bool(tracer_u16)
         self._kernels = None      # (FKx, FKy) — gecacht, neu bei h-Wechsel
         self._kernel_h = None
         self._host = None         # pinned Download-Puffer (siehe _host_puffer)
+        self._host_t = None       # pinned Puffer fuer die u16-Tracer
 
     def name(self) -> str:
         with cp.cuda.Device(self.device):
@@ -338,9 +365,23 @@ class NBodyPM:
             self._accel_into(st, self._geometrie(st))
         return st
 
-    def step_batch(self, st: dict, dt_years: float, steps: int) -> np.ndarray:
-        """`steps` Leapfrog-Schritte (Kick-Drift-Kick). Rueckgabe wie
-        NBodySelfGrav: f32 (steps, 4N+2T) [x|y|vx|vy | tx|ty]."""
+    def step_batch(self, st: dict, dt_years: float, steps: int) -> tuple:
+        """`steps` Leapfrog-Schritte (Kick-Drift-Kick). Rueckgabe:
+        (massen, tracer, rahmen).
+
+          massen  f32 (steps, 2N)  [x|y] der Massen
+          tracer  u16 (steps, 2T)  [tx|ty] quantisiert (tracer_u16=True),
+                  sonst f32; None wenn keine Tracer
+          rahmen  (x0, y0, spanx, spany) f32 zum Dequantisieren der Tracer;
+                  None ohne u16
+
+        NUR Positionen: Die Geschwindigkeiten bleiben f64 auf der GPU (die
+        Leapfrog-Integration nutzt sie weiter), gehen aber NICHT ueber den
+        ×4-Link — der Ring traegt nur Positionen, die Engine-Uebergabe holt
+        v separat via `export_f64`. Die MASSEN bleiben f32 (Zoom-Praezision),
+        die TRACER gehen als u16 (Deko, halbiert den Transfer — der Engpass
+        bei vielen Tracern: 5 Mio × 2 × 4 B × 8 = 320 MB je Batch). Der
+        Producer liest das Layout am `nur_positionen`-Flag."""
         if steps < 1:
             raise ValueError(f"steps muss >= 1 sein: {steps}")
         n, t = st["N"], st["T"]
@@ -353,9 +394,10 @@ class NBodyPM:
         # 100%, waehrend die GPU zwischen den winzigen Schritten idlet (gemessen
         # step=96%, GPU nur ~40%). Das war der Produktions-Flaschenhals.
         with cp.cuda.Device(self.device):
-            # raus_gpu MUSS auf self.device liegen (nicht dem Default-Device),
-            # sonst laufen die Slice-Assigns cross-device und racen mit asnumpy.
-            raus_gpu = cp.empty((steps, 4 * n + 2 * t), cp.float32)
+            # raus_*_gpu MUSS auf self.device liegen (nicht dem Default-
+            # Device), sonst laufen die Slice-Assigns cross-device.
+            raus_m = cp.empty((steps, 2 * n), cp.float32)
+            raus_t = cp.empty((steps, 2 * t), cp.float32) if t else None
             # Gitter EINMAL je Batch (siehe `_geometrie`): die vier
             # min/max-Transfers dort sind der zweite Sync-Posten neben dem
             # asnumpy — je Substep gemessen kosteten sie mehr als die
@@ -377,21 +419,41 @@ class NBodyPM:
                 if t:
                     st["tvx"] += hdt * st["tax"]
                     st["tvy"] += hdt * st["tay"]
-                # dtype-Cast f64->f32 passiert implizit beim Slice-Assign (GPU-
-                # Kernel, kein Sync); der einzige Sync ist das asnumpy am Ende.
-                raus_gpu[s, 0:n] = st["x"]
-                raus_gpu[s, n:2 * n] = st["y"]
-                raus_gpu[s, 2 * n:3 * n] = st["vx"]
-                raus_gpu[s, 3 * n:4 * n] = st["vy"]
+                # NUR Positionen; v bleibt auf der GPU. Der dtype-Cast
+                # f64->f32 passiert implizit beim Slice-Assign (GPU-Kernel,
+                # kein Sync); einziger Sync ist der get() unten.
+                raus_m[s, 0:n] = st["x"]
+                raus_m[s, n:2 * n] = st["y"]
                 if t:
-                    raus_gpu[s, 4 * n:4 * n + t] = st["tx"]
-                    raus_gpu[s, 4 * n + t:4 * n + 2 * t] = st["ty"]
-            raus = self._host_puffer(raus_gpu.shape)
-            raus_gpu.get(out=raus)        # EIN Transfer statt 6*steps
-        return raus
+                    raus_t[s, 0:t] = st["tx"]
+                    raus_t[s, t:2 * t] = st["ty"]
+            massen = self._pin("_host", (steps, 2 * n), np.float32)
+            raus_m.get(out=massen)
+            if not t:
+                return massen, None, None
+            if not self.tracer_u16:
+                tracer = self._pin("_host_t", (steps, 2 * t), np.float32)
+                raus_t.get(out=tracer)
+                return massen, tracer, None
+            # u16-Quantisierung. EIN gemeinsamer Bezugsrahmen fuer x und y:
+            # `raus_t` ist [tx|ty] je Substep, min/max laufen darum ueber das
+            # GANZE, CONTIGUOUS Array (0,4 ms) — getrennt je Achse waeren es
+            # strided Views und die Reduktion kostete 174 ms (gemessen, der
+            # eigentliche u16-Flaschenhals). Tracer bilden runde Scheiben,
+            # x-Bereich ≈ y-Bereich; der gemeinsame Rahmen kostet keine
+            # nennenswerte Aufloesung. Der Quant-Kernel laeuft in einem Zug
+            # ueber alles.
+            lo = float(raus_t.min())
+            span = max(float(raus_t.max()) - lo, 1e-6)
+            q = cp.empty((steps, 2 * t), cp.uint16)
+            _quant_u16_kernel(raus_t, lo, 1.0 / span, q)
+            tracer = self._pin("_host_t", (steps, 2 * t), np.uint16)
+            q.get(out=tracer)
+        return massen, tracer, (lo, span)
 
-    def _host_puffer(self, form: tuple) -> np.ndarray:
-        """Wiederverwendeter PINNED Host-Puffer fuer den Batch-Download.
+    def _pin(self, attr: str, form: tuple, dtype) -> np.ndarray:
+        """Wiederverwendeter PINNED Host-Puffer fuer den Batch-Download,
+        gecacht unter `attr` (getrennt fuer Massen f32 und Tracer u16).
 
         Ueber einen pageable numpy-Puffer (wie `cp.asnumpy` ihn anlegt) muss
         der Treiber zusaetzlich durch einen eigenen Staging-Bereich kopieren.
@@ -400,17 +462,17 @@ class NBodyPM:
         der groesste Einzelposten ueberhaupt.
 
         ACHTUNG: Der Puffer wird wiederverwendet, das Ergebnis gilt also nur
-        BIS ZUM NAECHSTEN `step_batch`. Der Film-Producer baut es im
-        selbstgravitierenden Pfad sofort in ein eigenes Array um; wer es
-        laenger halten oder nebenlaeufig auswerten will (wie der alte Kernel
-        seine Erkennung), muss vorher kopieren.
+        BIS ZUM NAECHSTEN `step_batch`. Der Film-Producer legt es sofort in
+        den Ring; wer es laenger halten oder nebenlaeufig auswerten will,
+        muss vorher kopieren.
         """
-        if self._host is None or self._host.shape != form:
-            roh = cp.cuda.alloc_pinned_memory(
-                int(np.prod(form)) * np.dtype(np.float32).itemsize)
-            self._host = np.frombuffer(
-                roh, np.float32, int(np.prod(form))).reshape(form)
-        return self._host
+        buf = getattr(self, attr)
+        gross = int(np.prod(form))
+        if buf is None or buf.shape != form or buf.dtype != dtype:
+            roh = cp.cuda.alloc_pinned_memory(gross * np.dtype(dtype).itemsize)
+            buf = np.frombuffer(roh, dtype, gross).reshape(form)
+            setattr(self, attr, buf)
+        return buf
 
     def export_f64(self, st: dict) -> np.ndarray:
         """Exakter f64-Zustand [x|y|vx|vy] (4N), Massen nur (keine Tracer,
