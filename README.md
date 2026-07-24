@@ -151,14 +151,22 @@ Gravitationsgradienten und bildet **Brücken**; dazwischen leeren sich
 folgen nur einem vorgegebenen Feld und bleiben glatt. Struktur *emergiert*
 erst durch die Selbstgravitation.
 
-**Wie es rechnet.** Ein eigener **selbstgravitierender Kernel** (`all-pairs`
-mit Tiling, O(N²)) mit **Plummer-Softening**: Unterhalb einer Distanz wird
-die Masse als verschmiert statt punktförmig gerechnet. Das ist bewusst so —
-ohne Softening würden nahe Teilchen sich künstlich wegschleudern
-(Zweikörper-Streuung) und die Struktur zerrauschen. Deshalb gibt es hier
-**keine Kollisionen und keine Verschmelzungen**: Bei Massen-Samples eines
-Dichtefelds sind „Stoß" und „Merge" der falsche Begriff. Fester Zeitschritt,
-keine Erkennungs-Pipeline — die freigewordenen Karten rechnen Physik mit.
+**Wie es rechnet.** Zwei selbstgravitierende Kernel je nach Massenzahl, mit
+**Plummer-Softening** (unterhalb einer Distanz wird die Masse als verschmiert
+statt punktförmig gerechnet — sonst würden nahe Teilchen sich künstlich
+wegschleudern und die Struktur zerrauschen):
+
+- Bis ~50.000 Massen **all-pairs mit Tiling** (O(N²), jede Masse spürt jede,
+  über alle fünf GPUs verteilt).
+- Darüber **Particle-Mesh** (O(N log N)): Die Kraft läuft über eine
+  FFT-Faltung auf einem Gitter statt über die N²-Summe — damit tragen
+  **Millionen** Massen plus **Millionen** Tracer flüssig auf **einer**
+  Karte. Die Struktur ist gitterbegrenzt (rundlichere Knoten), wird mit
+  steigender Teilchenzahl aber wieder schärfer.
+
+Deshalb gibt es hier **keine Kollisionen und keine Verschmelzungen**: Bei
+Massen-Samples eines Dichtefelds sind „Stoß" und „Merge" der falsche
+Begriff. Fester Zeitschritt, keine Erkennungs-Pipeline.
 
 **Warum alle GPUs mitziehen.** Der Kernel misst, dass der **Zustand** f64
 braucht (Geschwindigkeitsinkremente unterhalb der f32-Auflösung), die
@@ -177,9 +185,12 @@ Details in [Hardware & Findings](HARDWARE.md).
 - **Galaxienhaufen (Expansion)** — zusätzlich ein radialer Hubble-Fluss
   (marginal gebunden, Ω ≈ 1). Die Expansion verhindert den globalen
   Kollaps; es bleibt ein sich dehnendes Feld mit Struktur darin.
-- **Strukturbildung (selbstgravitierend)** — Regler für **Massen**,
-  **Tracer** und **Weichzeichnung** (Softening als Vielfaches des mittleren
-  Teilchenabstands, damit der Wert bei jeder Teilchenzahl passt).
+- **Strukturbildung (selbstgravitierend)** — Regler für **Massen** und
+  **Tracer** (je bis 5 Mio), **Weichzeichnung** (Softening als Vielfaches
+  des mittleren Teilchenabstands) und **Expansion** (skaliert den
+  Hubble-Fluss: 0 = Kollaps, 1 = marginal gebunden, > 1 = offenes,
+  dauerhaft expandierendes Universum). Massen zeichnen hellorange, die
+  Tracer hellblau abgesetzt.
 
 **Ehrlich eingeordnet.** Das ist der *kollaps-getriebene* Fall — die Knoten
 sind eher rundliche Halos. Echte, langgezogene kosmologische Filamente

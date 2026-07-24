@@ -1276,6 +1276,18 @@ const I18N = {
         '<tr><td>Bahnstützpunkte</td><td>Zwischenpunkte, die die GPU für eng begegnende Asteroiden auf der ECHTEN Bahn mitrechnet. Dazwischen genügt eine Gerade, ein Perihel-Durchgang wird also gemessen statt geraten. Nur diese Körper bekommen sie — bei allen anderen ist die Bahn im Raster ohnehin fast gerade. Mehr Stützpunkte = genauer, kosten aber Bandbreite und Ringspeicher. Aus = reine Kurveninterpolation. Änderung startet den Film neu.</td></tr>' +
         '<tr><td>Zwischenbilder interpolieren</td><td>Zwischen zwei gestreamten Samples interpolieren, damit die Darstellung flüssig bleibt (sonst läuft das Bild nur mit der Sample-Rate). Aus = ausschließlich berechnete Positionen: exakt, aber ruckelig.</td></tr>' +
       '</table>' +
+      '<h3>Kosmische Strukturbildung (selbstgravitierend)</h3>' +
+      'Zehntausende bis Millionen Massen ziehen einander an und bilden das ' +
+      'kosmische Netz — Filamente und Knoten. Bis ~50.000 Massen all-pairs ' +
+      '(jede spürt jede), darüber Particle-Mesh (Kraft über ein Gitter, ' +
+      'Millionen tragbar). Nur im Film-Modus. Die Regler:<br>' +
+      '<table>' +
+        '<tr><td>Massen</td><td>Zahl der selbstgravitierenden Teilchen. Die Struktur entsteht aus IHNEN. Mehr = feiner aufgelöst, Gesamtmasse bleibt gleich.</td></tr>' +
+        '<tr><td>Weichzeichnung</td><td>Kraft-Glättung (Plummer-Softening): unterhalb dieser Distanz wird Masse verschmiert statt punktförmig gerechnet. KLEIN = schärfere Filamente, aber mehr künstliche Zweikörper-Streuung; GROSS = glattere, rundlichere Knoten. Steuert die SCHÄRFE der Struktur, nicht ob sie entsteht. Im Particle-Mesh erst ab ~1 Gitterzelle wirksam — feiner löst das Verfahren nicht auf.</td></tr>' +
+        '<tr><td>Expansion</td><td>Radialer Hubble-Fluss v=H&middot;r als Anfangsbedingung. 0 = Kollaps (alles fällt zu einem Klumpen), 1 = marginal gebunden (&Omega;&asymp;1 — hier entsteht das Netz), &gt;1 = offen (die Expansion zieht die Überdichten auseinander, bevor sie kollabieren — immer weniger Struktur). Steuert, OB Struktur entsteht.</td></tr>' +
+        '<tr><td>Tracer</td><td>Masselose Testteilchen, die dem Feld der Massen folgen. Sie erzeugen keine Struktur, sie machen sie sichtbar — und kosten nur N&times;M statt N². Hellblau, abgesetzt von den hellorangen Massen.</td></tr>' +
+      '</table>' +
+      'Weichzeichnung und Expansion sind orthogonal: Die Expansion entscheidet, OB das Netz entsteht (nur nahe marginal), die Weichzeichnung nur, WIE scharf es aussieht. Der stärkste Hebel für den Kontrast ist aber die LAUFZEIT — das Netz braucht Sim-Jahre, um sich auszubilden.<br>' +
       '<h3>Enge Begegnungen präzise</h3>' +
       'Nur im Hybrid. Asteroiden, die einem schweren Körper zu nahe oder zu schnell ' +
       'begegnen (enge Bahn um ein Schwarzes Loch, schneller Vorbeiflug), rechnen ' +
@@ -1572,6 +1584,18 @@ const I18N = {
         '<tr><td>Trajectory waypoints</td><td>Intermediate points the GPU records on the REAL path for closely encountering asteroids. A straight line between them is enough, so a perihelion passage is measured rather than guessed. Only those bodies get them — for everything else the path within one interval is nearly straight anyway. More waypoints = more accurate, but cost bandwidth and ring memory. Off = pure curve interpolation. Changing it restarts the film.</td></tr>' +
         '<tr><td>Interpolate in-between frames</td><td>Interpolate between two streamed samples so playback stays smooth (otherwise the image advances only at the sample rate). Off = computed positions only: exact, but choppy.</td></tr>' +
       '</table>' +
+      '<h3>Cosmic structure formation (self-gravitating)</h3>' +
+      'Tens of thousands to millions of masses attract each other and form ' +
+      'the cosmic web — filaments and knots. Up to ~50,000 masses all-pairs ' +
+      '(each feels each), above that Particle-Mesh (force via a grid, ' +
+      'millions feasible). Film mode only. The sliders:<br>' +
+      '<table>' +
+        '<tr><td>Masses</td><td>Number of self-gravitating particles. The structure arises from THEM. More = finer resolution, total mass stays the same.</td></tr>' +
+        '<tr><td>Softening</td><td>Force smoothing (Plummer softening): below this distance mass is treated as smeared out rather than point-like. SMALL = sharper filaments but more artificial two-body scattering; LARGE = smoother, rounder knots. Controls the SHARPNESS of the structure, not whether it forms. In Particle-Mesh only effective from ~1 grid cell up — finer than that the method cannot resolve.</td></tr>' +
+        '<tr><td>Expansion</td><td>Radial Hubble flow v=H&middot;r as an initial condition. 0 = collapse (everything falls into one clump), 1 = marginally bound (&Omega;&asymp;1 — this is where the web forms), &gt;1 = open (expansion pulls the overdensities apart before they can collapse — less and less structure). Controls WHETHER structure forms.</td></tr>' +
+        '<tr><td>Tracers</td><td>Massless test particles that follow the field of the masses. They create no structure, they reveal it — and cost only N&times;M instead of N². Light blue, set off from the light-orange masses.</td></tr>' +
+      '</table>' +
+      'Softening and Expansion are orthogonal: Expansion decides WHETHER the web forms (only near marginal), Softening only HOW sharp it looks. The strongest lever for contrast, though, is RUNTIME — the web needs sim-years to develop.<br>' +
       '<h3>Precise close encounters</h3>' +
       'Hybrid only. Asteroids whose encounter with a massive body is too close or too ' +
       'fast (a tight orbit around a black hole, a fast flyby) run f64-adaptive on the ' +

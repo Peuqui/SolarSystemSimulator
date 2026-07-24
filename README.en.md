@@ -142,14 +142,22 @@ bridges + voids are the qualitative signature of the **cosmic web**. Massless
 tracers fundamentally cannot do this — they only follow a prescribed field
 and stay smooth. Structure only *emerges* through self-gravity.
 
-**How it computes.** A dedicated **self-gravitating kernel** (`all-pairs`
-with tiling, O(N²)) with **Plummer softening**: below a distance the mass is
-treated as smeared out rather than point-like. That is deliberate — without
-softening, close particles would fling each other away artificially
-(two-body scattering) and drown the structure in noise. So there are **no
-collisions and no mergers** here: for mass-samples of a density field,
-"impact" and "merge" are the wrong concept. Fixed time step, no detection
-pipeline — the freed cards compute physics too.
+**How it computes.** Two self-gravitating kernels depending on the number
+of masses, both with **Plummer softening** (below a distance the mass is
+treated as smeared out rather than point-like — otherwise close particles
+would fling each other away artificially and drown the structure in noise):
+
+- Up to ~50,000 masses **all-pairs with tiling** (O(N²), each mass feels
+  each, spread across all five GPUs).
+- Above that **Particle-Mesh** (O(N log N)): the force runs through an FFT
+  convolution on a grid instead of the N² sum — so **millions** of masses
+  plus **millions** of tracers run smoothly on a **single** card. The
+  structure is grid-limited (rounder knots) but sharpens again as the
+  particle count grows.
+
+So there are **no collisions and no mergers** here: for mass-samples of a
+density field, "impact" and "merge" are the wrong concept. Fixed time step,
+no detection pipeline.
 
 **Why all GPUs pull.** The kernel measures that the **state** needs f64
 (velocity increments below f32 resolution) while the **force sum** tolerates
@@ -166,9 +174,11 @@ softening), details in [Hardware & findings](HARDWARE.en.md).
 - **Galaxy cluster (expansion)** — plus a radial Hubble flow (marginally
   bound, Ω ≈ 1). Expansion prevents the global collapse; what remains is a
   stretching field with structure in it.
-- **Structure formation (self-gravitating)** — sliders for **masses**,
-  **tracers** and **softening** (a multiple of the mean particle spacing, so
-  the value works at any particle count).
+- **Structure formation (self-gravitating)** — sliders for **masses** and
+  **tracers** (up to 5 M each), **softening** (a multiple of the mean
+  particle spacing) and **expansion** (scales the Hubble flow: 0 = collapse,
+  1 = marginally bound, > 1 = open, forever-expanding universe). Masses draw
+  in light orange, tracers set off in light blue.
 
 **Honest framing.** This is the *collapse-driven* case — the knots are more
 rounded halos. True elongated cosmological filaments also need cosmic

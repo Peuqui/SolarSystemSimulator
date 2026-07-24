@@ -1093,3 +1093,22 @@ die marginal gebundene Rate (`strukturHubbleFaktor` × `√(2GM/rMax)/rMax`).
 expandierend. Wirkt auf Massen (`buildStrukturbildung`) und Tracer
 (`_tracerAuftrag.hubble`). Wie `sg-eps` löst eine Änderung einen
 Sitzungsneustart aus (`change` → `loadScenario`).
+
+### 6.25 Struktur-Regler dokumentiert + bewusst zurückgestellt
+**Erledigt:** Die vier Strukturbildungs-Regler (Massen, Weichzeichnung,
+Expansion, Tracer) stehen jetzt im Glühbirnen-Detailpanel (`help.engine`,
+Abschnitt „Kosmische Strukturbildung", de + en) mit der physikalischen
+Einordnung — Expansion entscheidet OB das Netz entsteht (nur nahe
+marginal), Weichzeichnung nur WIE scharf, Laufzeit ist der stärkste
+Kontrast-Hebel. Die READMEs (de + en) nennen jetzt Particle-Mesh, die
+5-Mio-Regler und die Expansion.
+
+**Bewusst zurückgestellt (Nutzer-Entscheidung, nicht vergessen):**
+- **Massen-Sichtbarkeit** (6.19): 5 Mio blaue Tracer übertönen die 500k
+  orange Massen im additiven Blending. Sattere Farbe / grössere Punkte /
+  Massen nach den Tracern zeichnen — erstmal gelassen.
+- **u16-Tracer-Kernel** (`NBodyPM.tracer_u16`, in `pm_kernel.py`): gebaut
+  und getestet, aber `tracer_u16=False` im Producer. Der D2H war nicht der
+  Engpass (die CPU-Nachverarbeitung war es, jetzt via `schreibe_slot_direkt`
+  gelöst). Liegt bereit für ein spaeteres Ring-u16 (halbiert den Ring in
+  /dev/shm -> mehr Objekte). Bewusst drin gelassen.
