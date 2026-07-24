@@ -35,7 +35,7 @@ from nbody_kernel import G_AU
 
 
 def build_force_kernels(grid_n: int, h: float, eps2: float,
-                        G: float = G_AU) -> tuple:
+                        G: float = G_AU, dtype=cp.float64) -> tuple:
     """FFT der beiden Kraft-Green-Funktionen auf dem 2N×2N-Padding-Gitter.
 
     Einmal vorab bauen, dann in jeder Kraftauswertung wiederverwenden — die
@@ -58,67 +58,92 @@ def build_force_kernels(grid_n: int, h: float, eps2: float,
     # Versatz Δ = p − q = Feld − Quelle, also Δ_x = x_p − x_q, und
     # −G·Δ_x/... = G·(x_q − x_p)/... = Zug zur Quelle). Bei Δ=0 ist Δ_x=0 →
     # K_x=0: keine Selbstkraft.
+    # Die Kerne selbst IMMER in f64 aufbauen — 1/(r²+ε²)^1,5 ueberstreicht
+    # ueber das ganze Gitter viele Groessenordnungen, und der Aufbau kostet
+    # nur einmal je h. Erst das Spektrum geht in die Rechengenauigkeit.
     kx = (-G) * dx * inv_r3
     ky = (-G) * dy * inv_r3
-    return cp.fft.rfft2(kx), cp.fft.rfft2(ky)
+    return (cp.fft.rfft2(kx.astype(dtype, copy=False)),
+            cp.fft.rfft2(ky.astype(dtype, copy=False)))
 
 
-def _cic_deposit(gx, gy, gm, grid_n, x0, y0, h):
+# Die CIC-Zellindizes samt Gewichten — identisch fuer Deposit und Gather.
+# Steht als C-Fragment nur EINMAL da: laufen die beiden Schemata
+# auseinander, entsteht eine Selbstkraft (jedes Teilchen zoege an seinem
+# eigenen Beitrag im Gitter).
+_CIC_ECKEN = r"""
+    double fx = (px - x0) * inv_h;
+    double fy = (py - y0) * inv_h;
+    // zi/zj statt i/j: `i` ist in ElementwiseKernel die Laufvariable der
+    // erzeugten Schleife und darf nicht verdeckt werden.
+    int zi = (int)floor(fx);
+    int zj = (int)floor(fy);
+    // In [0, N-2] halten, damit zi+1 / zj+1 gueltig bleiben. Bei
+    // ausreichendem Rand (siehe grid_fuer) greift die Klemmung nicht.
+    zi = min(max(zi, 0), grid_n - 2);
+    zj = min(max(zj, 0), grid_n - 2);
+    double tx = fx - zi;
+    double ty = fy - zj;
+    double w00 = (1.0 - tx) * (1.0 - ty);
+    double w10 = tx * (1.0 - ty);
+    double w01 = (1.0 - tx) * ty;
+    double w11 = tx * ty;
+    int b = zi * grid_n + zj;
+"""
+
+# Deposit als EIN Kernel mit atomicAdd statt concatenate + bincount ueber
+# 4N Eintraege: das sparte bei 1M Massen acht temporaere Arrays zu je 8 MB.
+# Konflikte sind selten — das Gitter ist so gewaehlt, dass rund ein
+# Teilchen je Zelle liegt (siehe load_state).
+_cic_deposit_kernel = cp.ElementwiseKernel(
+    "float64 px, float64 py, float64 masse, int32 grid_n, "
+    "float64 x0, float64 y0, float64 inv_h",
+    "raw T rho",
+    _CIC_ECKEN + """
+    atomicAdd(&rho[b], (T)(masse * w00));
+    atomicAdd(&rho[b + grid_n], (T)(masse * w10));
+    atomicAdd(&rho[b + 1], (T)(masse * w01));
+    atomicAdd(&rho[b + grid_n + 1], (T)(masse * w11));
+    """,
+    "cic_deposit")
+
+# Gather fuer BEIDE Kraftkomponenten in einem Zug. Vorher lief je Komponente
+# ein eigener Aufruf, der Zellindex und Gewichte neu ausrechnete und vier
+# Fancy-Index-Zugriffe plus ein Dutzend Temporaerarrays erzeugte — gemessen
+# 2,37 ms fuer 1M Massen, der groesste Einzelposten des Substeps.
+_cic_gather_kernel = cp.ElementwiseKernel(
+    "raw T fx_feld, raw T fy_feld, float64 px, float64 py, int32 grid_n, "
+    "float64 x0, float64 y0, float64 inv_h",
+    "float64 ax, float64 ay",
+    _CIC_ECKEN + """
+    ax = w00 * fx_feld[b] + w10 * fx_feld[b + grid_n]
+       + w01 * fx_feld[b + 1] + w11 * fx_feld[b + grid_n + 1];
+    ay = w00 * fy_feld[b] + w10 * fy_feld[b + grid_n]
+       + w01 * fy_feld[b + 1] + w11 * fy_feld[b + grid_n + 1];
+    """,
+    "cic_gather2")
+
+
+def _cic_deposit(gx, gy, gm, grid_n, x0, y0, h, dtype=cp.float64):
     """Cloud-in-Cell: jede Masse auf die 4 umliegenden Gitterpunkte
     verteilt. Rueckgabe: Massengitter (N, N) — Summe = Gesamtmasse."""
-    fx = (gx - x0) / h
-    fy = (gy - y0) / h
-    i = cp.floor(fx).astype(cp.int32)
-    j = cp.floor(fy).astype(cp.int32)
-    # In [0, N-2] halten, damit i+1 / j+1 gueltig bleiben. Bei ausreichendem
-    # Rand (siehe grid_fuer) greift die Klemmung nicht.
-    i = cp.clip(i, 0, grid_n - 2)
-    j = cp.clip(j, 0, grid_n - 2)
-    tx = fx - i
-    ty = fy - j
-    # Vier Ecken in EINEM bincount — Indizes und Gewichte konkateniert.
-    idx = cp.concatenate([
-        i * grid_n + j,
-        (i + 1) * grid_n + j,
-        i * grid_n + (j + 1),
-        (i + 1) * grid_n + (j + 1),
-    ])
-    w = cp.concatenate([
-        gm * (1 - tx) * (1 - ty),
-        gm * tx * (1 - ty),
-        gm * (1 - tx) * ty,
-        gm * tx * ty,
-    ])
-    rho = cp.bincount(idx, weights=w, minlength=grid_n * grid_n)
+    rho = cp.zeros(grid_n * grid_n, dtype)
+    _cic_deposit_kernel(gx, gy, gm, np.int32(grid_n),
+                        float(x0), float(y0), 1.0 / float(h), rho)
     return rho.reshape(grid_n, grid_n)
-
-
-def _cic_gather(feld, gx, gy, grid_n, x0, y0, h):
-    """Cloud-in-Cell rueckwaerts: Feldwert an der Teilchenposition aus den 4
-    umliegenden Gitterpunkten interpolieren — DASSELBE Schema wie beim
-    Deposit, sonst entstuende eine Selbstkraft."""
-    fx = (gx - x0) / h
-    fy = (gy - y0) / h
-    i = cp.clip(cp.floor(fx).astype(cp.int32), 0, grid_n - 2)
-    j = cp.clip(cp.floor(fy).astype(cp.int32), 0, grid_n - 2)
-    tx = fx - i
-    ty = fy - j
-    f = feld.ravel()
-    return (f[i * grid_n + j] * (1 - tx) * (1 - ty)
-            + f[(i + 1) * grid_n + j] * tx * (1 - ty)
-            + f[i * grid_n + (j + 1)] * (1 - tx) * ty
-            + f[(i + 1) * grid_n + (j + 1)] * tx * ty)
 
 
 def grid_fuer(gx, gy, grid_n: int, rand_zellen: float = 3.0):
     """Gitter-Geometrie aus der Punktwolke: Ursprung (x0, y0) und Zellweite
     h, sodass alle Punkte mit `rand_zellen` Zellen Rand hineinpassen.
 
-    Gibt (x0, y0, h) zurueck. Fuer die Integration im Betrieb waere das
-    Gitter fest verdrahtet; fuers Kraft-Testen leitet es sich aus der
-    aktuellen Wolke ab."""
-    xmin = float(cp.min(gx)); xmax = float(cp.max(gx))
-    ymin = float(cp.min(gy)); ymax = float(cp.max(gy))
+    Gibt (x0, y0, h) zurueck. Im Betrieb ruft `NBodyPM._geometrie` das
+    einmal je Batch auf (die vier min/max sind synchrone Transfers), fuers
+    Kraft-Testen leitet es sich aus der jeweiligen Wolke ab."""
+    xmin = float(cp.min(gx))
+    xmax = float(cp.max(gx))
+    ymin = float(cp.min(gy))
+    ymax = float(cp.max(gy))
     spanne = max(xmax - xmin, ymax - ymin, 1e-30)
     # Rand auf beiden Seiten -> nutzbare Zellen = N - 2*rand
     h = spanne / (grid_n - 2 * rand_zellen)
@@ -128,33 +153,42 @@ def grid_fuer(gx, gy, grid_n: int, rand_zellen: float = 3.0):
 
 
 def pm_force_field(gx, gy, gm, grid_n, x0, y0, h, eps2,
-                   G: float = G_AU, kernels=None):
+                   G: float = G_AU, kernels=None, dtype=cp.float64):
     """Das Beschleunigungs-Feld (ax_grid, ay_grid) auf dem N×N-Gitter.
 
     Getrennt vom Gather, damit MEHRERE Teilchenmengen aus demselben Feld
     schoepfen koennen — die Massen bauen das Feld, Massen UND masselose
     Tracer lesen es an ihren Positionen ab (die Tracer wirken nicht
-    zurueck, tauchen also nicht im Deposit auf)."""
+    zurueck, tauchen also nicht im Deposit auf).
+
+    `dtype` ist die Rechengenauigkeit der FALTUNG (f32 im Betrieb, siehe
+    NBodyPM.kraft_f32); der Zustand bleibt davon unberuehrt."""
     if kernels is None:
-        kernels = build_force_kernels(grid_n, h, eps2, G)
+        kernels = build_force_kernels(grid_n, h, eps2, G, dtype)
     fkx, fky = kernels
     n_pad = 2 * grid_n
 
-    rho = _cic_deposit(gx, gy, gm, grid_n, x0, y0, h)
-    rho_pad = cp.zeros((n_pad, n_pad), cp.float64)
-    rho_pad[:grid_n, :grid_n] = rho
-
+    rho_pad = cp.zeros((n_pad, n_pad), dtype)
+    rho_pad[:grid_n, :grid_n] = _cic_deposit(gx, gy, gm, grid_n,
+                                             x0, y0, h, dtype)
     fr = cp.fft.rfft2(rho_pad)
     ax_grid = cp.fft.irfft2(fr * fkx, s=(n_pad, n_pad))[:grid_n, :grid_n]
     ay_grid = cp.fft.irfft2(fr * fky, s=(n_pad, n_pad))[:grid_n, :grid_n]
-    return ax_grid, ay_grid
+    # irfft2 liefert bei f32-Eingang f32 zurueck; ascontiguousarray, weil
+    # der Gather-Kernel linear indiziert (der Ausschnitt ist ein View).
+    return (cp.ascontiguousarray(ax_grid), cp.ascontiguousarray(ay_grid))
 
 
 def gather_accel(ax_grid, ay_grid, px, py, grid_n, x0, y0, h):
     """Feld an Teilchenpositionen (px, py) ablesen — fuer Massen und
-    Tracer gleich."""
-    return (_cic_gather(ax_grid, px, py, grid_n, x0, y0, h),
-            _cic_gather(ay_grid, px, py, grid_n, x0, y0, h))
+    Tracer gleich. BEIDE Komponenten in einem Kernel: Zellindex und
+    Gewichte werden nur einmal berechnet und das Feld nur einmal
+    indiziert."""
+    ax = cp.empty(px.shape, cp.float64)
+    ay = cp.empty(px.shape, cp.float64)
+    _cic_gather_kernel(ax_grid, ay_grid, px, py, np.int32(grid_n),
+                       float(x0), float(y0), 1.0 / float(h), ax, ay)
+    return ax, ay
 
 
 def pm_accelerations(gx, gy, gm, grid_n, x0, y0, h, eps2,
@@ -211,28 +245,60 @@ class NBodyPM:
         self.softening_zellen = float(softening_zellen)
         self.rand_zellen = float(rand_zellen)
         self.softening_floor = float(softening_au)
+        # Rechengenauigkeit der FALTUNG. Der Zustand (x, y, v) bleibt f64 —
+        # wie in Kernel A, wo dieselbe Trennung gemessen ist. Das Gitter
+        # traegt ohnehin nur ~3 gueltige Stellen (Diskretisierungsfehler der
+        # CIC-Interpolation), da sind die 7 Stellen von f32 reichlich; f64
+        # kostet dafuer den doppelten Speicherverkehr in Deposit, FFT und
+        # Gather — und genau die sind der Engpass, nicht die Rechenwerke.
         self.kraft_f32 = bool(kraft_f32)
+        self.feld_dtype = cp.float32 if self.kraft_f32 else cp.float64
         self._kernels = None      # (FKx, FKy) — gecacht, neu bei h-Wechsel
         self._kernel_h = None
+        self._host = None         # pinned Download-Puffer (siehe _host_puffer)
 
     def name(self) -> str:
         with cp.cuda.Device(self.device):
             n = cp.cuda.runtime.getDeviceProperties(self.device)["name"]
         return n.decode() + " (PM)"
 
-    def _accel_into(self, st):
-        """Kraftfeld aus den Massen bauen und an Massen- UND Tracer-
-        Positionen ablesen. Setzt st['ax','ay','tax','tay']."""
-        gx, gy, gm = st["x"], st["y"], st["m"]
-        x0, y0, h = grid_fuer(gx, gy, self.grid_n, self.rand_zellen)
+    def _geometrie(self, st) -> tuple:
+        """Gitter-Geometrie (x0, y0, h, eps2) aus der aktuellen Massen-
+        Ausdehnung — und die passenden Green-Kerne, falls sich h geaendert
+        hat.
+
+        KOSTET VIER SYNCHRONE GPU->CPU-TRANSFERS (min/max je Achse in
+        `grid_fuer`). Jeder davon laesst die CPU warten, bis alle offenen
+        Kernel durch sind, und in dieser Zeit startet niemand neue — genau
+        das war der Grund fuer `step=93 %` bei nur 55 % GPU. Darum EINMAL
+        je Batch, nicht je Substep.
+
+        Dass das Gitter waehrend eines Batches steht, ist unkritisch: Bei
+        Raster 10 Tagen und K=8 vergehen 80 Tage, in denen sich der
+        Hubble-Fluss um rund 1 AE ausdehnt — gegen eine Zellweite von
+        ~140 AE und 4 Zellen Rand. Die Kerne MUESSEN ohnehin zu genau dem
+        h passen, mit dem gefaltet wird; ein Gitter, das mitten im Batch
+        wandert, waere also selbst dann falsch, wenn es nichts kostete.
+        """
+        x0, y0, h = grid_fuer(st["x"], st["y"], self.grid_n, self.rand_zellen)
         eps = max(self.softening_zellen * h, self.softening_floor)
         eps2 = eps * eps
         # Kerne haengen nur an (h, eps) — bei nahezu gleichem h wiederverwenden.
         if self._kernel_h is None or abs(h - self._kernel_h) > 1e-6 * h:
-            self._kernels = build_force_kernels(self.grid_n, h, eps2)
+            self._kernels = build_force_kernels(self.grid_n, h, eps2,
+                                                dtype=self.feld_dtype)
             self._kernel_h = h
+        return x0, y0, h, eps2
+
+    def _accel_into(self, st, geo: tuple):
+        """Kraftfeld aus den Massen bauen und an Massen- UND Tracer-
+        Positionen ablesen. Setzt st['ax','ay','tax','tay']. Die Geometrie
+        kommt von aussen (`_geometrie`) — hier wird nicht gemessen."""
+        gx, gy, gm = st["x"], st["y"], st["m"]
+        x0, y0, h, eps2 = geo
         axg, ayg = pm_force_field(gx, gy, gm, self.grid_n, x0, y0, h, eps2,
-                                  kernels=self._kernels)
+                                  kernels=self._kernels,
+                                  dtype=self.feld_dtype)
         st["ax"], st["ay"] = gather_accel(axg, ayg, gx, gy,
                                           self.grid_n, x0, y0, h)
         if st["T"]:
@@ -268,7 +334,8 @@ class NBodyPM:
             else:
                 st["tx"] = st["ty"] = st["tvx"] = st["tvy"] = None
                 st["T"] = 0
-            self._accel_into(st)   # Anfangsbeschleunigung fuer das erste Kick
+            # Anfangsbeschleunigung fuer das erste Kick
+            self._accel_into(st, self._geometrie(st))
         return st
 
     def step_batch(self, st: dict, dt_years: float, steps: int) -> np.ndarray:
@@ -289,16 +356,27 @@ class NBodyPM:
             # raus_gpu MUSS auf self.device liegen (nicht dem Default-Device),
             # sonst laufen die Slice-Assigns cross-device und racen mit asnumpy.
             raus_gpu = cp.empty((steps, 4 * n + 2 * t), cp.float32)
+            # Gitter EINMAL je Batch (siehe `_geometrie`): die vier
+            # min/max-Transfers dort sind der zweite Sync-Posten neben dem
+            # asnumpy — je Substep gemessen kosteten sie mehr als die
+            # Faltung selbst.
+            geo = self._geometrie(st)
             for s in range(steps):
-                st["vx"] += hdt * st["ax"]; st["vy"] += hdt * st["ay"]
-                st["x"] += dt * st["vx"];   st["y"] += dt * st["vy"]
+                st["vx"] += hdt * st["ax"]
+                st["vy"] += hdt * st["ay"]
+                st["x"] += dt * st["vx"]
+                st["y"] += dt * st["vy"]
                 if t:
-                    st["tvx"] += hdt * st["tax"]; st["tvy"] += hdt * st["tay"]
-                    st["tx"] += dt * st["tvx"];   st["ty"] += dt * st["tvy"]
-                self._accel_into(st)
-                st["vx"] += hdt * st["ax"]; st["vy"] += hdt * st["ay"]
+                    st["tvx"] += hdt * st["tax"]
+                    st["tvy"] += hdt * st["tay"]
+                    st["tx"] += dt * st["tvx"]
+                    st["ty"] += dt * st["tvy"]
+                self._accel_into(st, geo)
+                st["vx"] += hdt * st["ax"]
+                st["vy"] += hdt * st["ay"]
                 if t:
-                    st["tvx"] += hdt * st["tax"]; st["tvy"] += hdt * st["tay"]
+                    st["tvx"] += hdt * st["tax"]
+                    st["tvy"] += hdt * st["tay"]
                 # dtype-Cast f64->f32 passiert implizit beim Slice-Assign (GPU-
                 # Kernel, kein Sync); der einzige Sync ist das asnumpy am Ende.
                 raus_gpu[s, 0:n] = st["x"]
@@ -308,8 +386,31 @@ class NBodyPM:
                 if t:
                     raus_gpu[s, 4 * n:4 * n + t] = st["tx"]
                     raus_gpu[s, 4 * n + t:4 * n + 2 * t] = st["ty"]
-            raus = cp.asnumpy(raus_gpu)   # EIN Transfer statt 6*steps
+            raus = self._host_puffer(raus_gpu.shape)
+            raus_gpu.get(out=raus)        # EIN Transfer statt 6*steps
         return raus
+
+    def _host_puffer(self, form: tuple) -> np.ndarray:
+        """Wiederverwendeter PINNED Host-Puffer fuer den Batch-Download.
+
+        Ueber einen pageable numpy-Puffer (wie `cp.asnumpy` ihn anlegt) muss
+        der Treiber zusaetzlich durch einen eigenen Staging-Bereich kopieren.
+        Gemessen an 152 MB je Batch ueber den ×4-Link: 70,4 ms pageable
+        gegen 47,3 ms pinned (2,12 gegen 3,15 GB/s) — bei 89 ms Batchzeit
+        der groesste Einzelposten ueberhaupt.
+
+        ACHTUNG: Der Puffer wird wiederverwendet, das Ergebnis gilt also nur
+        BIS ZUM NAECHSTEN `step_batch`. Der Film-Producer baut es im
+        selbstgravitierenden Pfad sofort in ein eigenes Array um; wer es
+        laenger halten oder nebenlaeufig auswerten will (wie der alte Kernel
+        seine Erkennung), muss vorher kopieren.
+        """
+        if self._host is None or self._host.shape != form:
+            roh = cp.cuda.alloc_pinned_memory(
+                int(np.prod(form)) * np.dtype(np.float32).itemsize)
+            self._host = np.frombuffer(
+                roh, np.float32, int(np.prod(form))).reshape(form)
+        return self._host
 
     def export_f64(self, st: dict) -> np.ndarray:
         """Exakter f64-Zustand [x|y|vx|vy] (4N), Massen nur (keine Tracer,

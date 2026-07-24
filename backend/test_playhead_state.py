@@ -44,6 +44,11 @@ def baue_session(n=5, capacity=64, head=100, m_sub=4, sub_max=3,
     """
     s = server.FilmSession.__new__(server.FilmSession)
     s.n = n
+    # Seit dem Tracer-Split traegt der Ring M+T (self.n), an den Client gehen
+    # aber nur die Massen (self.n_mass). Diese Attrappe kennt keine Tracer,
+    # beide sind also gleich — ein Fall MIT Tracern (n_mass < n) fehlt hier
+    # und waere die naechste sinnvolle Erweiterung.
+    s.n_mass = n
     s.capacity = capacity
     s.raster_days = RASTER
     s.t0 = T0

@@ -5477,21 +5477,34 @@ function initCudaBackend(urlIndex = 0) {
         simTime = tDays;
         _cudaStateStale = true;
         markBodiesMutated();
+      } else if (_filmRestartPending || (_filmStartWartet && useFilm)) {
+        // Die Koerperzahl hat sich geaendert, WEIL die Szene gerade neu
+        // gebaut wurde (Regler fuer Massen oder Tracer). Dann ist der Dump
+        // der alten Sitzung gegenstandslos — gleich unten startet ohnehin
+        // eine neue auf der neuen Szene, und die bringt ihren eigenen
+        // exakten Zustand mit. Hier anzuhalten war der Grund fuer "startet
+        // kurz und stoppt dann wieder": Der Neustart lief zwar, aber
+        // `paused` blieb stehen, der Playhead fror ein, und weil der
+        // Playhead stand, drosselte der Producer bis zum Stillstand
+        // (drossel=99 %, GPU 0 %).
+        console.info('[film] f64-Dump der alten Sitzung verworfen (' + n +
+                     ' Koerper gegen ' + (refs ? refs.length : 'keine') +
+                     ') — Szene wurde neu gebaut, Neustart folgt.');
       } else {
-        // Koerperzahl hat sich seit dem Filmstart geaendert — der Dump
-        // passt nicht auf die aktuelle Szene. Frueher wurde er hier still
-        // verworfen und die Physik lief mit den aus u16-Samples
-        // GESCHAETZTEN Impulsen weiter; deren Quantisierungsfehler
-        // erreicht die Groessenordnung echter Bahngeschwindigkeiten und
-        // sprengt die Szene zu einer expandierenden Wolke. Anhalten und
-        // melden ist ehrlicher als sichtbar falsch weiterzurechnen.
+        // Koerperzahl hat sich seit dem Filmstart geaendert, ohne dass ein
+        // Neustart ansteht — der Dump passt nicht auf die aktuelle Szene.
+        // Frueher wurde er hier still verworfen und die Physik lief mit den
+        // aus u16-Samples GESCHAETZTEN Impulsen weiter; deren
+        // Quantisierungsfehler erreicht die Groessenordnung echter
+        // Bahngeschwindigkeiten und sprengt die Szene zu einer
+        // expandierenden Wolke. Anhalten und melden ist ehrlicher als
+        // sichtbar falsch weiterzurechnen.
         console.warn('[film] f64-Dump verworfen: Dump hat ' + n +
                      ' Koerper, Producer-Liste hat ' +
                      (refs ? refs.length : 'keine') + ' — exakte ' +
                      'Uebergabe unmoeglich, Physik pausiert. ' +
                      '[bodies=' + bodies.length +
-                     ' filmActive=' + filmActive +
-                     ' restartPending=' + _filmRestartPending + ']');
+                     ' filmActive=' + filmActive + ']');
         zeigeStoerung(t('film.stoerung-mismatch'), 0, filmNeuStarten);
         setPaused(true);
       }
@@ -5685,17 +5698,6 @@ function initCudaBackend(urlIndex = 0) {
       filmQueue.times.shift();
       filmQueue.samples.shift();
     }
-    const nowP = performance.now();
-    if (!_filmHeadPrevMs) {
-      _filmHeadPrev = msg.head;
-      _filmHeadPrevMs = nowP;
-    } else if (nowP - _filmHeadPrevMs >= 500 && msg.head > _filmHeadPrev) {
-      const r = (msg.head - _filmHeadPrev) /
-                ((nowP - _filmHeadPrevMs) / 1000);
-      _filmHeadRate = _filmHeadRate ? 0.6 * _filmHeadRate + 0.4 * r : r;
-      _filmHeadPrev = msg.head;
-      _filmHeadPrevMs = nowP;
-    }
   }
 }
 initCudaBackend();
@@ -5801,9 +5803,6 @@ let _filmRate = 60;          // aktuelles Playback-Tempo (Tage/s) fuer Batch-Dic
 let _filmOffX = null;        // Restfehler-Glaettung nach Batch-Wechsel
 let _filmOffY = null;
 let _filmResync = false;
-let _filmHeadRate = 0;       // geschaetzte Producer-Rate (Tage/s) fuer glattes Live-Follow
-let _filmHeadPrev = 0;
-let _filmHeadPrevMs = 0;
 // Adaptives Streaming (wie Videoplayer-Qualitaetsstufen): gemessener
 // Durchsatz bestimmt, wie viele Samples/s wir uns leisten koennen —
 // bei 25k Koerpern remote sonst Diashow (400 KB pro Sample!).
@@ -5827,7 +5826,22 @@ let _filmLastTrailT = -1;    // Sim-Zeit des letzten Bahnspur-Samples
 // Ohne das reitet der Playhead auf der Download-Kante und jede
 // Lieferluecke schlaegt als Stocken durch.
 const FILM_PUFFER_S = 1.5;
-const FILM_BREMSE = 0.85;
+// Zeitkonstante, mit der der Vorrat in die Folge-Rate eingeht. Ohne diese
+// Glaettung schlaegt seine Schwankung 1:1 als Tempo-Schwankung durch —
+// gemessen 384..1771 Tage Vorrat bei gleichbleibender Produktion,
+// entsprechend 403..921 Tage/s Wiedergabe, sichtbar als Unruhe.
+//
+// SYMMETRISCH, in beide Richtungen gleich. Ein erster Versuch liess den
+// Vorrat nur nach oben traege eingehen und nach unten sofort ("damit der
+// Playhead nicht in die Kante laeuft"); nachgestellt ist das bei grobem
+// Streaming doppelt so unruhig (Schwankung 112 gegen 57 Tage/s) und bei
+// feinem nicht besser. Gegen das Anlaufen an der Kante schuetzt ohnehin
+// die harte Klemme auf `kante` weiter unten, nicht die Glaettung.
+const FILM_VORRAT_TAU_S = 2.0;
+let _filmVorratGlatt = -1;   // Tage, -1 = noch nichts gemessen
+// Obergrenze der Interpolations-Reserve, in Sekunden Playback (siehe
+// filmTick). Deckelt das eine Voraus-Sample, wenn der Server grob streamt.
+const FILM_RESERVE_S = 0.1;
 // Ab diesem ungedeckelten Frame-Abstand gilt Zeit als VERLOREN (Tab war
 // inaktiv, kein requestAnimationFrame) — nur dann darf der Playhead per
 // Snap zur Live-Kante aufholen. Normale Frames liegen bei ~17 ms, ein
@@ -6751,6 +6765,20 @@ function filmApplyEvents(t) {
   }
 }
 
+// Wie schnell der Playhead der Datenkante folgen darf: "Vorrat je
+// FILM_PUFFER_S Sekunden", gedeckelt auf das eingestellte Tempo. Die
+// fruehere Schreibweise rate * min(1, (vorrat/rate)/FILM_PUFFER_S) ist
+// dieselbe Formel — dort kuerzt sich die Rate heraus, was beim Lesen leicht
+// untergeht. EINE Stelle fuer beide Zweige (live und Vergangenheit).
+function filmFolgeRate(rate, vorratTage, deltaMs) {
+  const vorrat = Math.max(0, vorratTage);
+  if (!isFinite(vorrat)) return rate;      // noch keine Kante bekannt
+  const anteil = Math.min(1, (deltaMs / 1000) / FILM_VORRAT_TAU_S);
+  _filmVorratGlatt = _filmVorratGlatt < 0 ? vorrat
+    : _filmVorratGlatt + anteil * (vorrat - _filmVorratGlatt);
+  return Math.min(rate, _filmVorratGlatt / FILM_PUFFER_S);
+}
+
 function filmTick(dtDays, slowFactor, nowMs) {
   // Zerbersten (status=7): sobald der Playhead den Ereignis-Zeitpunkt
   // erreicht, exakten f64-Zustand uebernehmen, shatter() ausfuehren
@@ -6824,48 +6852,44 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // (Catmull-Rom) braucht ein Sample VORAUS. Ohne diese Reserve reitet
     // der Playhead auf dem neuesten Sample, dort fehlt das Voraus-Sample
     // und die Interpolation faellt auf die Sehne zurueck — genau das
-    // Pumpen in Sonnennaehe. Die Reserve verzoegert die Anzeige um ~1
-    // Sample (~50 ms, kaum merklich) und passt sich der Produktionsrate
-    // von selbst an: produziert die GPU langsam, waechst der Abstand nicht.
+    // Pumpen in Sonnennaehe.
+    //
+    // DIE RESERVE MUSS ZEITLICH GEDECKELT SEIN. Sie ist als ~50 ms
+    // gedacht, ihre Groesse ist aber der SAMPLE-ABSTAND, und den bestimmt
+    // der Server aus seiner Bandbreitenschaetzung: Bei 1000 Tagen/s und
+    // noch kalter Schaetzung streamt er jedes 200. Raster — 2000 Sim-Tage
+    // je Sample. Ungedeckelt lag die Kante dann 2000 Tage hinter der
+    // Spitze, der Playhead klebte HINTER seiner eigenen Kante (gemessen:
+    // ph=535 bei Samples 0 und 2000), Vorrat 0, Folge-Rate 0 — und damit
+    // stand auch der Producer (Ring 70 %, drossel=99 %, GPU 0 %). Es kam
+    // kein drittes Sample, und nichts konnte den Zustand aufloesen.
+    //
+    // Ein Vergleich "gilt die Reserve nur, solange sie vor dem Playhead
+    // liegt" reicht NICHT: Die Folge-Rate ist proportional zum Vorrat, der
+    // Playhead naehert sich der Kante also asymptotisch und erreicht sie
+    // nie — die Bedingung schaltet nicht um. Nur der Deckel wirkt.
+    // Nachgestellt (Producer 900 d/s, Wunsch 1000, Abstand 2000 d):
+    // ungedeckelt steht die Wiedergabe in 100 % der Frames, gedeckelt
+    // laeuft sie mit 900 d/s.
     const L = filmQueue.times.length;
-    const spitze = L >= 2 ? filmQueue.times[L - 2]
-                          : filmQueue.times[L - 1];
-    kante = Math.max(filmQueue.tail, spitze);
+    const spitze = filmQueue.times[L - 1];
+    const vorletzt = L >= 2 ? filmQueue.times[L - 2] : spitze;
+    const reserve = Math.min(spitze - vorletzt, FILM_RESERVE_S * rate);
+    kante = Math.max(filmQueue.tail, spitze - reserve);
   }
   if (filmLive && filmQueue) {
-    // Der Kante mit Producer-Rate folgen — STRIKT MONOTON: laeuft die
-    // (geschaetzte) Rate der echten Kante voraus, bleibt der Playhead
-    // stehen, bis die Kante nachkommt. Nie rueckwaerts schnappen.
-    // Puffer-Aufbau ueber die Folge-Rate: unter 1,5 s Vorlauf minimal
-    // langsamer folgen (85%), damit der Client-Puffer waechst und
-    // Netz-Jitter schlucken kann (Videoplayer-Rebuffering-Prinzip).
-    // Fallback auf die eingestellte Rate statt 0: _filmHeadRate wird aus
-    // der KANTENBEWEGUNG geschaetzt. Hat der Server seinen Puffer-Vorlauf
-    // erreicht, sendet er nichts mehr -> die Kante steht -> die Schaetzung
-    // faellt auf 0 -> der Playhead bleibt stehen -> der unveraenderte
-    // Playhead bestaetigt dem Server "Puffer voll". Beide warten dann
-    // gegenseitig, obwohl Hunderte Sim-Tage im Client-Puffer liegen
-    // (gemessen: ph konstant, vorrat=200d, Producer laeuft weiter).
-    // Die Klemme auf `kante` weiter unten verhindert, dass der Playhead
-    // ueber tatsaechlich vorhandene Daten hinauslaeuft.
-    // NIE schneller als das eingestellte Tempo: _filmHeadRate ist die
-    // KANTENBEWEGUNG, also das Producer-Tempo. Rechnet der Producer
-    // schneller als abgespielt werden soll (bei Zeitlupe der Normalfall —
-    // gemessen 34 Tage/s Producer gegen 1 Tag/s Wunsch), rannte der
-    // Playhead mit Producer-Tempo los, holte die bewusst knapp gehaltene
-    // Kante (Puffer-Ziel ~5 s Playback) ein, klemmte dort und wartete auf
-    // Nachschub: sichtbar als Stufen mit Pausen statt gleichmaessiger
-    // Zeitlupe. Die Kantenrate darf nur BREMSEN, nie beschleunigen.
-    // Puffer-basierte Glaettung (KISS): je naeher der Playhead der Datenkante,
-    // desto langsamer laeuft er — so schlaegt er nicht gegen die Kante und
-    // springt (das Diashow-Stocken). istVorratS = Sekunden Playback bis zur
-    // Kante; ab FILM_PUFFER_S laeuft er mit voller rate, an der Kante mit 0.
-    // Anders als die alte _filmHeadRate-Bremse (die auf 0 fiel und den
-    // Producer<->Playhead-Deadlock erzeugte) bewegt sich der Playhead, SOLANGE
-    // Vorrat > 0 ist — das reduziert den Producer-Vorlauf und haelt ihn am
-    // Rechnen. Der Playhead pendelt sich glatt auf die Produktionsrate ein.
-    const istVorratS = rate > 0 ? Math.max(0, kante - filmPlayheadDays) / rate : 1;
-    const follow = rate * Math.min(1, istVorratS / FILM_PUFFER_S);
+    // Der Kante folgen — STRIKT MONOTON, nie rueckwaerts schnappen; die
+    // Klemme auf `kante` weiter unten haelt den Playhead in den Daten.
+    //
+    // Frueher bremste hier die geschaetzte KANTENBEWEGUNG. Das erzeugte
+    // einen Deadlock: Hat der Server seinen Puffer-Vorlauf erreicht, sendet
+    // er nichts mehr -> die Kante steht -> die Schaetzung faellt auf 0 ->
+    // der Playhead bleibt stehen -> der unveraenderte Playhead bestaetigt
+    // dem Server "Puffer voll". Beide warteten gegenseitig, obwohl
+    // Hunderte Sim-Tage im Client-Puffer lagen. Deshalb regelt jetzt der
+    // VORRAT: der Playhead bewegt sich, solange Vorrat > 0 ist, das
+    // reduziert den Producer-Vorlauf und haelt ihn am Rechnen.
+    const follow = filmFolgeRate(rate, kante - filmPlayheadDays, delta);
     let next = filmPlayheadDays + follow * delta / 1000;
     next = Math.min(next, kante);
     if (next < filmPlayheadDays) next = filmPlayheadDays;   // stehenbleiben
@@ -6885,14 +6909,12 @@ function filmTick(dtDays, slowFactor, nowMs) {
     // Playhead laeuft NUR, wenn Daten da sind — nach einem Sprung wartet
     // die Zeit mit der Anzeige zusammen auf den neuen Stream (Seek-
     // Verhalten wie beim Videoplayer), statt blind weiterzulaufen.
-    // Dieselbe Puffer-Bremse wie im LIVE-Zweig: ohne sie reitet der
+    // Dieselbe Puffer-Regelung wie im LIVE-Zweig: ohne sie reitet der
     // Playhead in der Vergangenheit auf der Download-Kante (er wird
     // gleich hart auf `kante` geklemmt) und jede Lieferluecke des
     // Streams schlaegt 1:1 als Stocken durch.
-    // Gleiche Puffer-Glaettung wie im Live-Zweig.
-    const istVorratS = rate > 0 ? Math.max(0, kante - filmPlayheadDays) / rate : 1;
-    filmPlayheadDays += rate * Math.min(1, istVorratS / FILM_PUFFER_S) *
-                        delta / 1000;
+    filmPlayheadDays += filmFolgeRate(rate, kante - filmPlayheadDays,
+                                      delta) * delta / 1000;
     // Kante eingeholt -> automatisch LIVE, aber NUR wenn das Queue-Ende
     // auch die echte Server-Kante ist (sonst stand der Playhead nur am
     // Download-Ende, obwohl der Puffer weiterreicht — falsches "LIVE").

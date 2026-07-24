@@ -830,9 +830,22 @@ class FilmSession:
                 spacing = max(self.raster_days, self.sub_rate / sps)
                 step = max(1, int(round(spacing / self.raster_days)))
                 avail = head_abs - sent_abs
-                if avail < step:
+                if avail < 1:
                     await asyncio.sleep(0.03)
                     continue
+                # NIE weiter ueberspringen, als Daten da sind. Sonst
+                # entsteht ein dreifacher Stillstand, und zwar genau dann,
+                # wenn die Samples gross und die Leitung schmal ist:
+                # `step` folgt aus der Bandbreitenschaetzung (bei 1,5 Mio
+                # Objekten remote gemessen 200 Raster = 2000 Sim-Tage),
+                # der Producer haelt bei 70 % Ringfuellung an, und dann
+                # bleiben weniger Slots uebrig als ein Schritt gross ist
+                # (gemessen avail=162 gegen step=200). Der Stream wartete
+                # auf einen Kopf, der nicht mehr wuchs, weil der Producer
+                # auf einen Playhead wartete, der nicht mehr lief, weil der
+                # Client keine Samples mehr bekam. Ohne Log, ohne Fehler —
+                # sichtbar nur als "GPU tut nichts".
+                schritt = min(step, avail)
                 # Frame-Budget = ~50 ms Leitungszeit (gemessene _bw),
                 # geklemmt auf 512 KB..8 MB: lokal passen so auch bei
                 # 230k Koerpern mehrere Samples in einen Frame (sonst
@@ -842,7 +855,7 @@ class FilmSession:
                 budget = min(8 * 1024 * 1024,
                              max(512 * 1024, int(self._bw * 0.05)))
                 max_count = max(1, min(24, int(budget // kosten)))
-                idxs = list(range(sent_abs, head_abs, step))[:max_count]
+                idxs = list(range(sent_abs, head_abs, schritt))[:max_count]
                 if not idxs:
                     await asyncio.sleep(0.03)
                     continue
@@ -878,7 +891,7 @@ class FilmSession:
                     self._bw = (1 - w) * self._bw + w * ist
                     self._bw_bytes = 0.0
                     self._bw_dur = 0.0
-                self.sent_abs = idxs[-1] + step
+                self.sent_abs = idxs[-1] + schritt
         except Exception:
             pass
 

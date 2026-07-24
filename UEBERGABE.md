@@ -4,7 +4,8 @@ Was hier steht, steht **nicht** im Git-Log: Betriebswissen, Messfallen,
 gescheiterte Ansätze und offene Punkte. Die Umsetzungshistorie ist
 bewusst nicht enthalten — dafür ist `git log` da.
 
-Stand: 2026-07-22, Kernel A+B angebunden.
+Stand: 2026-07-23, Particle-Mesh im Film-Streaming (Branch
+`feat/particle-mesh`).
 
 ---
 
@@ -69,6 +70,32 @@ in f32 um **21 %**, obwohl baugleich.
 
 `f64_score` gibt allen drei V100 exakt denselben Wert und sieht davon
 nichts. Wo Lasten verteilt werden, gehört darum gemessen — siehe 6.12.
+
+**Die LOD-Auswahl ist eine Stichprobe, keine Dichteregelung.** Das
+dichteabhängige Ausdünnen (`_dichte_filter`, Bisektion über ein
+512×512-`bincount`) ist raus: Weil es die Auswahl an der jeweils
+aktuellen Dichte festmachte, wechselten von Sample zu Sample ANDERE
+Objekte in die Auswahl — sichtbar als Flackern. Jetzt entscheidet eine
+globale Hash-Stichprobe `budget/N` über `_index_hash`, also für dieselbe
+Objekt-ID immer gleich. Determinismus schlägt hier gleichmässige Dichte;
+die verworfenen Glättungsversuche stehen in 5.4 und 5.5.
+
+**Ein `with cp.cuda.Device(d)` belegt beim VERLASSEN eine zweite Karte.**
+CuPy merkt sich beim Betreten das vorherige Device und stellt es beim
+Verlassen per `cudaSetDevice` wieder her — und `cudaSetDevice` legt den
+Primary Context sofort an, auch wenn dort nie gerechnet wird. Gemessen:
+**308 MiB auf CUDA 0**, sobald der PM-Kernel auf CUDA 2 seinen ersten
+`load_state` beendet hatte, und das je Producer, also je Browser-Tab.
+Der Kernel-Code war dabei durchweg korrekt; das Leck ist die
+Rückstellung. Gegenmittel ist `setze_default_karte` in
+`film_producer.py`: einmal `cp.cuda.Device(dev).use()` je Thread, bevor
+der erste Device-Block verlassen wird — auch als `initializer` der
+ThreadPools, denn das aktuelle Device ist **thread-lokal**.
+
+Wer das nachmisst: `nvidia-smi --query-compute-apps=pid,gpu_bus_id,
+used_memory` nach der eigenen PID filtern, nicht die Gesamtbelegung
+ansehen. Und die Marke muss **hinter** dem `with`-Block stehen — innerhalb
+sieht alles sauber aus, genau daran ist die erste Suche gescheitert.
 
 **Hängt noch GPU-Speicher fest?**
 ```bash
@@ -147,7 +174,17 @@ cd backend
 ../venv/bin/python test_lastregler.py       # Streifen-Lastregler (ohne GPU)
 ../venv/bin/python bench_erkennung.py       # Umschaltschwelle der 2. Karte
 ../venv/bin/python bench_film.py -n 60000 --det-gpus 1
+../venv/bin/python test_pm.py               # Particle-Mesh gegen all-pairs
+../venv/bin/python test_pm_pipeline.py      # PM im Producer-Pfad
+../venv/bin/python test_lod_auswahl.py      # Stichprobe deterministisch
+../venv/bin/python test_tracer_split.py     # Tracer server-seitig, anonym
 ```
+
+**Ein Producer-Prozess braucht `if __name__ == "__main__":`.** Die Sitzung
+startet ihr Kind per `spawn`, und das importiert das Hauptmodul erneut —
+ein Skript, das die `FilmSession` auf Modulebene baut, stirbt mit
+„attempt to start a new process before the current process has finished
+its bootstrapping phase". Betrifft jedes eigene Mess-Skript.
 
 `test_waisen.py` startet sich selbst als Server-Ersatz und schießt ihn mit
 `SIGKILL` ab — er darf also ruhig „Prozess getötet" ins Log schreiben, das
@@ -170,6 +207,27 @@ mehr wächst — stumm, in 30-ms-Schritten, für immer.
 wie `zerlegeFilm` in `index.html` — dort laufen Server und Client am
 ehesten auseinander, und zwar still: ein um vier Bytes verschobener
 Offset liefert keine Fehlermeldung, sondern Positionen im Nichts.
+
+**Diagnose am laufenden Betrieb** (Film-Pfad):
+
+- **Zeitanteile:** `FilmSession.DIAG` bzw. `--diag` in der Unit →
+  `[film-diag]` (prod-/play-Rate in Sim-Tagen/s, Vorlauf, Ringfüllung,
+  `drossel=`) und `[stream]` (`block=puffer|head|-`, Vorrat gegen Ziel,
+  `sps`, `step`, Kosten je Sample). Beide Zeilen zusammen sagen, ob
+  Producer, Server oder Client bremst. Als Drop-in einschaltbar, ohne die
+  Unit zu ändern:
+  `~/.config/systemd/user/solar-cuda.service.d/diag.conf` mit leerem
+  `ExecStart=` plus der Zeile inklusive `--diag`.
+- **Stack eines hängenden Producers ohne root** (`ptrace_scope=1` blockt
+  gdb, py-spy fehlt): `faulthandler.register(signal.SIGUSR1,
+  all_threads=True)` in `producer_main` einbauen, dann `kill -USR1 <pid>`
+  → Stack ins Journal. Feuert NICHT bei blockierendem C-Call — dann
+  `/proc/<pid>/wchan` lesen.
+- **Live-Reproduktion im echten Browser:** `DISPLAY=:0
+  XAUTHORITY=~/.Xauthority chrome --remote-debugging-port=9222
+  http://127.0.0.1/solar-system/?v=dbg`, dann per chrome-devtools den
+  log-Slider `film-speed` setzen (Wert 3 = 1000 Tage/s) und
+  `filmPlayheadDays` mitschreiben.
 
 **Blinder Fleck bis 21.07.:** Alle Tests hatten einen **ruhenden Stern im
 Ursprung**. Ein Fehler in der Positions-Interpolation der massiven Körper
@@ -271,6 +329,37 @@ Producer drosselt bei 70 % Ringfuellung, das ist kein Defekt.
 66 ms RTT. Das traegt 9,7 Samples/s von 20 gewuenschten — siehe 6.14. Bei
 Messungen aus der Ferne ist das die erste Groesse, die man pruefen muss,
 bevor man Physik oder Rendering verdaechtigt.
+
+**Particle-Mesh (Kernel B):** 1 Mio Massen + 500k Tracer, Gitter 1024²,
+K=8 Substeps je Batch, eine V100 — gemessen über `step_batch`, also genau
+den Anteil, der im Producer `step=93 %` belegt:
+
+| Stand | ms/Batch | Sim-Tage/s |
+|---|---|---|
+| 23.07., Ausgangslage | 133 | 604 |
+| Gitter je Batch statt je Substep | 128 | 626 |
+| CIC fusioniert + Faltung in f32 | 89 | 903 |
+| pinned Download-Puffer | **63** | **1267** |
+
+**Wo die Zeit im Substep steckt** (1M Massen, 1024², vor dem Umbau):
+
+| | ms |
+|---|---|
+| `gather` Massen (1M) | 2,37 |
+| `_cic_deposit` | 1,72 |
+| `gather` Tracer (500k) | 1,30 |
+| alle drei FFTs zusammen | 1,51 |
+| `grid_fuer` (4 synchrone min/max) | 0,13 |
+
+**Die FFT war nie der Engpass** — CIC-Deposit und -Gather waren es, und
+zwar nicht als Rechenlast, sondern als Speicherverkehr: viele kleine
+cupy-Kernel mit temporären Arrays zu je 8 MB, und für `ax`/`ay` wurden
+Zellindex und Gewichte zweimal berechnet. Jetzt je ein ElementwiseKernel
+(Deposit mit `atomicAdd`, Gather für beide Komponenten in einem Zug), und
+die Faltung läuft in f32 (`kraft_f32`; der Zustand bleibt f64).
+
+**Der Engpass ist jetzt der D2H-Transfer:** 47 von 63 ms. Ein Batch trägt
+152 MB (8 Substeps × [x|y|vx|vy|tx|ty] in f32).
 
 **Nicht gemessen:** `build_frame` im Server-Prozess (Culling, Dichte-LOD
 mit Bisektion und 512×512-`bincount`, Quantisierung, Sub-Kette) ist reine
@@ -426,15 +515,29 @@ müsste den Test über `slot_sub` interpolieren lassen.
 Nicht-heiße Körper durchlaufen die Feinschleife nicht; für sie gilt
 weiter die Streckenprüfung im Producer (Kontaktzeitpunkt aus `tt`).
 
-### 6.3 Datenlokalität GPU-zu-GPU
-**Bewertet, trägt so nicht.** `step_batch` liefert bewusst ein
-Host-Array, und das wird gebraucht — `bounce_deltas` rechnet auf der CPU,
-`apply_merges` liest Host-Positionen. Ein P2P-Transfer ersetzte nur den
-**H2D** zur Erkennungskarte, nicht den **D2H** von den Physikkarten.
+### 6.3 Datenlokalität GPU-zu-GPU — erledigt, mit klarem Ergebnis
+**GPU-zu-GPU direkt ist auf dieser Maschine unbrauchbar.** Nachgemessen
+am 24.07. mit einem 8-MB-Kraftfeld zwischen zwei Karten:
 
-Der billigere Hebel zuerst: **Pinned Host-Puffer** für `out` in
-`step_batch`. Vorher messen — beim DOWNLOAD bringt pinned nach früherer
-Messung nichts (3,21 gegen 3,24 GB/s, der ×4-Link ist ausgereizt).
+| Weg | Zeit | Durchsatz |
+|---|---|---|
+| cross-device Kopie | 52,0 ms | 0,15 GB/s |
+| dieselbe, nach `deviceEnablePeerAccess` | 52,0 ms | 0,15 GB/s |
+| **über pinned Host (D2H + H2D)** | **5,0 ms** | **1,56 GB/s** |
+
+`deviceCanAccessPeer` meldet `True`, und Peer-Access lässt sich auch
+aktivieren — es ändert nur nichts. Über M.2-zu-Oculink- bzw.
+USB4-Adapter (Abschnitt 1) ist der Umweg über den Host **zehnmal
+schneller** als der direkte Weg. Wer hier Datenlokalität plant, plant
+über den Host.
+
+**Pinned Host-Puffer dagegen trägt sehr wohl** — die frühere Notiz
+(„beim Download bringt pinned nichts, 3,21 gegen 3,24 GB/s") gilt für den
+Download nicht: an 152 MB je Batch gemessen 70,4 ms pageable gegen
+47,3 ms pinned (2,12 gegen 3,15 GB/s). Der Unterschied ist der
+Staging-Puffer, durch den der Treiber pageable Speicher schleusen muss.
+Eingebaut in `NBodyPM._host_puffer`; der Puffer wird wiederverwendet und
+gilt darum nur bis zum nächsten `step_batch`.
 
 ### 6.4 Abrupter Verbindungsverlust im Film
 Bricht die CUDA-Verbindung WÄHREND des Films unerwartet ab (Server-Crash,
@@ -714,3 +817,194 @@ Kernel C:
 Gehört konzeptionell neben die Kernel-Roadmap in `TODO.md` (Tiling A,
 Kernel B, Barnes-Hut/PM). Reihenfolge offen — erst wenn ein Szenario das
 wirklich braucht.
+
+### 6.17 PM-Durchsatz: der Rest ist Transfer
+2,1× geholt (Abschnitt 4). Was jetzt noch bremst, ist **nicht mehr die
+Rechnung**, sondern der Weg zum Host: 47 von 63 ms je Batch.
+
+**Der nächste Hebel liegt offen: `vx|vy` werden übertragen und
+weggeworfen.** `schreibe_slot` liest aus der Kernel-Ausgabe nur
+`out_i[0:2*n]`, und im selbstgravitierenden Pfad braucht auch sonst
+niemand die Geschwindigkeiten (der f64-Dump für die Engine-Übergabe holt
+sie separat über `export_f64`). Ein Layout `[x|y | tx|ty]` statt
+`[x|y|vx|vy | tx|ty]` senkt den Batch von 152 auf 92 MB — gemessen
+47,3 → 28,3 ms, also nochmal rund **1,4×** auf den Gesamtdurchsatz.
+
+Der Haken, und deshalb liegt es hier statt im Code: Das Layout ist
+zwischen **beiden** selbstgravitierenden Kernen gleich, und in Kernel A
+(`selfgrav_kernel.py`) entsteht es im CUDA-Quelltext (`snap` mit vier
+Feldern je Substep). Es sauber zu machen heisst, dort den Kernel, im
+Producer den `voll`-Umbau und die Tests gemeinsam zu ziehen — ein eigenes
+Arbeitspaket, kein Nebenbei-Fix.
+
+Danach erst lohnt sich, über CUDA-Graphs nachzudenken: Die reine
+Rechenzeit liegt dann bei ~16 ms je Batch, und die Launch-Zahl je Substep
+ist durch die Kernel-Fusion bereits von rund zwanzig auf eine Handvoll
+gefallen.
+
+### 6.21 Tracer auf eine zweite Karte — lohnt erst ab ~1 Mio Tracern
+Nachgerechnet und gemessen, bevor gebaut wird. Die Tracer-Karte braucht je
+Substep das **Kraftfeld** (2 × grid_n² × 4 B, bei 1024² also **8,0 MB —
+unabhängig von der Tracer-Zahl**), und sie spart der Rechenkarte deren
+**Ausgabe** (2 × T × 4 B). Der Break-Even ist damit schlicht:
+
+    T = grid_n²      (bei 1024² also ~1,05 Mio Tracer)
+
+| Tracer | Ausgabe je Substep | gegen Feld 8,0 MB |
+|---|---|---|
+| 500.000 | 3,8 MB | kostet mehr, als es spart |
+| 1.000.000 | 7,6 MB | Break-Even |
+| 2.000.000 | 15,3 MB | lohnt |
+| 5.000.000 | 38,1 MB | lohnt klar |
+
+Bei der heutigen Szene (500k Tracer) würde die Auslagerung den Durchsatz
+also **senken**. Für das eigentliche Ziel — Millionen Tracer — trägt sie,
+und dann doppelt: Die beiden Ströme laufen über **verschiedene**
+PCIe-Links, statt sich einen zu teilen.
+
+Zwei Dinge sind dabei gesetzt: Der Feldtransfer läuft **über den pinned
+Host**, nicht per P2P (6.3), und das Feld muss in f32 gehen (in f64 wäre
+es 16 MB und der Break-Even läge doppelt so hoch).
+
+### 6.18 Tracer-Kreis nach dem Handover
+Beim Neustart der Sitzung (Inject/Engine-Übergabe) würfelt der Producer
+die Tracer auf die t=0-Scheibe zurück (`wuerfle_tracer(seed=0)`, harte
+Kante bei 72.000 AE), während die Massen ihren Zustand behalten — sichtbar
+als scharfer Kreis mit Halo. Fix: den Tracer-Zustand server-intern über
+den Handover mitführen statt neu zu würfeln. Der Client merkt davon
+nichts, die Tracer bleiben dort anonym.
+
+### 6.19 Massen und Tracer in einer Farbe
+Beide zeichnen in `_TRACER_RGB` (`#cfe0ff`). Gewünscht: Massen hellgelb,
+Tracer hellblau — als **benannte Konstanten** wie `BH_TRAIL_COLOR` (6.11),
+nicht als verstreute Hex-Literale.
+
+### 6.20 Wiedergabe bei hohem Tempo — gemessen, gedämpft
+Gemeldet als „stockt bei 1000 Tage/s, GPUs arbeiten gar nicht".
+Nachgemessen mit `--diag` (1,5 Mio Objekte, Raster 10 d):
+
+    prod=430 d/s   play=403…921 d/s   drossel=0%   step=93%   GPU 55%
+    vorrat=384…1771d (ziel 5000d)     block meist "-", zeitweise "head"
+
+Drei Befunde, in dieser Reihenfolge zu lesen:
+
+1. **Der Producer stand nicht.** `drossel=0 %`, `block=head` — der Server
+   hatte alles gesendet, was da war. Der beobachtete Stillstand war ein
+   Sessionwechsel: Der ALTE Producer stand mit `drossel=99 %` am 70-%-
+   Deckel, während der neue erst hochlief. Jeder Dreh am Weichzeichnungs-
+   Regler startet eine neue Sitzung (siehe 6.22).
+2. **1000 Tage/s sind unerreichbar**, wenn 430 produziert werden. Die
+   Wiedergabe läuft dann mit Produktionstempo — kein Fehler, sondern die
+   Grenze aus 6.17.
+3. **Die Unruhe kam aus dem Regelkreis.** Der Vorrat schwankt um Faktor
+   4,6 (die Stream-Dichte springt: `sps` 0,5 → 1,7 → 20, `step` 200 → 58
+   → 5, während sich die Bandbreitenschätzung einschwingt), und
+   `follow = min(rate, Vorrat/FILM_PUFFER_S)` übersetzt das 1:1 in
+   Tempo-Schwankung.
+
+Behoben über `filmFolgeRate` (eine Stelle für beide Zweige): Der Vorrat
+geht mit der Zeitkonstante `FILM_VORRAT_TAU_S` (2 s) **symmetrisch** in
+die Folge-Rate ein.
+
+**Die Interpolations-Reserve muss dabei zeitlich gedeckelt sein** — das
+ist der Teil, an dem eine erste Fassung den Film zum Stehen brachte, und
+der Fehler ist lehrreich genug für eigene Zeilen:
+
+`kante` liegt bewusst ein Sample vor der Spitze (Catmull-Rom braucht ein
+Voraus-Sample). Die Grösse dieser Reserve ist aber der SAMPLE-ABSTAND, und
+den bestimmt der Server aus seiner Bandbreitenschätzung. Bei 1000 Tagen/s
+und noch kalter Schätzung streamt er jedes 200. Raster — **2000 Sim-Tage
+je Sample**. Die Reserve, gedacht als 50 ms, wurde damit zu 2 Sekunden
+Playback: Der Playhead stand bei 535 Tagen HINTER seiner eigenen Kante,
+Vorrat 0, Folge-Rate 0. Und weil der Playhead stand, stand auch der
+Producer (Ring 70 %, `drossel=99 %`, GPU 0 %), es kam kein drittes Sample,
+und nichts konnte den Zustand mehr auflösen.
+
+**Der naheliegende Fix funktioniert nicht:** „die Reserve gilt nur,
+solange sie vor dem Playhead liegt" schaltet nie um, weil die Folge-Rate
+proportional zum Vorrat ist — der Playhead nähert sich der Kante
+asymptotisch und erreicht sie nie. Nur ein Deckel wirkt:
+`reserve = min(Sample-Abstand, FILM_RESERVE_S · rate)`.
+
+Nachgestellt (Producer 900 d/s, Wunsch 1000 d/s, Skript im Scratchpad):
+
+| Reserve | Sample-Abstand 2000 d | Sample-Abstand 50 d |
+|---|---|---|
+| ungedeckelt | **steht in 100 % der Frames** | 900 d/s, ruhig |
+| Deckel 0,1 s | 900 d/s | 900 d/s, ruhig |
+
+Dieselbe Nachstellung hat auch die Glättung entschieden: asymmetrisch
+(Anstieg träge, Abfall sofort) ist bei grobem Streaming **doppelt so
+unruhig** wie symmetrisch (Schwankung 112 gegen 57 Tage/s) und bei feinem
+nicht besser. Gegen das Anlaufen an der Kante schützt die harte Klemme auf
+`kante`, nicht die Glättung.
+
+**Wer an dieser Regelung etwas ändert, stellt es vorher nach.** Producer,
+Server und Client bilden einen geschlossenen Kreis, in dem jeder auf die
+Bewegung der anderen reagiert; im Browser sieht man nur das Ergebnis, und
+zwei der drei Fehler dieses Kapitels waren im Code nicht zu sehen.
+
+**Der Server durfte weiter springen, als Daten da waren.** Der eigentliche
+Auslöser des Stillstands, im echten Browser gefunden (nicht in der
+Simulation): Der Stream berechnet `step` aus der Bandbreitenschätzung — bei
+1,5 Mio Objekten remote 200 Raster. Steht der Producer am 70-%-Ring-Deckel,
+bleiben aber weniger Slots übrig als ein Schritt breit ist (gemessen
+`avail=162` gegen `step=200`), und die alte Bedingung `if avail < step:
+continue` sendete dann NIE. Der Stream wartete auf einen Kopf, der nicht
+mehr wuchs, weil der Producer auf einen Playhead wartete, der nicht mehr
+lief, weil der Client keine Samples bekam — ein dreifacher Stillstand ohne
+Log. Fix in `server.py`: `schritt = min(step, avail)`, gesendet wird,
+sobald ein einziges Sample bereitliegt.
+
+**Und der Client hielt bei einer Szenenänderung an, ohne fortzufahren.**
+Der sichtbarste Teil von „startet kurz, stoppt dann wieder": Ändert man
+Massen- oder Tracer-ZAHL mitten im Betrieb, dumpt die alte Sitzung ihren
+f64-Zustand, dessen Körperzahl nicht mehr zur neu gebauten Szene passt.
+`applyDump` rief dann `setPaused(true)` und zeigte eine Störung — obwohl
+unmittelbar darauf `filmStart()` eine neue Sitzung startete. Die Pause
+blieb stehen, der Playhead fror ein, der Producer drosselte. Fix: Steht ein
+Neustart an (`_filmRestartPending` oder `_filmStartWartet`), ist der alte
+Dump gegenstandslos und wird kommentarlos verworfen; die harte Pause bleibt
+dem echten Mismatch vorbehalten (Körperzahl ändert sich OHNE Neustart —
+dann wäre stilles Weiterrechnen auf geschätzten Impulsen falsch).
+
+Verifiziert im eigenen Debug-Chrome (1M Massen + 500k Tracer, volles LOD,
+1000 Tage/s): Wiedergabe läuft mit 525–567 d/s (±4 %, vorher ±40 %),
+`drossel=0 %`, und ein Reglerwechsel wie eine Massenzahl-Änderung mitten im
+Lauf hält sie nicht mehr an.
+
+**Warum der Deadlock „beim 2. Mal" wegblieb** — und wie man ihn lokal
+reproduziert: Der Deadlock braucht `step > avail`, und `step` ist bei
+kaltem Start gross (grobes Streaming, weil `_bw` noch auf dem 4-MB/s-
+Startwert steht). Beim zweiten Filmstart ist die Schätzung warm, `step`
+klein, die Falle schnappt nicht. Lokal (Loopback) tritt er NIE auf, weil
+die Leitung nie der Flaschenhals ist — Chrome-Netzdrosselung erreicht den
+Loopback-WebSocket nicht. Reproduzierbar nur mit einer server-seitigen
+Sende-Bremse: nach `ws.send` ein `await asyncio.sleep(len(frame) /
+(MBs*1024*1024))`. Bei 3 MB/s und dann PAUSE→Ring läuft auf 69 %,
+`drossel=99 %`→FORTSETZEN hängt der alte Code 24 s (permanent), der neue
+läuft an. Die Bremse ist Diagnose-Werkzeug, kein Dauercode.
+
+Beim Lesen der Formel hilft: Die frühere Schreibweise
+`rate · min(1, istVorratS/FILM_PUFFER_S)` mit `istVorratS = Vorrat/rate`
+ist dieselbe Funktion — die Rate kürzt sich heraus. Der Playhead läuft
+also mit „Vorrat je 1,5 s", **unabhängig vom eingestellten Tempo**.
+
+### 6.22 OFFEN: Der Weichzeichnungs-Regler wirkt im PM-Pfad nicht
+`NBodyPM` nimmt `softening_au` nur als **Untergrenze** — das Softening
+bestimmt das Gitter: `eps = max(1,5 · Zellweite, softening_au)`. Bei
+1024² und der Ausdehnung der kosmischen Szenen liegt die Zellweite bei
+60–140 AE, also `eps ≈ 90–210 AE`. Ob am Regler 31,6, 9,1 oder 0,11 AE
+steht, ändert damit nichts.
+
+Was der Regler tatsächlich auslöst: einen **Sitzungsneustart**. Neuer
+Producer, neuer Ring, Tracer neu gewürfelt (6.18), Bandbreitenschätzung
+von vorn — sichtbar als mehrsekündiger Aussetzer. Die Massen laufen aus
+dem f64-Dump weiter, aber die Rückspul-Historie ist jedes Mal weg.
+
+Zu entscheiden ist, was der Regler im PM-Betrieb bedeuten SOLL. Naheliegend
+wäre, ihn auf `softening_zellen` zu legen (heute fest 1,5): Das ist die
+Grösse, die im PM-Pfad wirklich das Softening setzt, und sie wirkt ohne
+Sitzungsneustart. Unter ~1 Zelle kann PM allerdings prinzipiell nicht
+auflösen — der Regler bräuchte also einen anderen Bereich und eine
+ehrliche Beschriftung.

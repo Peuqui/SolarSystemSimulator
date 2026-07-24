@@ -51,7 +51,8 @@ def test_impuls(rng):
     eps2 = (2 * h) ** 2
     ax, ay = pm_accelerations(x, y, m, grid_n, x0, y0, h, eps2)
     # Gesamtimpuls-Aenderung gegen die typische Kraftgroesse
-    px = float(cp.sum(m * ax)); py = float(cp.sum(m * ay))
+    px = float(cp.sum(m * ax))
+    py = float(cp.sum(m * ay))
     skala = float(cp.sum(m * cp.hypot(ax, ay)))
     rel = np.hypot(px, py) / max(skala, 1e-30)
     print(f"1) Impulserhaltung: |Σ m·a| / Σ m·|a| = {rel:.2e}")
@@ -103,8 +104,11 @@ def test_wolke_vs_allpairs(rng, eps_in_h, schwelle, label):
 def energie_impuls(x, y, vx, vy, m, eps2):
     """Gesamtenergie (KE + PE) und Impuls auf der GPU. PE ueber all-pairs
     mit demselben Softening wie die Kraft."""
-    x = cp.asarray(x); y = cp.asarray(y)
-    vx = cp.asarray(vx); vy = cp.asarray(vy); m = cp.asarray(m)
+    x = cp.asarray(x)
+    y = cp.asarray(y)
+    vx = cp.asarray(vx)
+    vy = cp.asarray(vy)
+    m = cp.asarray(m)
     ke = 0.5 * float(cp.sum(m * (vx * vx + vy * vy)))
     dx = x[None, :] - x[:, None]
     dy = y[None, :] - y[:, None]
@@ -114,7 +118,8 @@ def energie_impuls(x, y, vx, vy, m, eps2):
     pe_voll = -G_AU * float(cp.sum(mm / r))
     pe_diag = -G_AU * float(cp.sum(m * m) / np.sqrt(eps2))
     pe = 0.5 * (pe_voll - pe_diag)
-    px = float(cp.sum(m * vx)); py = float(cp.sum(m * vy))
+    px = float(cp.sum(m * vx))
+    py = float(cp.sum(m * vy))
     return ke + pe, (px, py)
 
 
@@ -129,12 +134,14 @@ def test_dynamik(rng, dev):
     Mtot = 5.6e9
     r = R * np.sqrt(rng.uniform(0, 1, n))
     th = rng.uniform(0, 2 * np.pi, n)
-    x = r * np.cos(th); y = r * np.sin(th)
+    x = r * np.cos(th)
+    y = r * np.sin(th)
     m = np.full(n, Mtot / n)
     vvir = np.sqrt(G_AU * Mtot / R)
     ang = rng.uniform(0, 2 * np.pi, n)
     speed = 0.7 * vvir
-    vx = speed * np.cos(ang); vy = speed * np.sin(ang)
+    vx = speed * np.cos(ang)
+    vy = speed * np.sin(ang)
     vx -= np.sum(m * vx) / Mtot          # Gesamtimpuls auf 0
     vy -= np.sum(m * vy) / Mtot
 

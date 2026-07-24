@@ -163,6 +163,24 @@ NACHBARN = ((0, 0), (1, 0), (0, 1), (1, 1), (1, -1))
 CHUNK = 4_000_000
 
 
+def setze_default_karte(dev: int) -> None:
+    """Das Default-Device DIESES Threads auf eine wirklich genutzte Karte
+    legen — einmal, bevor der erste Device-Block verlassen wird.
+
+    `with cp.cuda.Device(d)` merkt sich beim Betreten das vorherige Device
+    und stellt es beim VERLASSEN per `cudaSetDevice` wieder her. Und
+    `cudaSetDevice` legt den Primary Context der Karte SOFORT an, auch wenn
+    dort nie gerechnet wird: gemessen 308 MiB auf CUDA 0, sobald der
+    PM-Kernel auf CUDA 2 seinen ersten `load_state` beendet — je Producer,
+    also je Browser-Tab eine zweite belegte Karte. Der Kernel-Code ist dabei
+    voellig korrekt; das Leck ist die Rueckstellung auf das Default-Device.
+
+    Jeder Thread hat sein eigenes aktuelles Device, darum auch als
+    `initializer` der ThreadPools.
+    """
+    cp.cuda.Device(dev).use()
+
+
 class Erkennungskarte:
     """Eine Erkennungs-GPU samt ihrer residenten Hilfsarrays.
 
@@ -582,6 +600,7 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
     if not ausgelagert:
         det_devs = [sim.device]
     ana_dev = det_devs[0]      # Merge-Erkennung (2-4%, nicht aufgeteilt)
+    setze_default_karte(sim.device)
     if selbstgrav:
         print(f"[film] selbstgravitierend auf gpus {phys_devs}, "
               f"softening {softening_au:.1f} AE, keine erkennung",
@@ -1144,10 +1163,14 @@ def producer_main(shm_name: str, sample_bytes: int, capacity: int,
             apply_bounce(res["bounce"], res["k"], res["sample"])
             diag_t_bounce += time.monotonic() - _t
 
-    executor = ThreadPoolExecutor(max_workers=1)
+    executor = ThreadPoolExecutor(max_workers=1,
+                                  initializer=setze_default_karte,
+                                  initargs=(ana_dev,))
     # Fuer die Streifen 1..N-1; Streifen 0 rechnet der Erkennungs-Thread
     # selbst. Kein Pool bei nur einer Karte.
-    det_pool = ThreadPoolExecutor(max_workers=len(det) - 1) \
+    det_pool = ThreadPoolExecutor(max_workers=len(det) - 1,
+                                  initializer=setze_default_karte,
+                                  initargs=(ana_dev,)) \
         if len(det) > 1 else None
     future = None
     # Batch-Groesse: K Raster pro Kernel-Launch. Erkennungs-Ergebnisse
