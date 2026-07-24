@@ -524,12 +524,30 @@ class FilmSession:
             sel_t = np.flatnonzero(alive_i & ~ist_mass_all)
             sel_t = self._lod_auswahl(sel_t, lod_max)
             if len(sel_t):
+                # Die Tracer-Box an den MASSEN orientieren, NICHT an den
+                # Tracern: Wenige weit rausgeflogene Tracer (masselos +
+                # Hubble = ungebunden) sprengten sonst die Box auf Millionen
+                # AE und vergroeberten die u16-Aufloesung der dichten Wolke
+                # um das ~20-fache. Die Massen sind der relevante Bezug — die
+                # Tracer sollen ihre Struktur nachzeichnen. Robustes Perzentil
+                # [0,5 %, 99,5 %] gegen einzelne Massen-Ausreisser; Tracer
+                # ausserhalb landen beim clip am Box-Rand (Deko, egal).
+                m_alive = np.flatnonzero(alive_i & ist_mass_all)
+                if len(m_alive):
+                    mx = qxs[m_alive]
+                    my = qys[m_alive]
+                    schritt = max(1, len(mx) // 20000)   # billiges Subsample
+                    tx0, tx1 = np.percentile(mx[::schritt], [0.5, 99.5])
+                    ty0, ty1 = np.percentile(my[::schritt], [0.5, 99.5])
+                    tx0 = float(tx0)
+                    ty0 = float(ty0)
+                    tspanx = max(float(tx1) - tx0, 1e-6)
+                    tspany = max(float(ty1) - ty0, 1e-6)
+                else:
+                    tx0 = ty0 = 0.0
+                    tspanx = tspany = 1.0
                 tqx = qxs[sel_t]
                 tqy = qys[sel_t]
-                tx0 = float(tqx.min())
-                ty0 = float(tqy.min())
-                tspanx = max(float(tqx.max()) - tx0, 1e-6)
-                tspany = max(float(tqy.max()) - ty0, 1e-6)
                 qx_t = np.clip((tqx - tx0) / tspanx * 65535.0,
                                0, 65535).astype("<u2")
                 qy_t = np.clip((tqy - ty0) / tspany * 65535.0,
