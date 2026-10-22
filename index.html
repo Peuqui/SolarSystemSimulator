@@ -3911,7 +3911,6 @@ function renderAsteroidsGL() {
     gl.uniform2f(astGL.loc.uScreen, W, H);
     gl.uniform1f(astGL.loc.uLogZoom, useLogZoom ? 1 : 0);
     gl.uniform1f(astGL.loc.uInvLog33, _INV_LOG_33);
-  _glPunktmodus(gl);
     _glPunktmodus(gl);
     gl.drawArrays(gl.POINTS, 0, _filmVtxCount);
     return true;
@@ -3992,6 +3991,7 @@ function renderAsteroidsGL() {
   gl.uniform2f(astGL.loc.uScreen, W, H);
   gl.uniform1f(astGL.loc.uLogZoom, useLogZoom ? 1 : 0);
   gl.uniform1f(astGL.loc.uInvLog33, _INV_LOG_33);
+  _glPunktmodus(gl);
   gl.drawArrays(gl.POINTS, 0, drawn);
   return true;
 }
